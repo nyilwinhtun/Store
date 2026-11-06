@@ -13,14 +13,14 @@ export type SyncScope = 'branch' | 'branchRecord' | 'shared' | 'meta';
 export type SyncKind = BranchRecordKind | SharedRecordKind | 'branches' | 'settings';
 export type SyncItem = { key: string; scope: SyncScope; kind: SyncKind; id: string; branchId?: string; payload: unknown; deleted?: boolean };
 export type ManifestEntry = { scope: SyncScope; kind: SyncKind; id: string; branchId?: string; hash: string };
-export type SyncManifest = { version: 1; businessId: string; savedAt: string; records: Record<string, ManifestEntry> };
+export type SyncManifest = { version: 2; businessId: string; savedAt: string; records: Record<string, ManifestEntry> };
 export type CloudRead = { items: Map<string, SyncItem> };
 
 export const branchRecordKinds: BranchRecordKind[] = ['categories', 'products', 'sales', 'expenses', 'heldItems', 'customerPayments', 'purchases', 'supplierPayments', 'purchaseReturns', 'stockBatches', 'stockReceipts', 'stockTransfers', 'cashShifts', 'cashMovements', 'activityLogs'];
 export const sharedRecordKinds: SharedRecordKind[] = ['customers', 'suppliers'];
 const DELETED_HASH = '__MINIMART_DELETED__';
 const MISSING_HASH = '__MINIMART_MISSING__';
-const manifestKey = (uid: string) => `minimart-cloud-sync-manifest-v1:${FIREBASE_BUSINESS_ID}:${uid}`;
+const manifestKey = (uid: string) => `minimart-cloud-sync-manifest-v2:${FIREBASE_BUSINESS_ID}:${uid}`;
 const safeJson = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
 function stableStringify(value: unknown): string {
@@ -97,16 +97,61 @@ export function buildLocalItems(state: ReturnType<typeof usePosStore.getState>):
 
 function hashOf(item: SyncItem): string { return item.deleted ? DELETED_HASH : hashPayload(item.payload); }
 function manifestEntry(item: SyncItem): ManifestEntry { return { scope: item.scope, kind: item.kind, id: item.id, branchId: item.branchId, hash: hashOf(item) }; }
+
+function withoutBootstrapTimestamps(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutBootstrapTimestamps);
+  if (!value || typeof value !== 'object') return value;
+  const output: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (key === 'createdAt' || key === 'updatedAt') continue;
+    output[key] = withoutBootstrapTimestamps(child);
+  }
+  return output;
+}
+
+function isDefaultMetaPayload(payload: unknown): boolean {
+  if (!payload || typeof payload !== 'object') return false;
+  const source = payload as Record<string, unknown>;
+  const settings = source.settings && typeof source.settings === 'object' ? source.settings as Record<string, unknown> : {};
+  const owner = source.ownerProfile && typeof source.ownerProfile === 'object' ? source.ownerProfile as Record<string, unknown> : {};
+  return settings.storeName === 'My Minimart'
+    && settings.currency === 'MMK'
+    && settings.receiptFooter === 'Thank you. Please come again!'
+    && !owner.displayName && !owner.phone;
+}
+
+function isBootstrapEquivalent(local: SyncItem, remote: SyncItem): boolean {
+  if (remote.deleted) return false;
+  if (local.scope === 'branch' && local.id === 'branch-main') {
+    const branch = local.payload as Record<string, unknown>;
+    const settings = branch.settings && typeof branch.settings === 'object' ? branch.settings as Record<string, unknown> : {};
+    const isEmptyDefaultBranch = branch.code === 'MAIN'
+      && (branch.name === 'My Minimart' || branch.name === 'Main Store')
+      && !branch.address && !branch.phone
+      && branch.status === 'active' && branch.isDefault === true
+      && (!branch.logoUrl || String(branch.logoUrl).startsWith('local-image:'))
+      && (!branch.bannerUrl || String(branch.bannerUrl).startsWith('local-image:'))
+      && (settings.storeName === 'My Minimart' || settings.storeName === 'Main Store')
+      && (settings.currency === 'MMK' || !settings.currency)
+      && (settings.receiptFooter === 'Thank you. Please come again!' || !settings.receiptFooter);
+    if (isEmptyDefaultBranch) return true;
+  }
+  if (local.scope === 'branchRecord' && local.kind === 'categories') {
+    return hashPayload(withoutBootstrapTimestamps(local.payload)) === hashPayload(withoutBootstrapTimestamps(remote.payload));
+  }
+  if (local.scope === 'meta' && isDefaultMetaPayload(local.payload)) return true;
+  return false;
+}
 export function readManifest(uid: string): SyncManifest | null {
   try {
     const raw = localStorage.getItem(manifestKey(uid));
     if (!raw) return null;
     const value = JSON.parse(raw) as SyncManifest;
-    return value.version === 1 && value.businessId === FIREBASE_BUSINESS_ID && value.records ? value : null;
+    return value.version === 2 && value.businessId === FIREBASE_BUSINESS_ID && value.records ? value : null;
   } catch { return null; }
 }
 export function saveManifest(uid: string, records: Record<string, ManifestEntry>) {
-  localStorage.setItem(manifestKey(uid), JSON.stringify({ version: 1, businessId: FIREBASE_BUSINESS_ID, savedAt: new Date().toISOString(), records } satisfies SyncManifest));
+  localStorage.setItem(manifestKey(uid), JSON.stringify({ version: 2, businessId: FIREBASE_BUSINESS_ID, savedAt: new Date().toISOString(), records } satisfies SyncManifest));
   window.dispatchEvent(new CustomEvent('minimart-cloud-manifest-updated', { detail: { uid } }));
 }
 export function manifestFromItems(items: Map<string, SyncItem>) {
@@ -303,14 +348,18 @@ export function CloudSyncPanel() {
     for (const [key, item] of local) {
       const remote = cloud.items.get(key);
       if (!remote) { push.push(item); merged.set(key, item); }
-      else if (remote.deleted || hashPayload(remote.payload) !== hashPayload(item.payload)) conflicts.push(key);
+      else if (remote.deleted || (hashPayload(remote.payload) !== hashPayload(item.payload) && !isBootstrapEquivalent(item, remote))) conflicts.push(key);
       else merged.set(key, remote);
     }
     if (conflicts.length) {
       const examples = conflicts.slice(0, 4).map((key) => key.split('::').filter(Boolean).slice(-2).join(' / ')).join(', ');
-      throw new Error(`Cloud မှာ မတူညီတဲ့ Record Conflict ${conflicts.length} ခု တွေ့ပါတယ်။ ဒီ Device အသစ်ဆိုရင် Download Cloud ကို အရင်လုပ်ပါ။ ဥပမာ: ${examples}${conflicts.length > 4 ? ' …' : ''}`);
+      throw new Error(`Cloud မှာ မတူညီတဲ့ Record Conflict ${conflicts.length} ခု တွေ့ပါတယ်။ ဒီ Device အသစ်ဆိုရင် Cloud နှင့် ပေါင်းစည်းရန် ကို အရင်လုပ်ပါ။ ဥပမာ: ${examples}${conflicts.length > 4 ? ' …' : ''}`);
     }
-    if (push.length) await writeItemsIfBaselineUnchanged(push, user.uid, { version: 1, businessId: FIREBASE_BUSINESS_ID, savedAt: new Date().toISOString(), records: {} });
+    if (push.length) await writeItemsIfBaselineUnchanged(push, user.uid, { version: 2, businessId: FIREBASE_BUSINESS_ID, savedAt: new Date().toISOString(), records: {} });
+    // The baseline must describe the data that is actually on this device.
+    // Import cloud-only records before saving it; otherwise the next Auto Sync
+    // can mistake those records for local deletions and upload tombstones.
+    importCloudItems(merged);
     saveManifest(user.uid, manifestFromItems(merged));
     setLastSynced(new Date().toLocaleString());
     setMessage(`Business Cloud Snapshot ပြီးပါပြီ။ ${push.length} records အသစ်တင်ပြီး Cloud ရှိပြီးသား ${cloud.items.size} records ကို မဖျက်/မအစားထိုးဘဲ ထိန်းထားပါတယ်။`);
@@ -321,17 +370,46 @@ export function CloudSyncPanel() {
     const cloud = await readBusinessCloud(user.uid);
     const liveCount = [...cloud.items.values()].filter((item) => !item.deleted && item.scope !== 'meta').length;
     if (!liveCount) throw new Error('Business Cloud Snapshot မရှိသေးပါ။ အဓိက Device မှာ Upload Initial Snapshot ကို အရင်လုပ်ပါ။');
-    importCloudItems(cloud.items);
-    const nextManifest = manifestFromItems(cloud.items);
+
+    // First-time setup is a union, not a destructive replacement. Keep unique
+    // records already entered on this device, import cloud-only records, and
+    // stop on a same-ID/different-value conflict that needs human review.
+    const local = buildLocalItems(usePosStore.getState());
+    const merged = new Map<string, SyncItem>(cloud.items);
+    const localOnly: SyncItem[] = [];
+    const conflicts: string[] = [];
+    for (const [key, item] of local) {
+      const remote = cloud.items.get(key);
+      if (!remote) {
+        localOnly.push(item);
+        merged.set(key, item);
+        continue;
+      }
+      if (!remote.deleted && hashPayload(remote.payload) === hashPayload(item.payload)) continue;
+      if (isBootstrapEquivalent(item, remote)) continue;
+      conflicts.push(key);
+    }
+    if (conflicts.length) {
+      const examples = conflicts.slice(0, 4).map((key) => key.split('::').filter(Boolean).slice(-2).join(' / ')).join(', ');
+      const conflict = new Error(`Local နဲ့ Cloud မှာ ID တူပြီး Data မတူတဲ့ Record ${conflicts.length} ခု တွေ့ပါတယ်။ ဘယ်ဖက်ကိုမှ မအစားထိုးပါ။ ဥပမာ: ${examples}${conflicts.length > 4 ? ' …' : ''}။ JSON Backup ထုတ်ပြီးမှ တစ်ခုချင်းစီ ဖြေရှင်းပါ။`);
+      conflict.name = 'SyncConflictError';
+      throw conflict;
+    }
+
+    if (localOnly.length) {
+      await writeItemsIfBaselineUnchanged(localOnly, user.uid, { version: 2, businessId: FIREBASE_BUSINESS_ID, savedAt: new Date().toISOString(), records: {} });
+    }
+    importCloudItems(merged);
+    const nextManifest = manifestFromItems(merged);
     saveManifest(user.uid, nextManifest);
     setLastSynced(new Date().toLocaleString());
-    setMessage(`${liveCount} Cloud records ကို ဒီ Device ထဲသို့ ပြန်ရယူပြီးပါပြီ။ Local POS Data ကို Cloud Snapshot ဖြင့် အစားထိုးထားပါတယ်။`);
+    setMessage(`ပထမဆုံး Device Sync ပြီးပါပြီ။ Cloud မှ ${cloud.items.size} records ကို ရယူပြီး ဒီ Device မှာသာရှိတဲ့ ${localOnly.length} records ကိုလည်း Cloud သို့ ထိန်းသိမ်းတင်ပြီး ပေါင်းစည်းထားပါတယ်။`);
   };
 
   const syncChanges = async () => {
     if (!user || !isOwner) throw new Error('Business Owner Account ဖြင့် Login ဝင်ထားရန် လိုအပ်ပါတယ်။');
     const baseline = readManifest(user.uid);
-    if (!baseline) throw new Error('ဒီ Device မှာ Sync Baseline မရှိသေးပါ။ ပထမဆုံး Device ဆိုရင် Upload Initial Snapshot၊ Device အသစ်ဆိုရင် Download Cloud ကို အရင်လုပ်ပါ။');
+    if (!baseline) throw new Error('ဒီ Device မှာ Sync Baseline မရှိသေးပါ။ ပထမဆုံး Device ဆိုရင် Upload Initial Snapshot၊ Device အသစ်ဆိုရင် Cloud နှင့် ပေါင်းစည်းရန် ကို အရင်လုပ်ပါ။');
     const [cloud, local] = await Promise.all([readBusinessCloud(user.uid), Promise.resolve(buildLocalItems(usePosStore.getState()))]);
     const keys = new Set([...Object.keys(baseline.records), ...local.keys(), ...cloud.items.keys()]);
     const push: SyncItem[] = [];
@@ -398,10 +476,10 @@ export function CloudSyncPanel() {
     {user ? <>
       <div className="cloud-status"><ShieldCheck size={19} color="#0f766e" /><div><strong>{isOwner ? 'Business Owner Account ချိတ်ဆက်ထားသည်' : 'Owner Permission အတည်ပြုရန် လိုအပ်သည်'}</strong><small className="cloud-email">{user.email || user.uid} · {FIREBASE_BUSINESS_ID}</small></div><button className="button button-outline" onClick={() => void runAction(async () => { await signOut(firebaseAuth); setMessage('Sign Out လုပ်ပြီးပါပြီ။'); })} disabled={busy}><LogOut size={14} /> Sign Out</button></div>
       {!isOwner ? <div className="cloud-error">Business Cloud Sync ကို Owner Account သာ အသုံးပြုနိုင်ပါတယ်။ Access Status: {access.status}။ Cashier Auto Sync ကို နောက် Phase မှာ သီးခြားစီမံပါမယ်။</div> : <>
-        <div className="cloud-help"><strong>ပထမဆုံး ချိတ်ဆက်ရန်</strong><br />၁။ အဓိက Owner Device တစ်လုံးမှာ JSON Backup ထုတ်ပြီး <strong>Upload Initial Snapshot</strong> လုပ်ပါ။<br />၂။ အခြား Owner Device အသစ်မှာ Backup ထုတ်ပြီး <strong>Download Cloud → ဒီ Device</strong> လုပ်ပါ။ Local POS Data ကို Cloud Snapshot ဖြင့် အစားထိုးပါမယ်။<br />၃။ Device နှစ်ခုလုံးမှာ Sync Baseline ရှိပြီးနောက် Owner Account များအတွက် Auto Sync ကို အလိုအလျောက် စတင်ပါမယ်။ <strong>Sync Changes</strong> ကို လိုအပ်သည့်အခါ ကိုယ်တိုင်လည်း နှိပ်နိုင်ပါတယ်။<br />၄။ တူညီတဲ့ Record ကို Device နှစ်ခုလုံးက တစ်ချိန်တည်းပြင်ထားရင် Conflict ပြပြီး တစ်ဖက်ကို မျက်စိမှိတ် အစားမထိုးပါ။<br /><br />Customer / Supplier Profile ကို Shared ထားပြီး Purchase / Payment / Stock / Sales ကို Branch အလိုက် ခွဲထားပါတယ်။ Admin PIN နဲ့ Local Logo / Banner / Owner Photo ကို Cloud သို့ မတင်ပါ။ Cashier Auto Sync ကို ဒီ Phase မှာ မဖွင့်သေးပါ။ IndexedDB Cloud Cache သည် Sign Out လုပ်ရုံဖြင့် မရှင်းပါ။ Public / မျှဝေသုံး Device များတွင် မသုံးပါနှင့်။</div>
+        <div className="cloud-help"><strong>ပထမဆုံး ချိတ်ဆက်ရန်</strong><br />၁။ အဓိက Owner Device တစ်လုံးမှာ JSON Backup ထုတ်ပြီး <strong>Upload Initial Snapshot</strong> လုပ်ပါ။<br />၂။ အခြား Owner Device မှာ Backup ထုတ်ပြီး <strong>Cloud နှင့် ပေါင်းစည်းရန်</strong> ကို နှိပ်ပါ။ Cloud-only နဲ့ ဒီ Device-only Record နှစ်ဖက်လုံးကို ထိန်းသိမ်းပြီး ID တူ Data မတူရင် ရပ်ပေးပါမယ်။<br />၃။ Device နှစ်ခုလုံးမှာ Sync Baseline ရှိပြီးနောက် Owner Account များအတွက် Auto Sync ကို အလိုအလျောက် စတင်ပါမယ်။ <strong>Sync Changes</strong> ကို လိုအပ်သည့်အခါ ကိုယ်တိုင်လည်း နှိပ်နိုင်ပါတယ်။<br />၄။ တူညီတဲ့ Record ကို Device နှစ်ခုလုံးက တစ်ချိန်တည်းပြင်ထားရင် Conflict ပြပြီး တစ်ဖက်ကို မျက်စိမှိတ် အစားမထိုးပါ။<br /><br />Customer / Supplier Profile ကို Shared ထားပြီး Purchase / Payment / Stock / Sales ကို Branch အလိုက် ခွဲထားပါတယ်။ Admin PIN နဲ့ Local Logo / Banner / Owner Photo ကို Cloud သို့ မတင်ပါ။ Cashier Auto Sync ကို ဒီ Phase မှာ မဖွင့်သေးပါ။ IndexedDB Cloud Cache သည် Sign Out လုပ်ရုံဖြင့် မရှင်းပါ။ Public / မျှဝေသုံး Device များတွင် မသုံးပါနှင့်။</div>
         <div className="cloud-actions">
           <button className="button button-primary" disabled={busy} onClick={() => { if (window.confirm('ဒီ Device ရဲ့ Local POS Data ကို Business Cloud Snapshot အဖြစ် တင်မလား။ Cloud မှာ ရှိပြီးသား Data နဲ့ ID တူပြီး အကြောင်းအရာမတူလျှင် Upload ကို ရပ်ပါမယ်။ အရင် JSON Backup ထုတ်ထားပါ။')) void runAction(uploadInitial); }}><CloudUpload size={15} /> Upload Initial Snapshot</button>
-          <button className="button button-outline" disabled={busy} onClick={() => { if (window.confirm('Cloud Snapshot ဖြင့် ဒီ Device ရဲ့ POS Data ကို အစားထိုးမလား။ အရင် JSON Backup ထုတ်ထားပါ။ ဒီ Device ရဲ့ Local Logo / Profile ပုံများကို ဆက်ထိန်းထားပါမယ်။')) void runAction(downloadCloud); }}><CloudDownload size={15} /> Download Cloud → ဒီ Device</button>
+          <button className="button button-outline" disabled={busy} onClick={() => { if (window.confirm('Cloud Data နဲ့ ဒီ Device မှာသာရှိတဲ့ Record တွေကို ပေါင်းစည်းမလား။ ID တူ Data မတူပါက မည်သည့်ဘက်ကိုမှ အစားမထိုးဘဲ ရပ်ပါမယ်။ အရင် JSON Backup ထုတ်ထားပါ။')) void runAction(downloadCloud); }}><CloudDownload size={15} /> Cloud နှင့် ပေါင်းစည်းရန်</button>
           <button className="button button-outline" disabled={busy || !manifest} onClick={() => { if (window.confirm('ဒီ Device နဲ့ Business Cloud ကြားက ပြောင်းလဲမှုတွေကို နှိုင်းယှဉ်ပြီး Sync လုပ်မလား။ တစ်ပြိုင်နက်ပြင်ထားတဲ့ Record တွေရှိရင် Sync ကို ရပ်ပါမယ်။')) void runAction(syncChanges); }}><ArrowLeftRight size={15} /> Sync Changes</button>
           {busy && <span className="subtle-count"><RefreshCw size={13} className="spin-icon" /> Sync လုပ်နေသည်...</span>}
         </div>

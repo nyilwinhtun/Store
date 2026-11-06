@@ -1,4 +1,4 @@
-# Minimart POS v2.8.1 — PWA Launch Fix + Owner Real-time Cloud Sync + Stock Transfer Management
+# Minimart POS v2.8.2 — PWA 404 Recovery + Safe Owner Cloud Merge + Offline Access Cache
 
 v2.7.4 တွင် အလုပ်လုပ်နေသော Source → Destination Stock Transfer ကို မပြောင်းဘဲ Transfer Management, audit trail, duplicate-submit protection နှင့် owner-authorized reversal တို့ကို ထပ်ဖြည့်ထားသည်။
 
@@ -49,8 +49,18 @@ See `V2.8.0-REALTIME-CLOUD-SYNC-MY.md` for setup, limitations, and test steps.
 
 ## v2.8.1 — PWA Launch Fix
 
-- GitHub Pages project path `/Store/` အတွက် PWA `id`, `start_url`, `scope` ကို relative `./` သို့ ပြင်ထားသည်။
-- Service Worker cache name အသစ်နှင့် failed navigation အတွက် cached app-shell fallback ထည့်ထားသည်။
-- Firebase Authentication, Firestore configuration/rules, LocalStorage schema, business data logic မပြောင်းထားပါ။
-- Laptop → `Upload Initial Snapshot`, Phone → `Download Cloud → ဒီ Device` လုပ်ပြီးမှ Device နှစ်ခုကြား Owner Auto Sync စတင်မည်။
-- အသေးစိတ် `V2.8.1-PWA-FIX-MY.md` ကို ဖတ်ပါ။
+- GitHub Pages project path အတွက် relative PWA path များကို သတ်မှတ်ထားသည်။
+- Service Worker navigation fallback ပါဝင်သည်။
+
+## v2.8.2 — PWA + Cloud Sync Reliability Fix
+
+- PWA `start_url` ကို `./index.html` သတ်မှတ်ပြီး Service Worker ကို registration scope အောက်ရှိ URL များကိုသာ cache လုပ်စေသည်။
+- Cache cleanup သည် Minimart အမည်တပ်ထားသော cache များကိုသာ ဖျက်သည်။ GitHub Pages origin တူညီသည့် အခြား project များ၏ cache ကို မထိပါ။
+- Firestore Rules တွင် App သုံးနေသည့် `shared/{kind}/records/{id}` path ကို ခွင့်ပြုသည်။ ဒီ Rules ကို Firebase Console မှာ သီးခြား Publish လုပ်ရန် လိုသည်။
+- First-time Cloud merge သည် Device တစ်ဖက်တည်းရှိ Records ကို မဖျက်ဘဲ ပေါင်းစည်းသည်။ ID တူ Data မတူသော Record ရှိလျှင် အစားမထိုးဘဲ Conflict ပြသည်။
+- Initial Snapshot Upload ပြီးချိန် Cloud-only Records ကိုလည်း Device ထဲ ပြန်သွင်းကာ baseline နဲ့ Local Data တူညီစေသည်။
+- v2.8.1 Sync Baseline ဟောင်းကို ဆက်မသုံးဘဲ Device တစ်လုံးချင်းစီမှာ v2.8.2 Baseline အသစ်တည်ဆောက်ပြီးမှ Auto Sync စတင်သည်။
+- Offline ဖြစ်ပြီး Firebase Server ကို မရနိုင်ချိန်တွင် ဒီ Device မှာ ယခင်က cache လုပ်ထားသော Owner / Member document ရှိမှ POS access ကို ယာယီဖွင့်သည်။
+- Firebase Project `store-mini`, Business ID `store-mini-main`, Auth flow, POS LocalStorage key/schema, Stock Transfer business logic ကို မပြောင်းထားပါ။
+- Firestore nested rule ကို Console မှာ ထည့်/Publish လုပ်ရန် `FIRESTORE-SHARED-RULES-PATCH-MY.md` ကို ဖတ်ပါ။
+- အသေးစိတ် `V2.8.2-RELIABILITY-FIX-MY.md` ကို ဖတ်ပါ။

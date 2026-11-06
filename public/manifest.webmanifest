@@ -2,7 +2,7 @@
   "name": "Minimart POS",
   "short_name": "Minimart",
   "description": "Minimart POS Management",
-  "start_url": "./",
+  "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
   "background_color": "#f4f8f6",

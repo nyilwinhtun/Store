@@ -74,7 +74,7 @@ export function OwnerAutoSyncProvider() {
     if (!uid || !isOwner) return;
     if (!firestore) return;
     if (!hasBaseline || !readManifest(uid)) {
-      publishAutoSyncStatus(uid, { state: 'idle', message: 'ဒီ Device မှာ Sync Baseline မရှိသေးပါ။ Upload Initial Snapshot သို့မဟုတ် Download Cloud လုပ်ပါ။' });
+      publishAutoSyncStatus(uid, { state: 'idle', message: 'ဒီ Device မှာ Sync Baseline မရှိသေးပါ။ Upload Initial Snapshot သို့မဟုတ် Cloud နှင့် ပေါင်းစည်းရန် လုပ်ပါ။' });
       return;
     }
 
@@ -256,7 +256,12 @@ export function OwnerAutoSyncProvider() {
           if (item.payload !== undefined || item.deleted) remoteItems.set(item.key, item);
         });
         markReady(listenerKey, snapshot.metadata.fromCache, snapshot.metadata.hasPendingWrites);
-      }, (error) => publishAutoSyncStatus(uid, { state: error.code === 'unavailable' ? 'offline' : 'error', message: error.message || 'Shared Listener error.' }));
+      }, (error) => publishAutoSyncStatus(uid, {
+        state: error.code === 'unavailable' ? 'offline' : 'error',
+        message: error.code === 'permission-denied'
+          ? `Firestore Rules မှ businesses/${FIREBASE_BUSINESS_ID}/shared/${kind}/records/{recordId} ကို Owner ဖတ်/ရေးခွင့် မပေးထားပါ။ firestore.rules ထဲက nested records rule ကို Firebase Console မှာ Publish လုပ်ပါ။`
+          : error.message || `Shared ${kind} Listener error.`,
+      }));
       unsubscribers.push(unsubscribe);
     }
 

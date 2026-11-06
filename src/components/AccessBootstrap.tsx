@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { onAuthStateChanged } from 'firebase/auth';
-import { doc, getDocFromServer } from 'firebase/firestore';
+import { doc, getDoc, getDocFromServer, type DocumentReference } from 'firebase/firestore';
 import { FIREBASE_BUSINESS_ID, firebaseApp, firebaseAuth, firestore } from '../lib/firebase';
 import { useBusinessAccess, type BusinessRole } from '../lib/businessAccess';
 
@@ -33,6 +33,24 @@ function withTimeout<T>(operation: Promise<T>, label: string): Promise<T> {
       (error) => { window.clearTimeout(timer); reject(error); },
     );
   });
+}
+
+async function readAccessDocument(reference: DocumentReference, label: string) {
+  try {
+    return await withTimeout(getDocFromServer(reference), label);
+  } catch (serverError) {
+    if (!isNetworkError(serverError)) throw serverError;
+    // Firestore is configured with persistent IndexedDB cache. When the device
+    // is offline, allow a previously cached Owner / Member document to unlock
+    // the POS; an account never verified on this device still cannot enter.
+    try {
+      const cached = await withTimeout(getDoc(reference), `${label} (local cache)`);
+      if (cached.metadata.fromCache && cached.exists()) return cached;
+    } catch {
+      // Preserve the original server/network error for the UI.
+    }
+    throw serverError;
+  }
 }
 
 /**
@@ -70,13 +88,13 @@ export function AccessBootstrap() {
         uid: user.uid,
         businessPath,
         membershipPath,
-        strategy: 'one-time server reads; ownerUid first',
+        strategy: 'server reads with persistent-cache fallback; ownerUid first',
       });
 
       setAccess({
         status: 'loading', uid: user.uid, email: user.email || '',
         displayName: user.displayName || '', role: null, branchIds: [],
-        message: 'Firebase Server မှ Owner / Member အချက်အလက်ကို တစ်ကြိမ်ဖတ်ပြီး စစ်ဆေးနေပါတယ်။',
+        message: 'Firebase Server သို့မဟုတ် ယခင်သိမ်းထားသော Offline Cache မှ Owner / Member Access ကို စစ်ဆေးနေပါတယ်။',
       });
 
       void (async () => {
@@ -86,8 +104,8 @@ export function AccessBootstrap() {
         // 1) The business owner is the UID stored on the existing business document.
         // This avoids requiring a separate owner membership record for the Owner login.
         try {
-          const businessSnapshot = await withTimeout(
-            getDocFromServer(doc(firestore, 'businesses', FIREBASE_BUSINESS_ID)),
+          const businessSnapshot = await readAccessDocument(
+            doc(firestore, 'businesses', FIREBASE_BUSINESS_ID),
             'Business document read',
           );
           if (!isCurrent()) return;
@@ -108,7 +126,9 @@ export function AccessBootstrap() {
                 status: 'active', uid: user.uid, email: user.email || '',
                 displayName: user.displayName || (typeof business.ownerName === 'string' ? business.ownerName : ''),
                 role: 'owner', branchIds: [],
-                message: 'Business ownerUid နဲ့ Firebase Login UID ကိုက်ညီပါတယ်။ Owner Access အတည်ပြုပြီးပါပြီ။',
+                message: businessSnapshot.metadata.fromCache
+                  ? 'Internet မရှိပါ။ ဒီ Device မှာ ယခင်က အတည်ပြုထားတဲ့ Owner Access Cache ကို အသုံးပြုပြီး POS ကို ဖွင့်ထားပါတယ်။ Internet ပြန်ရချိန် Server မှ ပြန်စစ်ပါမယ်။'
+                  : 'Business ownerUid နဲ့ Firebase Login UID ကိုက်ညီပါတယ်။ Owner Access အတည်ပြုပြီးပါပြီ။',
               });
               console.info('[Minimart Owner Access]', {
                 projectId: firebaseApp.options.projectId,
@@ -132,8 +152,8 @@ export function AccessBootstrap() {
 
         // 2) Non-owner accounts are checked against their own member document.
         try {
-          const memberSnapshot = await withTimeout(
-            getDocFromServer(doc(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'members', user.uid)),
+          const memberSnapshot = await readAccessDocument(
+            doc(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'members', user.uid),
             'Membership document read',
           );
           if (!isCurrent()) return;
@@ -142,7 +162,7 @@ export function AccessBootstrap() {
             projectId: firebaseApp.options.projectId,
             path: membershipPath,
             exists: memberSnapshot.exists(),
-            source: 'server',
+            source: memberSnapshot.metadata.fromCache ? 'local-cache' : 'server',
           });
 
           if (!memberSnapshot.exists()) {
@@ -203,7 +223,9 @@ export function AccessBootstrap() {
             status: 'active', uid: user.uid, email: user.email || '',
             displayName: typeof data.displayName === 'string' && data.displayName
               ? data.displayName : user.displayName || '',
-            role, branchIds, message: 'Business Membership အတည်ပြုပြီးပါပြီ။',
+            role, branchIds, message: memberSnapshot.metadata.fromCache
+              ? 'Internet မရှိပါ။ ဒီ Device မှာ ယခင်က အတည်ပြုထားတဲ့ Membership Cache ကို အသုံးပြုပြီး POS ကို ဖွင့်ထားပါတယ်။ Internet ပြန်ရချိန် Server မှ ပြန်စစ်ပါမယ်.'
+              : 'Business Membership အတည်ပြုပြီးပါပြီ။',
           });
         } catch (error) {
           if (!isCurrent()) return;

@@ -468,7 +468,7 @@ function App() {
   };
 
   if (access.status === 'loading') {
-    return <main className="access-gate"><section className="panel access-gate-card"><div className="panel-icon"><LockKeyhole size={22} /></div><h1>Access စစ်ဆေးနေပါတယ်</h1><p>Firebase Server ကို One-time Read နဲ့ Owner UID / Cashier Membership စစ်ဆေးနေပါတယ်။</p></section></main>;
+    return <main className="access-gate"><section className="panel access-gate-card"><div className="panel-icon"><LockKeyhole size={22} /></div><h1>Access စစ်ဆေးနေပါတယ်</h1><p>Firebase Server သို့မဟုတ် ယခင်သိမ်းထားသော Offline Cache မှ Owner / Cashier Access ကို စစ်ဆေးနေပါတယ်။</p></section></main>;
   }
 
   if (access.status === 'unassigned' || access.status === 'disabled' || access.status === 'error') {

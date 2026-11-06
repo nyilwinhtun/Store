@@ -1,49 +1,73 @@
-const CACHE_NAME = 'minimart-pos-v281-pwa-launch-fix';
-const APP_SHELL = ['./', './index.html', './manifest.webmanifest', './icon.svg', './icon-192.png', './icon-512.png'];
+const CACHE_PREFIX = 'minimart-pos-';
+const CACHE_NAME = `${CACHE_PREFIX}v282-pwa-cloud-fix`;
+
+function scopedUrl(path) {
+  return new URL(path, self.registration.scope).toString();
+}
 
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE_NAME);
-    await cache.addAll(APP_SHELL);
-    // Vite writes this manifest at build time so the app's hashed JS/CSS files
-    // are cached during installation, including on GitHub Pages sub-paths.
+    const shell = [
+      scopedUrl('index.html'),
+      scopedUrl('manifest.webmanifest'),
+      scopedUrl('icon.svg'),
+      scopedUrl('icon-192.png'),
+      scopedUrl('icon-512.png'),
+    ];
+    await cache.addAll(shell);
+
+    // Vite creates this list at build time. Resolve every entry beneath the
+    // registered GitHub Pages project scope, not the domain root.
     try {
-      const response = await fetch('./precache-manifest.json');
+      const response = await fetch(scopedUrl('precache-manifest.json'), { cache: 'no-cache' });
       if (response.ok) {
         const manifest = await response.json();
         const files = Array.isArray(manifest.files) ? manifest.files : [];
-        await cache.addAll(files.map((file) => new URL(file, self.registration.scope).toString()));
+        const urls = files.map((file) => scopedUrl(file));
+        if (urls.length) await cache.addAll(urls);
       }
     } catch (error) {
-      console.warn('Precache manifest was not available:', error);
+      // Shell caching remains useful if a hashed asset fails to precache.
+      console.warn('Minimart asset precache was incomplete:', error);
     }
+
+    await self.skipWaiting();
   })());
-  self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
-  event.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))))
-  );
-  self.clients.claim();
+  event.waitUntil((async () => {
+    const keys = await caches.keys();
+    // GitHub Pages project sites share one origin. Never delete another app's
+    // caches; only retire caches owned by this Minimart PWA.
+    await Promise.all(keys
+      .filter((key) => key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME)
+      .map((key) => caches.delete(key)));
+    await self.clients.claim();
+  })());
 });
 
 self.addEventListener('fetch', (event) => {
   const request = event.request;
-  if (request.method !== 'GET' || new URL(request.url).origin !== self.location.origin) return;
+  if (request.method !== 'GET') return;
+
+  const requestUrl = new URL(request.url);
+  const scopeUrl = new URL(self.registration.scope);
+  if (requestUrl.origin !== scopeUrl.origin || !requestUrl.pathname.startsWith(scopeUrl.pathname)) return;
+
   if (request.mode === 'navigate') {
     event.respondWith((async () => {
-      const appShellUrl = new URL('./index.html', self.registration.scope).toString();
+      const appShellUrl = scopedUrl('index.html');
       try {
         const response = await fetch(request);
-        if (response.ok) {
-          const contentType = response.headers.get('content-type') || '';
-          if (contentType.includes('text/html')) {
-            const cache = await caches.open(CACHE_NAME);
-            await cache.put(appShellUrl, response.clone());
-          }
+        if (response.ok && (response.headers.get('content-type') || '').includes('text/html')) {
+          const cache = await caches.open(CACHE_NAME);
+          await cache.put(appShellUrl, response.clone());
           return response;
         }
+        // GitHub Pages can return a 404 for an app launch URL. If the app shell
+        // is already cached, serve the shell so the installed app can recover.
         const fallback = await caches.match(appShellUrl);
         return fallback || response;
       } catch (error) {
@@ -54,11 +78,15 @@ self.addEventListener('fetch', (event) => {
     })());
     return;
   }
-  event.respondWith(caches.match(request).then((cached) => cached || fetch(request).then((response) => {
+
+  event.respondWith((async () => {
+    const cached = await caches.match(request);
+    if (cached) return cached;
+    const response = await fetch(request);
     if (response.ok) {
-      const copy = response.clone();
-      caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+      const cache = await caches.open(CACHE_NAME);
+      await cache.put(request, response.clone());
     }
     return response;
-  })));
+  })());
 });

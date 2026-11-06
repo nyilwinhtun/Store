@@ -102,7 +102,20 @@ service cloud.firestore {
         }
       }
 
+      // Legacy direct shared documents are kept for backwards compatibility.
       match /shared/{collectionName}/{recordId} {
+        allow read: if isOwner(businessId) || isActiveMember(businessId);
+        allow create, update: if isOwner(businessId)
+          || (isActiveMember(businessId)
+            && get(memberPath(businessId, request.auth.uid)).data.role == 'cashier'
+            && collectionName == 'customers');
+        allow delete: if isOwner(businessId);
+      }
+
+      // Current app path: shared/{collectionName}/records/{recordId}.
+      // The extra `records` collection level is required by CloudSyncPanel
+      // and OwnerAutoSync for both customers and suppliers.
+      match /shared/{collectionName}/records/{recordId} {
         allow read: if isOwner(businessId) || isActiveMember(businessId);
         allow create, update: if isOwner(businessId)
           || (isActiveMember(businessId)

@@ -23,3 +23,8 @@ npm run dev -- --host --port 5173 --strictPort
 ## သတိပြုရန်
 
 Cloud Sync အတွက် `businesses/{businessId}/shared/{kind}/records/{recordId}` path ကို v2.7.3 မှစ၍ အသုံးပြုသည်။ Firebase Security Rules သည် ဒီ nested path ကို Owner UID အလိုက် ခွင့်ပြုထားရမည်။ လက်ရှိ Rules ကို မစစ်ဘဲ Publish/Replace မလုပ်ပါနှင့်။
+
+
+## v2.8.2 Rules Alignment Note
+
+Current Cloud Sync collections use `shared/{kind}/records/{recordId}`. The matching nested rule is included in `firestore.rules` from v2.8.2. The earlier Console Rules may not contain this exact path; publish the compatible rule after backing up and reviewing the current Production Rules.

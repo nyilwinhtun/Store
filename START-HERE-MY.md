@@ -42,7 +42,7 @@ Browser မှာ `http://localhost:5173` ကို ဖွင့်ပါ။ Loc
 
 1. Owner Device A မှာ Settings → Backup မှ JSON Backup ထုတ်ထားပါ။
 2. Device A မှာ Settings → Business Cloud Sync → Upload Initial Snapshot ကို တစ်ကြိမ်လုပ်ပါ။
-3. Device B ကို Owner Account ဖြင့် Login ဝင်ပြီး Download Cloud → ဒီ Device ကို တစ်ကြိမ်လုပ်ပါ။
+3. Device B ကို Owner Account ဖြင့် Login ဝင်ပြီး Cloud နှင့် ပေါင်းစည်းရန် ကို တစ်ကြိမ်လုပ်ပါ။
 4. Device နှစ်ခုလုံးမှာ Baseline ရှိလာပြီးနောက် Device A မှ Product / Category အမည်တစ်ခု ပြောင်းပါ။ Device B မှာ အလိုအလျောက် ပြောင်းလာခြင်းကို စစ်ပါ။
 5. Device B မှာ အခြား Record တစ်ခု ပြောင်းပြီး Device A မှာ ပြန်ပေါ်လာခြင်းကို စစ်ပါ။
 6. Internet ပိတ်ထားစဉ် Local POS အလုပ်လုပ်သေးကြောင်း၊ Online ပြန်ဖြစ်ချိန် Sync ပြန်လုပ်ကြောင်း စစ်ပါ။
@@ -62,8 +62,13 @@ Browser မှာ `http://localhost:5173` ကို ဖွင့်ပါ။ Loc
 - အသေးစိတ် setup / limitation / test plan ကို `V2.8.0-REALTIME-CLOUD-SYNC-MY.md` တွင် ဖတ်ပါ။
 
 
-## v2.8.1 — ဖုန်း App 404 နှင့် Device Data ချိတ်ဆက်ခြင်း
+## v2.8.2 — ဖုန်း App 404 နှင့် Device Data Sync Reliability
 
-GitHub Pages `/Store/` အတွက် PWA start URL ကို `./` ပြင်ထားသည်။ GitHub Actions deploy အသစ်အောင်မြင်ပြီးနောက် အဟောင်း Install shortcut က 404 ဆက်ပြပါက App shortcut ကို uninstall လုပ်ပြီး Website Link မှ ပြန် Install လုပ်ပါ။ Browser Site Data / LocalStorage / IndexedDB ကို မရှင်းပါနှင့်။
+1. GitHub မှာ Source update လုပ်ပြီး `Deploy to GitHub Pages` workflow အောင်မြင်ကြောင်း စစ်ပါ။
+2. Firebase Console → Firestore Database → Rules မှာ ZIP ထဲက updated `firestore.rules` ကို လက်ရှိ Production Rules နဲ့ နှိုင်းယှဉ်ပြီး မိမိ Project အတွက် သက်ဆိုင်သော Rules ကို Publish လုပ်ပါ။ ဒီအဆင့်ဟာ GitHub Deploy နဲ့ သီးခြားဖြစ်သည်။
+3. Laptop မှာ JSON Backup ထုတ်ပြီး Business Cloud Sync → `Upload Initial Snapshot` ကို တစ်ကြိမ်လုပ်ပါ။
+4. Phone မှာ JSON Backup ထုတ်ပြီး Owner Account အတူတူဝင်ပါ။ `Cloud နှင့် ပေါင်းစည်းရန်` ကို နှိပ်ပါ။ Cloud-only နဲ့ Phone-only Records ကို ထိန်းသိမ်းပေါင်းစည်းပြီး ID တူ Data မတူလျှင် ရပ်ပေးပါမယ်။
+5. Device နှစ်ခုလုံးမှာ v2.8.2 Baseline အသစ်တည်ဆောက်ပြီး Auto Sync Status = Synced ဖြစ်ကြောင်း စစ်ပါ။
+6. PWA အဟောင်း Shortcut က 404 ဆက်ပြရင် Shortcut ကို Uninstall လုပ်ပြီး `https://nyilwinhtun.github.io/Store/` Website ကို Browser မှ ပြန်ဖွင့်ကာ Add to Home Screen / Install လုပ်ပါ။
 
-Laptop ထဲက Product များကို Phone ထဲယူရန် Laptop တွင် JSON Backup ထုတ်ပြီး Business Cloud Sync → Upload Initial Snapshot လုပ်ပါ။ Phone တွင်လည်း ရှိပြီးသား Data ကို JSON Backup ထုတ်ပြီး Owner Account တူညီစွာဝင်ကာ Download Cloud → ဒီ Device လုပ်ပါ။ Download Cloud သည် Phone ရှိ POS Local Data ကို Cloud Snapshot ဖြင့် အစားထိုးနိုင်သောကြောင့် Backup မလုပ်ဘဲ မနှိပ်ပါနှင့်။
+**သတိ:** Browser Site Data, LocalStorage, IndexedDB ကို မရှင်းပါနှင့်။ Rules Publish မလုပ်မီ Production Rules ကို Backup လုပ်ပြီး လက်ရှိ Legacy data paths ကို မပျက်စီးစေရန် စစ်ဆေးပါ။ Rules ထည့်ရန် `FIRESTORE-SHARED-RULES-PATCH-MY.md` နှင့် အသေးစိတ်ကို `V2.8.2-RELIABILITY-FIX-MY.md` တွင် ဖတ်ပါ။
