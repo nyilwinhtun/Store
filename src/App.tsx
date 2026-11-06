@@ -492,7 +492,7 @@ function App() {
           <p className="nav-caption">WORKSPACE</p>
           {navItems.map((item) => <button key={item.id} className={`nav-item ${page === item.id ? 'active' : ''}`} onClick={() => navTo(item.id)}>{item.icon}<span>{item.label}</span>{item.id === 'pos' && cart.length > 0 && <b className="nav-count">{cart.length}</b>}</button>)}
         </nav>
-        <div className="sidebar-bottom"><div className="offline-card"><div className="offline-icon"><Activity size={17} /></div><div><strong>Offline Ready</strong><small>Local data storage active</small></div><span className="live-dot" /></div><small className="version">MINIMART POS · v2.8.1</small></div>
+        <div className="sidebar-bottom"><div className="offline-card"><div className="offline-icon"><Activity size={17} /></div><div><strong>Offline Ready</strong><small>Local data storage active</small></div><span className="live-dot" /></div><small className="version">MINIMART POS · v2.8.3</small></div>
       </aside>
       {mobileMenu && <button className="sidebar-backdrop" onClick={() => setMobileMenu(false)} aria-label="Close navigation" />}
 

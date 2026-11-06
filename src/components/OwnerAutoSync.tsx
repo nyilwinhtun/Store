@@ -10,12 +10,14 @@ import {
   buildLocalItems,
   hashPayload,
   importCloudItems,
+  initializeOwnerDeviceSync,
   keyOf,
   manifestFromItems,
   readManifest,
   saveManifest,
   writeItemsIfBaselineUnchanged,
   type BranchRecordKind,
+  type SharedRecordKind,
   type SyncItem,
 } from './CloudSyncPanel';
 
@@ -73,8 +75,54 @@ export function OwnerAutoSyncProvider() {
     const isOwner = !!uid && access.status === 'active' && access.role === 'owner' && access.uid === uid;
     if (!uid || !isOwner) return;
     if (!firestore) return;
-    if (!hasBaseline || !readManifest(uid)) {
-      publishAutoSyncStatus(uid, { state: 'idle', message: 'ဒီ Device မှာ Sync Baseline မရှိသေးပါ။ Upload Initial Snapshot သို့မဟုတ် Cloud နှင့် ပေါင်းစည်းရန် လုပ်ပါ။' });
+
+    const existingBaseline = readManifest(uid);
+    if (!existingBaseline) {
+      let disposed = false;
+      let attempted = false;
+      const initialize = async () => {
+        if (disposed || attempted) return;
+        if (!navigator.onLine) {
+          publishAutoSyncStatus(uid, { state: 'offline', message: 'ဒီ Device မှာ Sync Baseline မရှိသေးပါ။ Internet ပြန်ရလျှင် Cloud နဲ့ Local Data ကို အလိုအလျောက် Safe Merge လုပ်ပါမယ်။' });
+          return;
+        }
+        attempted = true;
+        publishAutoSyncStatus(uid, { state: 'connecting', message: 'Device အသစ်အတွက် Cloud နဲ့ Local Data ကို အလိုအလျောက် Safe Merge လုပ်နေပါတယ်။ Data မတူညီတဲ့ Record တွေရှိရင် မအစားထိုးဘဲ ရပ်ပေးပါမယ်။' });
+        try {
+          const result = await initializeOwnerDeviceSync(uid);
+          if (disposed) return;
+          publishAutoSyncStatus(uid, {
+            state: 'connecting',
+            message: `ပထမဆုံး Device Sync ပြီးပါပြီ။ Cloud မှ ${result.cloudRecords} records ကို ဖတ်ပြီး Device-only ${result.localOnlyRecords} records ကို ထိန်းသိမ်းထားပါတယ်။ Realtime Listener ချိတ်ဆက်နေပါတယ်။`,
+          });
+        } catch (error) {
+          if (disposed) return;
+          attempted = false;
+          const code = typeof error === 'object' && error && 'code' in error ? String((error as { code: unknown }).code) : '';
+          const isConflict = error instanceof Error && error.name === 'SyncConflictError';
+          const isNetwork = ['unavailable', 'deadline-exceeded', 'network-request-failed', 'cancelled'].includes(code)
+            || (error instanceof Error && /network|offline|internet/i.test(error.message));
+          publishAutoSyncStatus(uid, {
+            state: isConflict ? 'conflict' : isNetwork ? 'offline' : 'error',
+            message: isConflict
+              ? `${error instanceof Error ? error.message : 'Data Conflict ဖြစ်နေပါတယ်။'} Local နဲ့ Cloud Data ကို မပြောင်းထားပါ။ Backup ထုတ်ပြီး စစ်ဆေးပါ။`
+              : isNetwork
+                ? 'Cloud ချိတ်ဆက်မှု မရသေးပါ။ Local Data ကို မပြောင်းထားပါ။ Internet ပြန်ရလျှင် အလိုအလျောက် ပြန်စမ်းပါမယ်။'
+                : error instanceof Error ? error.message : 'Device Sync စတင်မရပါ။ Firebase Business Setup နဲ့ Rules ကို စစ်ဆေးပါ။',
+          });
+        }
+      };
+      const retryOnline = () => { attempted = false; void initialize(); };
+      window.addEventListener('online', retryOnline);
+      void initialize();
+      return () => {
+        disposed = true;
+        window.removeEventListener('online', retryOnline);
+      };
+    }
+
+    if (!hasBaseline) {
+      publishAutoSyncStatus(uid, { state: 'connecting', message: 'ဒီ Device ရဲ့ Sync Baseline ကို ဖတ်ပြီး Realtime Listener ချိတ်ဆက်နေပါတယ်။' });
       return;
     }
 
@@ -84,10 +132,14 @@ export function OwnerAutoSyncProvider() {
     let applyingRemote = false;
     let manualSyncPaused = false;
     let branchIds: string[] = [];
-    let expectedReady = 4;
+    // Shared Customer/Supplier listeners are optional for branch inventory sync.
+    // A missing nested Firestore Rule must not freeze Product / Stock / Sales.
+    let expectedReady = 2;
     const ready = new Set<string>();
     const pendingWrites = new Set<string>();
     const remoteItems = new Map<string, SyncItem>();
+    const sharedReady = new Set<SharedRecordKind>();
+    const sharedBlocked = new Set<SharedRecordKind>();
     const unsubscribers: Array<() => void> = [];
     const branchUnsubscribers: Array<() => void> = [];
     let localTimer: number | undefined;
@@ -114,7 +166,14 @@ export function OwnerAutoSyncProvider() {
         for (const key of keys) {
           const localItem = local.get(key);
           const remoteItem = remoteItems.get(key);
-          const baseHash = baseline.records[key]?.hash;
+          const baselineEntry = baseline.records[key];
+          const recordScope = localItem?.scope || remoteItem?.scope || baselineEntry?.scope;
+          const recordKind = localItem?.kind || remoteItem?.kind || baselineEntry?.kind;
+          // Do not pull, push, or delete shared records until their listener has
+          // received a server snapshot. This keeps a permission-denied shared path
+          // from blocking branch Product / Stock / Sales sync or creating tombstones.
+          if (recordScope === 'shared' && !sharedReady.has(recordKind as SharedRecordKind)) continue;
+          const baseHash = baselineEntry?.hash;
           const localHash = localItem ? hashPayload(localItem.payload) : DELETED_HASH;
           const remoteHash = remoteItem ? (remoteItem.deleted ? DELETED_HASH : hashPayload(remoteItem.payload)) : MISSING_HASH;
           if (localHash === remoteHash) continue;
@@ -156,14 +215,29 @@ export function OwnerAutoSyncProvider() {
         if (disposed) return;
         if (hasPull) {
           applyingRemote = true;
-          try { importCloudItems(merged); }
+          try { importCloudItems(merged, { unavailableSharedKinds: (['customers', 'suppliers'] as SharedRecordKind[]).filter((kind) => !sharedReady.has(kind)) }); }
           finally { applyingRemote = false; }
         }
         const nextManifest = manifestFromItems(merged);
+        // Preserve prior baselines while a shared collection is unavailable,
+        // but do not baseline new local shared records until they reach Cloud.
+        for (const key of Object.keys(nextManifest)) {
+          const entry = nextManifest[key];
+          if (entry.scope === 'shared' && !sharedReady.has(entry.kind as SharedRecordKind)) {
+            if (baseline.records[key]) nextManifest[key] = baseline.records[key];
+            else delete nextManifest[key];
+          }
+        }
+        for (const [key, entry] of Object.entries(baseline.records)) {
+          if (entry.scope === 'shared' && !sharedReady.has(entry.kind as SharedRecordKind)) nextManifest[key] = entry;
+        }
         for (const item of push) if (item.deleted) nextManifest[item.key] = { scope: item.scope, kind: item.kind, id: item.id, branchId: item.branchId, hash: DELETED_HASH };
         for (const [key, item] of remoteItems) if (item.deleted && !nextManifest[key]) nextManifest[key] = { scope: item.scope, kind: item.kind, id: item.id, branchId: item.branchId, hash: DELETED_HASH };
         saveManifest(uid, nextManifest);
-        publishAutoSyncStatus(uid, { state: 'synced', message: 'Owner Device Auto Sync အလုပ်လုပ်နေပါတယ်။', savedAt: new Date().toISOString() });
+        const sharedWarning = sharedBlocked.size
+          ? ` Customer/Supplier (${[...sharedBlocked].join(', ')}) Sync ကို Firestore Rules ခွင့်မပြုသေးပါ။ Product / Stock / Sales Sync ကို ဆက်လုပ်နေပါတယ်။ Rules ပြင်ပြီး App ကို ပြန်ဖွင့်ပါ။`
+          : '';
+        publishAutoSyncStatus(uid, { state: 'synced', message: `Owner Device Auto Sync အလုပ်လုပ်နေပါတယ်။${sharedWarning}`, savedAt: new Date().toISOString() });
       } catch (error) {
         const code = typeof error === 'object' && error && 'code' in error ? String((error as { code: unknown }).code) : '';
         const isConflict = error instanceof Error && error.name === 'SyncConflictError';
@@ -238,7 +312,7 @@ export function OwnerAutoSyncProvider() {
         for (const key of [...ready]) if (key.startsWith('branch:')) ready.delete(key);
         for (const key of [...pendingWrites]) if (key.startsWith('branch:')) pendingWrites.delete(key);
         branchIds = nextIds;
-        expectedReady = 4 + branchIds.length * branchRecordKinds.length;
+        expectedReady = 2 + branchIds.length * branchRecordKinds.length;
         branchIds.forEach((branchId) => branchRecordKinds.forEach((kind) => attachBranchCollection(branchId, kind)));
         if (branchIds.length === 0 && isReady()) scheduleReconcile('remote');
       } else if (isReady()) scheduleReconcile('remote');
@@ -255,13 +329,29 @@ export function OwnerAutoSyncProvider() {
           const item = toItem(record.id, record.data(), 'shared', kind);
           if (item.payload !== undefined || item.deleted) remoteItems.set(item.key, item);
         });
+        if (!snapshot.metadata.fromCache) {
+          sharedReady.add(kind);
+          sharedBlocked.delete(kind);
+        } else {
+          sharedReady.delete(kind);
+        }
         markReady(listenerKey, snapshot.metadata.fromCache, snapshot.metadata.hasPendingWrites);
-      }, (error) => publishAutoSyncStatus(uid, {
-        state: error.code === 'unavailable' ? 'offline' : 'error',
-        message: error.code === 'permission-denied'
-          ? `Firestore Rules မှ businesses/${FIREBASE_BUSINESS_ID}/shared/${kind}/records/{recordId} ကို Owner ဖတ်/ရေးခွင့် မပေးထားပါ။ firestore.rules ထဲက nested records rule ကို Firebase Console မှာ Publish လုပ်ပါ။`
-          : error.message || `Shared ${kind} Listener error.`,
-      }));
+      }, (error) => {
+        sharedReady.delete(kind);
+        if (error.code === 'permission-denied') {
+          sharedBlocked.add(kind);
+          publishAutoSyncStatus(uid, {
+            state: 'connecting',
+            message: `Customer/Supplier (${kind}) Cloud Rules မပြည့်စုံသေးပါ။ Product / Stock / Sales Auto Sync ကို ဆက်လုပ်နေပြီး Shared Data ကို ခေတ္တကျော်ထားပါတယ်။ Firebase Console မှ firestore.rules ကို Publish လုပ်ပြီး App ကို ပြန်ဖွင့်ပါ။`,
+          });
+          if (isReady()) scheduleReconcile('remote');
+          return;
+        }
+        publishAutoSyncStatus(uid, {
+          state: error.code === 'unavailable' ? 'offline' : 'error',
+          message: error.message || `Shared ${kind} Listener error.`,
+        });
+      });
       unsubscribers.push(unsubscribe);
     }
 

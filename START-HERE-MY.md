@@ -1,4 +1,4 @@
-# Minimart POS v2.8.1 — PWA Launch Fix + Owner Auto Sync
+# Minimart POS v2.8.3 — PWA + Automatic Owner Device Sync
 
 ဒီ Version က v2.7.5 ရဲ့ လက်ရှိလုပ်ဆောင်ချက်အားလုံးကို ဆက်ထိန်းပြီး Owner Device များအကြား Real-time Auto Sync, Offline Recovery နဲ့ Sync Conflict Protection ကို ထပ်ဖြည့်ထားပါတယ်။
 
@@ -72,3 +72,12 @@ Browser မှာ `http://localhost:5173` ကို ဖွင့်ပါ။ Loc
 6. PWA အဟောင်း Shortcut က 404 ဆက်ပြရင် Shortcut ကို Uninstall လုပ်ပြီး `https://nyilwinhtun.github.io/Store/` Website ကို Browser မှ ပြန်ဖွင့်ကာ Add to Home Screen / Install လုပ်ပါ။
 
 **သတိ:** Browser Site Data, LocalStorage, IndexedDB ကို မရှင်းပါနှင့်။ Rules Publish မလုပ်မီ Production Rules ကို Backup လုပ်ပြီး လက်ရှိ Legacy data paths ကို မပျက်စီးစေရန် စစ်ဆေးပါ။ Rules ထည့်ရန် `FIRESTORE-SHARED-RULES-PATCH-MY.md` နှင့် အသေးစိတ်ကို `V2.8.2-RELIABILITY-FIX-MY.md` တွင် ဖတ်ပါ။
+
+
+## v2.8.3 — Device အလိုအလျောက် Sync ပြင်ဆင်ချက်
+
+- Owner Account ဖြင့် Device အသစ် Login ဝင်လျှင် Sync Baseline မရှိသေးတာကြောင့် ရပ်မနေတော့ဘဲ Cloud/Local Data ကို Safe Merge လုပ်ပြီး Baseline အလိုအလျောက် တည်ဆောက်မည်။
+- Cloud-only Data ကို Device ထဲယူမည်။ Device-only Data ကို Cloud သို့ ထိန်းသိမ်းတင်မည်။ ID တူပြီး Data မတူလျှင် အလိုအလျောက် အစားမထိုးဘဲ Conflict ပြမည်။
+- Customer/Supplier Firestore Rules မပြည့်စုံလျှင် Shared Data ကို ခေတ္တကျော်ပြီး Product/Stock/Sales စသည့် Branch Data Sync ကို ဆက်လုပ်မည်။ Customer/Supplier Sync အပြည့်ရရန် `FIRESTORE-SHARED-RULES-PATCH-MY.md` ကို Firebase Console တွင် Publish လုပ်ရန် လိုသည်။
+- **Branch သတိပြုရန်:** Device တစ်ခုချင်းစီ၏ Active Branch ကို သီးခြားရွေးထားသည်။ Laptop သည် Branch A၊ Phone သည် Branch B ဖြစ်လျှင် Branch A ၏ Product ကို Phone ၏ Branch B စာရင်းထဲတွင် မပြပါ။ နှိုင်းယှဉ်စမ်းသပ်ရာတွင် Device နှစ်ခုလုံး၌ Branch တူအောင် ရွေးပါ။ Branch မတူဘဲ သီးခြားအသုံးပြုခြင်းသည် Multi-Branch POS ၏ ရည်ရွယ်ထားသောလုပ်ဆောင်ပုံဖြစ်သည်။
+- Cashier Auto Sync ကို ဤဗားရှင်းတွင် မဖွင့်သေးပါ။ Owner Account အတွက်သာ Auto Sync ဖြစ်သည်။

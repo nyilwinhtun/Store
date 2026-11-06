@@ -14,7 +14,7 @@ export type SyncKind = BranchRecordKind | SharedRecordKind | 'branches' | 'setti
 export type SyncItem = { key: string; scope: SyncScope; kind: SyncKind; id: string; branchId?: string; payload: unknown; deleted?: boolean };
 export type ManifestEntry = { scope: SyncScope; kind: SyncKind; id: string; branchId?: string; hash: string };
 export type SyncManifest = { version: 2; businessId: string; savedAt: string; records: Record<string, ManifestEntry> };
-export type CloudRead = { items: Map<string, SyncItem> };
+export type CloudRead = { items: Map<string, SyncItem>; unavailableSharedKinds: SharedRecordKind[] };
 
 export const branchRecordKinds: BranchRecordKind[] = ['categories', 'products', 'sales', 'expenses', 'heldItems', 'customerPayments', 'purchases', 'supplierPayments', 'purchaseReturns', 'stockBatches', 'stockReceipts', 'stockTransfers', 'cashShifts', 'cashMovements', 'activityLogs'];
 export const sharedRecordKinds: SharedRecordKind[] = ['customers', 'suppliers'];
@@ -159,6 +159,85 @@ export function manifestFromItems(items: Map<string, SyncItem>) {
   for (const [key, item] of items) records[key] = manifestEntry(item);
   return records;
 }
+
+export type DeviceBootstrapResult = {
+  cloudRecords: number;
+  localOnlyRecords: number;
+  mergedRecords: number;
+  unavailableSharedKinds: SharedRecordKind[];
+};
+
+// StrictMode can mount effects twice in development. Share one bootstrap promise
+// per Owner UID so two initial reads do not race and overwrite one another.
+const deviceBootstrapPromises = new Map<string, Promise<DeviceBootstrapResult>>();
+
+/**
+ * Safely initializes a new Owner device without requiring a manual first-sync click.
+ * The merge is additive: Cloud-only records are pulled, Local-only records are
+ * uploaded, and same-key/different-value records stop with a conflict.
+ */
+export function initializeOwnerDeviceSync(uid: string): Promise<DeviceBootstrapResult> {
+  const existing = deviceBootstrapPromises.get(uid);
+  if (existing) return existing;
+
+  const task = (async (): Promise<DeviceBootstrapResult> => {
+    const cloud = await readBusinessCloud(uid);
+    const local = buildLocalItems(usePosStore.getState());
+    const merged = new Map<string, SyncItem>(cloud.items);
+    const localOnly: SyncItem[] = [];
+    const conflicts: string[] = [];
+
+    const unavailableShared = new Set(cloud.unavailableSharedKinds);
+    for (const [key, item] of local) {
+      if (item.scope === 'shared' && unavailableShared.has(item.kind as SharedRecordKind)) continue;
+      const remote = cloud.items.get(key);
+      if (!remote) {
+        localOnly.push(item);
+        merged.set(key, item);
+        continue;
+      }
+      if (!remote.deleted && hashPayload(remote.payload) === hashPayload(item.payload)) continue;
+      if (isBootstrapEquivalent(item, remote)) continue;
+      conflicts.push(key);
+    }
+
+    if (conflicts.length) {
+      const examples = conflicts.slice(0, 5).map((key) => key.split('::').filter(Boolean).slice(-2).join(' / ')).join(', ');
+      const conflict = new Error(`ဒီ Device နဲ့ Cloud မှာ ID တူပြီး Data မတူတဲ့ Record ${conflicts.length} ခု ရှိပါတယ်။ ဘယ်ဖက်ကိုမှ အလိုအလျောက် မအစားထိုးပါ။ ဥပမာ: ${examples}${conflicts.length > 5 ? ' …' : ''}။ JSON Backup ထုတ်ပြီး Record တွေကို စစ်ဆေးပါ။`);
+      conflict.name = 'SyncConflictError';
+      throw conflict;
+    }
+
+    if (localOnly.length) {
+      const emptyBaseline: SyncManifest = {
+        version: 2,
+        businessId: FIREBASE_BUSINESS_ID,
+        savedAt: new Date().toISOString(),
+        records: {},
+      };
+      await writeItemsIfBaselineUnchanged(localOnly, uid, emptyBaseline);
+    }
+
+    // Import the union before persisting the baseline, so the local state and
+    // manifest always describe the same merged dataset.
+    importCloudItems(merged, { unavailableSharedKinds: cloud.unavailableSharedKinds });
+    saveManifest(uid, manifestFromItems(merged));
+
+    return {
+      cloudRecords: cloud.items.size,
+      localOnlyRecords: localOnly.length,
+      mergedRecords: merged.size,
+      unavailableSharedKinds: cloud.unavailableSharedKinds,
+    };
+  })();
+
+  deviceBootstrapPromises.set(uid, task);
+  task.then(
+    () => { if (deviceBootstrapPromises.get(uid) === task) deviceBootstrapPromises.delete(uid); },
+    () => { if (deviceBootstrapPromises.get(uid) === task) deviceBootstrapPromises.delete(uid); },
+  );
+  return task;
+}
 function pathFor(item: SyncItem): string[] {
   if (item.scope === 'branch') return ['businesses', FIREBASE_BUSINESS_ID, 'branches', item.id];
   if (item.scope === 'shared') return ['businesses', FIREBASE_BUSINESS_ID, 'shared', item.kind, 'records', item.id];
@@ -207,9 +286,24 @@ export async function readBusinessCloud(uid: string): Promise<CloudRead> {
     });
   });
 
-  const sharedSnapshots = await Promise.all(sharedRecordKinds.map((kind) => getDocsFromServer(collection(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'shared', kind, 'records'))));
-  sharedSnapshots.forEach((snapshot, index) => {
-    const kind = sharedRecordKinds[index];
+  const unavailableSharedKinds: SharedRecordKind[] = [];
+  const sharedResults = await Promise.all(sharedRecordKinds.map(async (kind) => {
+    try {
+      const snapshot = await getDocsFromServer(collection(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'shared', kind, 'records'));
+      return { kind, snapshot };
+    } catch (error) {
+      const code = typeof error === 'object' && error && 'code' in error ? String((error as { code: unknown }).code) : '';
+      // Older Firebase Console Rules may still allow branch inventory but deny
+      // the newer nested shared/{kind}/records path. Keep core POS sync usable.
+      if (code === 'permission-denied') {
+        unavailableSharedKinds.push(kind);
+        return { kind, snapshot: null };
+      }
+      throw error;
+    }
+  }));
+  sharedResults.forEach(({ kind, snapshot }) => {
+    if (!snapshot) return;
     snapshot.forEach((record) => {
       const item = parseCloudItem(record.id, record.data() as Record<string, unknown>, 'shared', kind);
       if (item.payload !== undefined || item.deleted) items.set(item.key, item);
@@ -221,7 +315,7 @@ export async function readBusinessCloud(uid: string): Promise<CloudRead> {
     const item = parseCloudItem('settings', meta.data() as Record<string, unknown>, 'meta', 'settings');
     if (item.payload !== undefined || item.deleted) items.set(item.key, item);
   }
-  return { items };
+  return { items, unavailableSharedKinds };
 }
 
 export async function writeItems(items: SyncItem[], uid: string) {
@@ -259,7 +353,7 @@ export async function writeItemsIfBaselineUnchanged(items: SyncItem[], uid: stri
   }
 }
 
-export function importCloudItems(items: Map<string, SyncItem>) {
+export function importCloudItems(items: Map<string, SyncItem>, options: { unavailableSharedKinds?: readonly SharedRecordKind[] } = {}) {
   const current = usePosStore.getState();
   const live = [...items.values()].filter((item) => !item.deleted);
   const branches = live.filter((item) => item.scope === 'branch').map((item) => {
@@ -272,6 +366,7 @@ export function importCloudItems(items: Map<string, SyncItem>) {
   };
   const customers: unknown[] = [];
   const suppliers: unknown[] = [];
+  const unavailableShared = new Set(options.unavailableSharedKinds || []);
   let cloudSettings: Record<string, unknown> = {};
   let cloudOwner: Record<string, unknown> = {};
 
@@ -297,7 +392,7 @@ export function importCloudItems(items: Map<string, SyncItem>) {
   usePosStore.getState().importData({
     branches: branches as never[], activeBranchId, categories: grouped.categories as never[], products: grouped.products as never[],
     sales: grouped.sales as never[], expenses: grouped.expenses as never[], heldItems: grouped.heldItems as never[],
-    customers: customers as never[], suppliers: suppliers as never[], customerPayments: grouped.customerPayments as never[],
+    customers: unavailableShared.has('customers') ? undefined : customers as never[], suppliers: unavailableShared.has('suppliers') ? undefined : suppliers as never[], customerPayments: grouped.customerPayments as never[],
     purchases: grouped.purchases as never[], supplierPayments: grouped.supplierPayments as never[], purchaseReturns: grouped.purchaseReturns as never[],
     stockBatches: grouped.stockBatches as never[], stockReceipts: grouped.stockReceipts as never[], stockTransfers: grouped.stockTransfers as never[],
     cashShifts: grouped.cashShifts as never[], cashMovements: grouped.cashMovements as never[], activityLogs: grouped.activityLogs as never[],
@@ -345,7 +440,9 @@ export function CloudSyncPanel() {
     const merged = new Map<string, SyncItem>(cloud.items);
     const push: SyncItem[] = [];
     const conflicts: string[] = [];
+    const unavailableShared = new Set(cloud.unavailableSharedKinds);
     for (const [key, item] of local) {
+      if (item.scope === 'shared' && unavailableShared.has(item.kind as SharedRecordKind)) continue;
       const remote = cloud.items.get(key);
       if (!remote) { push.push(item); merged.set(key, item); }
       else if (remote.deleted || (hashPayload(remote.payload) !== hashPayload(item.payload) && !isBootstrapEquivalent(item, remote))) conflicts.push(key);
@@ -359,51 +456,17 @@ export function CloudSyncPanel() {
     // The baseline must describe the data that is actually on this device.
     // Import cloud-only records before saving it; otherwise the next Auto Sync
     // can mistake those records for local deletions and upload tombstones.
-    importCloudItems(merged);
+    importCloudItems(merged, { unavailableSharedKinds: cloud.unavailableSharedKinds });
     saveManifest(user.uid, manifestFromItems(merged));
     setLastSynced(new Date().toLocaleString());
-    setMessage(`Business Cloud Snapshot ပြီးပါပြီ။ ${push.length} records အသစ်တင်ပြီး Cloud ရှိပြီးသား ${cloud.items.size} records ကို မဖျက်/မအစားထိုးဘဲ ထိန်းထားပါတယ်။`);
+    setMessage(`Business Cloud Snapshot ပြီးပါပြီ။ ${push.length} records အသစ်တင်ပြီး Cloud ရှိပြီးသား ${cloud.items.size} records ကို ထိန်းထားပါတယ်.${cloud.unavailableSharedKinds.length ? ` Customer/Supplier (${cloud.unavailableSharedKinds.join(', ')}) Sync အတွက် Firestore Rules ပြင်ရန် လိုအပ်နေပါသေးတယ်။` : ''}`);
   };
 
   const downloadCloud = async () => {
     if (!user || !isOwner) throw new Error('Business Owner Account ဖြင့် Login ဝင်ထားရန် လိုအပ်ပါတယ်။');
-    const cloud = await readBusinessCloud(user.uid);
-    const liveCount = [...cloud.items.values()].filter((item) => !item.deleted && item.scope !== 'meta').length;
-    if (!liveCount) throw new Error('Business Cloud Snapshot မရှိသေးပါ။ အဓိက Device မှာ Upload Initial Snapshot ကို အရင်လုပ်ပါ။');
-
-    // First-time setup is a union, not a destructive replacement. Keep unique
-    // records already entered on this device, import cloud-only records, and
-    // stop on a same-ID/different-value conflict that needs human review.
-    const local = buildLocalItems(usePosStore.getState());
-    const merged = new Map<string, SyncItem>(cloud.items);
-    const localOnly: SyncItem[] = [];
-    const conflicts: string[] = [];
-    for (const [key, item] of local) {
-      const remote = cloud.items.get(key);
-      if (!remote) {
-        localOnly.push(item);
-        merged.set(key, item);
-        continue;
-      }
-      if (!remote.deleted && hashPayload(remote.payload) === hashPayload(item.payload)) continue;
-      if (isBootstrapEquivalent(item, remote)) continue;
-      conflicts.push(key);
-    }
-    if (conflicts.length) {
-      const examples = conflicts.slice(0, 4).map((key) => key.split('::').filter(Boolean).slice(-2).join(' / ')).join(', ');
-      const conflict = new Error(`Local နဲ့ Cloud မှာ ID တူပြီး Data မတူတဲ့ Record ${conflicts.length} ခု တွေ့ပါတယ်။ ဘယ်ဖက်ကိုမှ မအစားထိုးပါ။ ဥပမာ: ${examples}${conflicts.length > 4 ? ' …' : ''}။ JSON Backup ထုတ်ပြီးမှ တစ်ခုချင်းစီ ဖြေရှင်းပါ။`);
-      conflict.name = 'SyncConflictError';
-      throw conflict;
-    }
-
-    if (localOnly.length) {
-      await writeItemsIfBaselineUnchanged(localOnly, user.uid, { version: 2, businessId: FIREBASE_BUSINESS_ID, savedAt: new Date().toISOString(), records: {} });
-    }
-    importCloudItems(merged);
-    const nextManifest = manifestFromItems(merged);
-    saveManifest(user.uid, nextManifest);
+    const result = await initializeOwnerDeviceSync(user.uid);
     setLastSynced(new Date().toLocaleString());
-    setMessage(`ပထမဆုံး Device Sync ပြီးပါပြီ။ Cloud မှ ${cloud.items.size} records ကို ရယူပြီး ဒီ Device မှာသာရှိတဲ့ ${localOnly.length} records ကိုလည်း Cloud သို့ ထိန်းသိမ်းတင်ပြီး ပေါင်းစည်းထားပါတယ်။`);
+    setMessage(`Device Sync ပြီးပါပြီ။ Cloud မှ ${result.cloudRecords} records ကို ဖတ်ယူပြီး ဒီ Device မှာသာရှိတဲ့ ${result.localOnlyRecords} records ကို ထိန်းသိမ်းထားပါတယ်.${result.unavailableSharedKinds.length ? ` Customer/Supplier (${result.unavailableSharedKinds.join(', ')}) Sync အတွက် Firestore Rules ပြင်ရန် လိုအပ်ပါတယ်။` : ''}`);
   };
 
   const syncChanges = async () => {
@@ -416,9 +479,13 @@ export function CloudSyncPanel() {
     const merged = new Map<string, SyncItem>(local);
     const conflicts: string[] = [];
 
+    const unavailableShared = new Set(cloud.unavailableSharedKinds);
     for (const key of keys) {
       const localItem = local.get(key);
       const remoteItem = cloud.items.get(key);
+      const recordScope = localItem?.scope || remoteItem?.scope || baseline.records[key]?.scope;
+      const recordKind = localItem?.kind || remoteItem?.kind || baseline.records[key]?.kind;
+      if (recordScope === 'shared' && unavailableShared.has(recordKind as SharedRecordKind)) continue;
       const baseHash = baseline.records[key]?.hash;
       const localHash = localItem ? hashPayload(localItem.payload) : DELETED_HASH;
       const remoteHash = remoteItem ? (remoteItem.deleted ? DELETED_HASH : hashPayload(remoteItem.payload)) : MISSING_HASH;
@@ -454,13 +521,23 @@ export function CloudSyncPanel() {
     }
 
     if (push.length) await writeItemsIfBaselineUnchanged(push, user.uid, baseline);
-    importCloudItems(merged);
+    importCloudItems(merged, { unavailableSharedKinds: cloud.unavailableSharedKinds });
     const nextManifest = manifestFromItems(merged);
+    for (const key of Object.keys(nextManifest)) {
+      const entry = nextManifest[key];
+      if (entry.scope === 'shared' && unavailableShared.has(entry.kind as SharedRecordKind)) {
+        if (baseline.records[key]) nextManifest[key] = baseline.records[key];
+        else delete nextManifest[key];
+      }
+    }
+    for (const [key, entry] of Object.entries(baseline.records)) {
+      if (entry.scope === 'shared' && unavailableShared.has(entry.kind as SharedRecordKind)) nextManifest[key] = entry;
+    }
     for (const item of push) if (item.deleted) nextManifest[item.key] = manifestEntry(item);
     for (const [key, item] of cloud.items) if (item.deleted && !nextManifest[key]) nextManifest[key] = manifestEntry(item);
     saveManifest(user.uid, nextManifest);
     setLastSynced(new Date().toLocaleString());
-    setMessage(`Two-way Sync ပြီးပါပြီ။ Cloud သို့ ${push.length} updates တင်ပြီး Cloud မှ အသစ်/ပြောင်းလဲမှုများကို ပြန်ယူထားပါတယ်။`);
+    setMessage(`Two-way Sync ပြီးပါပြီ။ Cloud သို့ ${push.length} updates တင်ပြီး Cloud မှ အသစ်/ပြောင်းလဲမှုများကို ပြန်ယူထားပါတယ်.${cloud.unavailableSharedKinds.length ? ` Customer/Supplier (${cloud.unavailableSharedKinds.join(', ')}) Sync ကို Firestore Rules မပြင်မချင်း ကျော်ထားပါတယ်။` : ''}`);
   };
 
   const runAction = async (action: () => Promise<void>) => {
@@ -476,7 +553,7 @@ export function CloudSyncPanel() {
     {user ? <>
       <div className="cloud-status"><ShieldCheck size={19} color="#0f766e" /><div><strong>{isOwner ? 'Business Owner Account ချိတ်ဆက်ထားသည်' : 'Owner Permission အတည်ပြုရန် လိုအပ်သည်'}</strong><small className="cloud-email">{user.email || user.uid} · {FIREBASE_BUSINESS_ID}</small></div><button className="button button-outline" onClick={() => void runAction(async () => { await signOut(firebaseAuth); setMessage('Sign Out လုပ်ပြီးပါပြီ။'); })} disabled={busy}><LogOut size={14} /> Sign Out</button></div>
       {!isOwner ? <div className="cloud-error">Business Cloud Sync ကို Owner Account သာ အသုံးပြုနိုင်ပါတယ်။ Access Status: {access.status}။ Cashier Auto Sync ကို နောက် Phase မှာ သီးခြားစီမံပါမယ်။</div> : <>
-        <div className="cloud-help"><strong>ပထမဆုံး ချိတ်ဆက်ရန်</strong><br />၁။ အဓိက Owner Device တစ်လုံးမှာ JSON Backup ထုတ်ပြီး <strong>Upload Initial Snapshot</strong> လုပ်ပါ။<br />၂။ အခြား Owner Device မှာ Backup ထုတ်ပြီး <strong>Cloud နှင့် ပေါင်းစည်းရန်</strong> ကို နှိပ်ပါ။ Cloud-only နဲ့ ဒီ Device-only Record နှစ်ဖက်လုံးကို ထိန်းသိမ်းပြီး ID တူ Data မတူရင် ရပ်ပေးပါမယ်။<br />၃။ Device နှစ်ခုလုံးမှာ Sync Baseline ရှိပြီးနောက် Owner Account များအတွက် Auto Sync ကို အလိုအလျောက် စတင်ပါမယ်။ <strong>Sync Changes</strong> ကို လိုအပ်သည့်အခါ ကိုယ်တိုင်လည်း နှိပ်နိုင်ပါတယ်။<br />၄။ တူညီတဲ့ Record ကို Device နှစ်ခုလုံးက တစ်ချိန်တည်းပြင်ထားရင် Conflict ပြပြီး တစ်ဖက်ကို မျက်စိမှိတ် အစားမထိုးပါ။<br /><br />Customer / Supplier Profile ကို Shared ထားပြီး Purchase / Payment / Stock / Sales ကို Branch အလိုက် ခွဲထားပါတယ်။ Admin PIN နဲ့ Local Logo / Banner / Owner Photo ကို Cloud သို့ မတင်ပါ။ Cashier Auto Sync ကို ဒီ Phase မှာ မဖွင့်သေးပါ။ IndexedDB Cloud Cache သည် Sign Out လုပ်ရုံဖြင့် မရှင်းပါ။ Public / မျှဝေသုံး Device များတွင် မသုံးပါနှင့်။</div>
+        <div className="cloud-help"><strong>Owner Device Auto Setup</strong><br />Owner Account ဖြင့် Device အသစ် Login ဝင်လျှင် Cloud နဲ့ ဒီ Device ရဲ့ Local Data ကို အလိုအလျောက် Safe Merge လုပ်ပြီး Sync Baseline တည်ဆောက်ပါမယ်။ Cloud-only records ကို ဒီ Device သို့ ရယူပြီး Device-only records ကို Cloud သို့ ထိန်းသိမ်းတင်ပါမယ်။ ID တူ Data မတူပါက တစ်ဖက်ကိုမှ အလိုအလျောက် မအစားထိုးဘဲ Conflict ပြပါမယ်။<br />Device နှစ်ခုလုံးမှာ Baseline ရှိပြီး Realtime Listener ချိတ်ဆက်ပြီးနောက် Product, Stock, Sales စသည့် Owner Data များကို Auto Sync လုပ်ပါမယ်။ <strong>Sync Changes</strong> ကို လိုအပ်သည့်အခါ ကိုယ်တိုင်လည်း နှိပ်နိုင်ပါတယ်။<br /><br />Customer / Supplier Profile ကို Shared ထားပြီး Purchase / Payment / Stock / Sales ကို Branch အလိုက် ခွဲထားပါတယ်။ Product ကို အခြား Device မှာ မမြင်ရလျှင် အပေါ်ဘက် Branch Selector မှာ Device နှစ်ခုလုံး Branch တူနေသလား စစ်ပါ။ Branch မတူပါက Product / Stock ကို ရည်ရွယ်ချက်ရှိရှိ သီးခြားပြထားပါတယ်။ Admin PIN နဲ့ Local Logo / Banner / Owner Photo ကို Cloud သို့ မတင်ပါ။ Cashier Auto Sync ကို ဒီ Phase မှာ မဖွင့်သေးပါ။ IndexedDB Cloud Cache သည် Sign Out လုပ်ရုံဖြင့် မရှင်းပါ။ Public / မျှဝေသုံး Device များတွင် မသုံးပါနှင့်။</div>
         <div className="cloud-actions">
           <button className="button button-primary" disabled={busy} onClick={() => { if (window.confirm('ဒီ Device ရဲ့ Local POS Data ကို Business Cloud Snapshot အဖြစ် တင်မလား။ Cloud မှာ ရှိပြီးသား Data နဲ့ ID တူပြီး အကြောင်းအရာမတူလျှင် Upload ကို ရပ်ပါမယ်။ အရင် JSON Backup ထုတ်ထားပါ။')) void runAction(uploadInitial); }}><CloudUpload size={15} /> Upload Initial Snapshot</button>
           <button className="button button-outline" disabled={busy} onClick={() => { if (window.confirm('Cloud Data နဲ့ ဒီ Device မှာသာရှိတဲ့ Record တွေကို ပေါင်းစည်းမလား။ ID တူ Data မတူပါက မည်သည့်ဘက်ကိုမှ အစားမထိုးဘဲ ရပ်ပါမယ်။ အရင် JSON Backup ထုတ်ထားပါ။')) void runAction(downloadCloud); }}><CloudDownload size={15} /> Cloud နှင့် ပေါင်းစည်းရန်</button>

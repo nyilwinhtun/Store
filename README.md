@@ -1,4 +1,13 @@
-# Minimart POS v2.8.2 — PWA 404 Recovery + Safe Owner Cloud Merge + Offline Access Cache
+# Minimart POS — v2.8.3
+
+## v2.8.3 Auto Device Sync Repair
+- Owner device with no local sync baseline now performs an automatic, non-destructive Cloud/Local merge after Owner access is verified.
+- Cloud-only records are pulled; unique local records are uploaded; same-ID conflicting data stops for review instead of overwriting either side.
+- Customer/Supplier permission-denied rules no longer block Product, Stock, Sales, and other branch-record synchronization. Customer/Supplier sync remains paused until the nested Firestore rules are published.
+- Active branch selection remains device-local by design. Product, stock, sales, purchases, and expenses are branch-scoped; select the same branch on both devices to compare the same branch records.
+- Firebase Authentication, project configuration, and existing POS business logic are retained.
+
+# Previous Version Notes — v2.8.2 PWA Recovery
 
 v2.7.4 တွင် အလုပ်လုပ်နေသော Source → Destination Stock Transfer ကို မပြောင်းဘဲ Transfer Management, audit trail, duplicate-submit protection နှင့် owner-authorized reversal တို့ကို ထပ်ဖြည့်ထားသည်။
 
@@ -19,7 +28,7 @@ v2.7.4 တွင် အလုပ်လုပ်နေသော Source → Destin
 - Existing Owner Login / Firebase Authentication
 - Existing LocalStorage key and schema version
 - IndexedDB local image storage (Logo / Banner / Owner Profile)
-- Existing Business Cloud Sync structure (manual upload/download)
+- Existing Business Cloud Sync record structure and local POS data model
 - Existing Product, Sales, Stock, Branch, Customer and Supplier records
 
 ## Setup
@@ -32,7 +41,7 @@ npm run dev -- --host --port 5173 --strictPort
 ```
 
 ## Important limitations
-- v2.7.5 was manual-sync only. v2.8.0 adds Owner-device real-time sync after a device has completed the initial Upload or Download baseline.
+- v2.8.3 automatically bootstraps a new Owner device with a safe Cloud/Local merge. Existing Owner devices use real-time sync after their per-device baseline exists.
 - Reversal is local-first. Do not reverse the same transfer on another device before synchronizing. Sync the latest state first to avoid conflicting local copies.
 - Reversal is intentionally refused when the exact transferred batch quantity is no longer available at the destination.
 - Firestore Security Rules are not automatically changed by this update. Review and publish rules safely before production use.
@@ -52,7 +61,7 @@ See `V2.8.0-REALTIME-CLOUD-SYNC-MY.md` for setup, limitations, and test steps.
 - GitHub Pages project path အတွက် relative PWA path များကို သတ်မှတ်ထားသည်။
 - Service Worker navigation fallback ပါဝင်သည်။
 
-## v2.8.2 — PWA + Cloud Sync Reliability Fix
+## v2.8.2 — PWA + Cloud Sync Reliability Fix (superseded by v2.8.3)
 
 - PWA `start_url` ကို `./index.html` သတ်မှတ်ပြီး Service Worker ကို registration scope အောက်ရှိ URL များကိုသာ cache လုပ်စေသည်။
 - Cache cleanup သည် Minimart အမည်တပ်ထားသော cache များကိုသာ ဖျက်သည်။ GitHub Pages origin တူညီသည့် အခြား project များ၏ cache ကို မထိပါ။

@@ -44,3 +44,14 @@
 - Firestore nested shared records rules must permit `shared/{kind}/records/{id}`.
 - New-device setup must merge Cloud-only and local-only records; same-ID payload conflicts must stop.
 - Verify that a cloud-only record remains present locally after `Upload Initial Snapshot` and does not become a delete tombstone.
+
+## v2.8.3 အတွက် ထပ်မံစမ်းသပ်ရန်
+
+1. Owner Account နဲ့ Laptop မှာ Login ဝင်ပြီး Settings → Cloud Sync မှ Auto Sync Status ကို စစ်ပါ။ Device မှာ Baseline မရှိလျှင် Cloud/Local Safe Merge ကို အလိုအလျောက် စတင်ရပါမယ်။
+2. Phone မှာ Owner Account တူတူ Login ဝင်ပါ။ Baseline မရှိလျှင် Phone ကလည်း အလိုအလျောက် Safe Merge လုပ်ပြီး Realtime Listener ချိတ်ဆက်ရပါမယ်။
+3. Device နှစ်ခုလုံးတွင် Branch Selector မှ Branch အမည်တူကို ရွေးပါ။ Laptop မှ Product အသစ်တစ်ခု ထည့်ပြီး Phone တွင် ပေါ်လာသလား စစ်ပါ။ Phone မှ Product အသစ်တစ်ခု ထည့်ပြီး Laptop တွင် ပြန်ပေါ်သလား စစ်ပါ။
+4. Branch မတူစေရန် ရွေးပြီး စမ်းသပ်ပါ။ Product / Stock သည် မိမိ Branch အလိုက်သာ ပြသရပါမယ်။
+5. Firestore Shared Rules မထည့်ရသေးလျှင် Customer/Supplier Sync သာ ပိတ်ထားပြီး Product/Stock/Sales Auto Sync ဆက်အလုပ်လုပ်ရပါမယ်။ `FIRESTORE-SHARED-RULES-PATCH-MY.md` ကို Firebase Console မှာ လက်ရှိ Production Rules နဲ့ ပေါင်းစည်း Publish လုပ်ပြီး App ကို ပြန်ဖွင့်ပါ။
+6. ID တူပြီး Payload မတူသော Record ကို တွေ့ပါက Conflict ပြပြီး မည်သည့်ဘက် Data ကိုမှ Auto overwrite မလုပ်ရပါ။
+
+**မှတ်ချက်:** Cashier Account အတွက် Auto Sync မဖွင့်သေးပါ။ ဤစမ်းသပ်မှုသည် Owner Account နှင့် Owner Devices အတွက်သာ ဖြစ်သည်။
