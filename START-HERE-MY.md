@@ -1,4 +1,4 @@
-# Minimart POS v2.8.0 — Owner Auto Sync
+# Minimart POS v2.8.1 — PWA Launch Fix + Owner Auto Sync
 
 ဒီ Version က v2.7.5 ရဲ့ လက်ရှိလုပ်ဆောင်ချက်အားလုံးကို ဆက်ထိန်းပြီး Owner Device များအကြား Real-time Auto Sync, Offline Recovery နဲ့ Sync Conflict Protection ကို ထပ်ဖြည့်ထားပါတယ်။
 
@@ -60,3 +60,10 @@ Browser မှာ `http://localhost:5173` ကို ဖွင့်ပါ။ Loc
 - Conflict ဖြစ်ရင် Auto Sync က overwrite မလုပ်ပါ။ JSON Backup ထုတ်ပြီး Record ကို စစ်ဆေးပါ။
 - Firestore IndexedDB Cache သည် Sign Out လုပ်ရုံဖြင့် မရှင်းပါ။ ကိုယ်ပိုင်/ယုံကြည်စိတ်ချရသော Device များတွင်သာ အသုံးပြုပါ။
 - အသေးစိတ် setup / limitation / test plan ကို `V2.8.0-REALTIME-CLOUD-SYNC-MY.md` တွင် ဖတ်ပါ။
+
+
+## v2.8.1 — ဖုန်း App 404 နှင့် Device Data ချိတ်ဆက်ခြင်း
+
+GitHub Pages `/Store/` အတွက် PWA start URL ကို `./` ပြင်ထားသည်။ GitHub Actions deploy အသစ်အောင်မြင်ပြီးနောက် အဟောင်း Install shortcut က 404 ဆက်ပြပါက App shortcut ကို uninstall လုပ်ပြီး Website Link မှ ပြန် Install လုပ်ပါ။ Browser Site Data / LocalStorage / IndexedDB ကို မရှင်းပါနှင့်။
+
+Laptop ထဲက Product များကို Phone ထဲယူရန် Laptop တွင် JSON Backup ထုတ်ပြီး Business Cloud Sync → Upload Initial Snapshot လုပ်ပါ။ Phone တွင်လည်း ရှိပြီးသား Data ကို JSON Backup ထုတ်ပြီး Owner Account တူညီစွာဝင်ကာ Download Cloud → ဒီ Device လုပ်ပါ။ Download Cloud သည် Phone ရှိ POS Local Data ကို Cloud Snapshot ဖြင့် အစားထိုးနိုင်သောကြောင့် Backup မလုပ်ဘဲ မနှိပ်ပါနှင့်။

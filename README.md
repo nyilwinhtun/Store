@@ -1,4 +1,4 @@
-# Minimart POS v2.8.0 — Owner Real-time Cloud Sync + Stock Transfer Management
+# Minimart POS v2.8.1 — PWA Launch Fix + Owner Real-time Cloud Sync + Stock Transfer Management
 
 v2.7.4 တွင် အလုပ်လုပ်နေသော Source → Destination Stock Transfer ကို မပြောင်းဘဲ Transfer Management, audit trail, duplicate-submit protection နှင့် owner-authorized reversal တို့ကို ထပ်ဖြည့်ထားသည်။
 
@@ -46,3 +46,11 @@ npm run dev -- --host --port 5173 --strictPort
 - Cashier auto sync and trusted server-side stock posting are not included yet.
 
 See `V2.8.0-REALTIME-CLOUD-SYNC-MY.md` for setup, limitations, and test steps.
+
+## v2.8.1 — PWA Launch Fix
+
+- GitHub Pages project path `/Store/` အတွက် PWA `id`, `start_url`, `scope` ကို relative `./` သို့ ပြင်ထားသည်။
+- Service Worker cache name အသစ်နှင့် failed navigation အတွက် cached app-shell fallback ထည့်ထားသည်။
+- Firebase Authentication, Firestore configuration/rules, LocalStorage schema, business data logic မပြောင်းထားပါ။
+- Laptop → `Upload Initial Snapshot`, Phone → `Download Cloud → ဒီ Device` လုပ်ပြီးမှ Device နှစ်ခုကြား Owner Auto Sync စတင်မည်။
+- အသေးစိတ် `V2.8.1-PWA-FIX-MY.md` ကို ဖတ်ပါ။

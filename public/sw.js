@@ -1,4 +1,4 @@
-const CACHE_NAME = 'minimart-pos-v280-owner-realtime-sync';
+const CACHE_NAME = 'minimart-pos-v281-pwa-launch-fix';
 const APP_SHELL = ['./', './index.html', './manifest.webmanifest', './icon.svg', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (event) => {
@@ -32,11 +32,26 @@ self.addEventListener('fetch', (event) => {
   const request = event.request;
   if (request.method !== 'GET' || new URL(request.url).origin !== self.location.origin) return;
   if (request.mode === 'navigate') {
-    event.respondWith(fetch(request).then((response) => {
-      const copy = response.clone();
-      caches.open(CACHE_NAME).then((cache) => cache.put('./index.html', copy));
-      return response;
-    }).catch(() => caches.match('./index.html')));
+    event.respondWith((async () => {
+      const appShellUrl = new URL('./index.html', self.registration.scope).toString();
+      try {
+        const response = await fetch(request);
+        if (response.ok) {
+          const contentType = response.headers.get('content-type') || '';
+          if (contentType.includes('text/html')) {
+            const cache = await caches.open(CACHE_NAME);
+            await cache.put(appShellUrl, response.clone());
+          }
+          return response;
+        }
+        const fallback = await caches.match(appShellUrl);
+        return fallback || response;
+      } catch (error) {
+        const fallback = await caches.match(appShellUrl);
+        if (fallback) return fallback;
+        throw error;
+      }
+    })());
     return;
   }
   event.respondWith(caches.match(request).then((cached) => cached || fetch(request).then((response) => {
