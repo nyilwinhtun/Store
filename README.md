@@ -1,3 +1,9 @@
+## New Dedicated Firebase Project
+
+This build is connected to `minimart-production` (Firestore region: Singapore). The internal Firestore Business ID remains `store-mini-main`. Seed the Owner document and publish `firestore.rules` using `NEW-FIREBASE-PROJECT-SETUP-MY.md` before running.
+
+> v2.9.4 Cashier Access + Mobile Split POS: TeamAccessPanel treats the Firestore member document ID as the canonical Firebase Auth UID, exposes copyable UID/path, and adds a server-side member verification action. The unassigned gate provides Cashier-specific owner-linking instructions. Firebase Login is centralized at Profile → Firebase Business Account. Mobile POS uses independently scrollable product and cart panes with a visible checkout area. ZM04 Android native Bluetooth printing remains a separate Capacitor/Android integration phase; desktop/browser printing is retained. Cashier Cloud Auto Sync / server-side sales posting is not included in v2.9.4.
+
 > v2.9.3 Barcode Upgrade: Products support an optional dedicated barcode field (separate from SKU), Bluetooth HID keyboard scanners, POS scan-to-cart, receiving scan lookup, duplicate code protection, and phone camera scanning with ZXing. See `V2.9.3-BARCODE-AND-CAMERA-SCAN-MY.md`. Camera requires HTTPS/localhost permission. Physical scanner and camera hardware tests remain pending.
 
 > v2.9.1 Receipt Print Choice: Checkout now saves the sale first, then lets the cashier print a receipt or keep an amount-only screen. Includes 58/80mm selection and test print. Direct Bluetooth pairing is not implemented; see `V2.9.1-RECEIPT-PRINT-CHOICE-MY.md` for platform limitations and hardware test steps.
@@ -5,7 +11,11 @@
 
 > v2.8.5 React Runtime Fix: React/ReactDOM versions are now explicitly matched and Vite deduplicates React so Zustand hooks use the same runtime. See `V2.8.5-REACT-RUNTIME-FIX-MY.md` for update steps.
 
-# Minimart POS — v2.9.3
+> v2.9.5 Cloud Sync Efficiency: Existing devices use per-collection `updatedAt` cursors for historical collections; Product / Category / Stock remain realtime. New-device bootstrap merges from the already-received listener snapshots instead of performing a duplicate full scan. Reconnect or a long background period (25 minutes or more) reopens historical listeners from the newest cursor. Manual Sync now reconciles from active listener state and does not run a full cloud scan. See `V2.9.5-CLOUD-SYNC-EFFICIENCY-MY.md`.
+
+# Minimart POS — v2.9.5
+
+> v2.9.5 Cloud Sync Efficiency: Historical collections use updatedAt cursor queries, new-device bootstrap reuses existing listener snapshots, manual Sync no longer performs full cloud scans, and local diagnostics report listener / transaction counts without writing telemetry to Firestore. See `V2.9.5-CLOUD-SYNC-EFFICIENCY-MY.md`.
 
 ### Cashier Account Recovery / Existing Account Linking — v2.8.5
 - Owner can create a new Cashier using a secondary Firebase Auth app without signing out the Owner session.
@@ -37,8 +47,8 @@ v2.7.4 တွင် အလုပ်လုပ်နေသော Source → Destin
 - Source နဲ့ Destination နှစ်ဆိုင်လုံးအတွက် Reversal Activity Log ထည့်သည်။
 
 ## Preserved
-- Firebase Project: `store-mini`
-- Business ID: `store-mini-main`
+- Firebase Project: `minimart-production` (new dedicated project)
+- Business ID: `store-mini-main` (internal business namespace retained)
 - Existing Owner Login / Firebase Authentication
 - Existing LocalStorage key and schema version
 - IndexedDB local image storage (Logo / Banner / Owner Profile)
@@ -84,6 +94,6 @@ See `V2.8.0-REALTIME-CLOUD-SYNC-MY.md` for setup, limitations, and test steps.
 - Initial Snapshot Upload ပြီးချိန် Cloud-only Records ကိုလည်း Device ထဲ ပြန်သွင်းကာ baseline နဲ့ Local Data တူညီစေသည်။
 - v2.8.1 Sync Baseline ဟောင်းကို ဆက်မသုံးဘဲ Device တစ်လုံးချင်းစီမှာ v2.8.2 Baseline အသစ်တည်ဆောက်ပြီးမှ Auto Sync စတင်သည်။
 - Offline ဖြစ်ပြီး Firebase Server ကို မရနိုင်ချိန်တွင် ဒီ Device မှာ ယခင်က cache လုပ်ထားသော Owner / Member document ရှိမှ POS access ကို ယာယီဖွင့်သည်။
-- Firebase Project `store-mini`, Business ID `store-mini-main`, Auth flow, POS LocalStorage key/schema, Stock Transfer business logic ကို မပြောင်းထားပါ။
+- Firebase Project `minimart-production`, Business ID `store-mini-main`, Auth flow, POS LocalStorage key/schema, Stock Transfer business logic ကို မပြောင်းထားပါ။
 - Firestore nested rule ကို Console မှာ ထည့်/Publish လုပ်ရန် `FIRESTORE-SHARED-RULES-PATCH-MY.md` ကို ဖတ်ပါ။
 - အသေးစိတ် `V2.8.2-RELIABILITY-FIX-MY.md` ကို ဖတ်ပါ။

@@ -326,7 +326,7 @@ export function ProfileManagementPage({ authorize, notify }: { authorize: (actio
         setStatus('Firebase Owner Account ဖန်တီးပြီး Login ဝင်ထားပါပြီ။');
       } else {
         await signInWithEmailAndPassword(firebaseAuth, authEmail.trim(), authPassword);
-        setStatus('Firebase Account Login အောင်မြင်ပါပြီ။');
+        setStatus('Firebase Login အောင်မြင်ပါပြီ။ Owner ဖြစ်ပါက Owner Dashboard၊ Cashier ဖြစ်ပါက Member Permission အတည်ပြုပြီး Cashier POS ကို ဖွင့်ပေးပါမယ်။');
       }
       setAuthPassword('');
     } catch (reason) { setError(getErrorMessage(reason)); }
@@ -343,8 +343,9 @@ export function ProfileManagementPage({ authorize, notify }: { authorize: (actio
 
   const signOutAccount = async () => {
     if (!firebaseAuth) return;
+    if (!window.confirm('ဒီလုပ်ဆောင်ချက်သည် လက်ရှိ Minimart App တစ်ခုလုံး၏ Firebase Account ကို Sign Out လုပ်ပါမည်။ ပြီးနောက် Profile မှ Owner သို့မဟုတ် Cashier Account ဖြင့် ပြန် Login ဝင်နိုင်ပါတယ်။ ဆက်လုပ်မလား။')) return;
     setBusy(true); setError(''); setStatus('');
-    try { await signOut(firebaseAuth); setStatus('Firebase Account မှ Sign Out လုပ်ပြီးပါပြီ။'); }
+    try { await signOut(firebaseAuth); setStatus('App Firebase Account မှ Sign Out လုပ်ပြီးပါပြီ။'); }
     catch (reason) { setError(getErrorMessage(reason)); }
     finally { setBusy(false); }
   };
@@ -398,20 +399,20 @@ export function ProfileManagementPage({ authorize, notify }: { authorize: (actio
         </form>
 
         <div className="panel form-panel profile-panel">
-          <div className="panel-heading"><div className="panel-icon"><Cloud size={18} /></div><div><h3>Firebase Owner Account</h3><p>Cloud Sync အတွက် Firebase Authentication။</p></div></div>
+          <div className="panel-heading"><div className="panel-icon"><Cloud size={18} /></div><div><h3>Firebase Business Account</h3><p>Owner နဲ့ Cashier နှစ်မျိုးလုံးအတွက် တူညီတဲ့ Login နေရာ။</p></div></div>
           {!firebaseConfigured || !firebaseAuth ? <div className="cloud-error">Firebase Configuration မပြည့်စုံသေးပါ။</div> : user ? <>
             <div className="profile-account-status"><BadgeCheck size={19} /><div><strong>Account ချိတ်ဆက်ထားသည်</strong><small>{user.email || user.uid}</small></div></div>
             <div className="profile-account-meta"><span>Display Name</span><strong>{user.displayName || 'မသတ်မှတ်ရသေး'}</strong><span>UID</span><code>{user.uid}</code></div>
-            <button className="button button-outline" type="button" onClick={() => void signOutAccount()} disabled={busy}><LogOut size={15} /> Sign Out</button>
+            <button className="button button-outline" type="button" onClick={() => void signOutAccount()} disabled={busy}><LogOut size={15} /> App Account Sign Out</button>
           </> : <>
             <form className="form-panel profile-auth-form" onSubmit={(event) => void submitAuth(event)}>
-              <label>Email<input required type="email" autoComplete="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="owner@example.com" /></label>
+              <label>Email<input required type="email" autoComplete="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="Owner သို့မဟုတ် Cashier Email" /></label>
               <label>Password<input required type="password" autoComplete={creatingAccount ? 'new-password' : 'current-password'} value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="အနည်းဆုံး 6 လုံး" /></label>
-              <button className="button button-primary" type="submit" disabled={busy}><LogIn size={15} /> {creatingAccount ? 'Owner Account ဖန်တီးရန်' : 'Login ဝင်ရန်'}</button>
+              <button className="button button-primary" type="submit" disabled={busy}><LogIn size={15} /> {creatingAccount ? 'Owner Account ဖန်တီးရန်' : 'Owner / Cashier Login ဝင်ရန်'}</button>
             </form>
             <div className="profile-auth-links"><button type="button" className="text-link" onClick={() => setCreatingAccount((value) => !value)}>{creatingAccount ? 'ရှိပြီးသား Account Login ဝင်မယ်' : 'Owner Account အသစ် ဖန်တီးမယ်'}</button><button type="button" className="text-link" onClick={() => void resetPassword()}>Password မေ့သွားပါသလား?</button></div>
           </>}
-          <div className="cloud-help">Logo၊ Banner နဲ့ Profile ဓာတ်ပုံတွေကို Firebase Storage မသုံးဘဲ ဒီ Device ရဲ့ IndexedDB ထဲမှာ အခမဲ့သိမ်းထားပါတယ်။ Device တခြားတစ်ခုသို့ ပြောင်းသုံးမယ်ဆို JSON Backup ကို ပုံတွေနဲ့အတူ Restore လုပ်ပါ။</div>
+          <div className="cloud-help">Cashier အဖြစ် Login ဝင်ရန် Owner က Firebase Authentication ထဲမှာ အကောင့်ဖန်တီးပြီး Team Access Member UID ကို အတိအကျ ချိတ်ထားရပါမယ်။ Login ဝင်ပြီးသည်နှင့် Role အလိုက် Owner Workspace သို့မဟုတ် Limited Cashier POS ကို အလိုအလျောက် ဖွင့်ပေးပါမယ်။<br /><br />Logo၊ Banner နဲ့ Profile ဓာတ်ပုံတွေကို Firebase Storage မသုံးဘဲ ဒီ Device ရဲ့ IndexedDB ထဲမှာ အခမဲ့သိမ်းထားပါတယ်။ Device တခြားတစ်ခုသို့ ပြောင်းသုံးမယ်ဆို JSON Backup ကို ပုံတွေနဲ့အတူ Restore လုပ်ပါ။</div>
         </div>
       </div>
     </div>

@@ -41,11 +41,14 @@ if ('serviceWorker' in navigator && import.meta.env.PROD) {
 }
 
 createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <AppErrorBoundary>
-      <AccessBootstrap />
-      <OwnerAutoSyncProvider />
+  <AppErrorBoundary>
+    {/* These two providers own Firebase side effects. Keep them outside React
+        StrictMode so development-only effect replay cannot open duplicate
+        Firestore listeners during local testing. The visible app stays strict. */}
+    <AccessBootstrap />
+    <OwnerAutoSyncProvider />
+    <StrictMode>
       <App />
-    </AppErrorBoundary>
-  </StrictMode>,
+    </StrictMode>
+  </AppErrorBoundary>,
 );

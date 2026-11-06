@@ -5,6 +5,15 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    // This new Firebase project is dedicated to one Minimart business.
+    // The first Owner UID is pinned so the already-created Cashier account
+    // cannot claim the business document during initial setup.
+    function isConfiguredOwner(businessId) {
+      return signedIn()
+        && businessId == 'store-mini-main'
+        && request.auth.uid == 'LjZX15uSeehtIbyL4SqO1HcyLyC2';
+    }
+
     function businessPath(businessId) {
       return /databases/$(database)/documents/businesses/$(businessId);
     }
@@ -13,10 +22,12 @@ service cloud.firestore {
       return /databases/$(database)/documents/businesses/$(businessId)/members/$(uid);
     }
 
-    // Owner bootstrap: the pre-existing business document stores ownerUid.
-    // Only that authenticated UID can read the business document as its Owner.
+    function branchPath(businessId, branchId) {
+      return /databases/$(database)/documents/businesses/$(businessId)/branches/$(branchId);
+    }
+
     function isBusinessOwner(businessId) {
-      return signedIn()
+      return isConfiguredOwner(businessId)
         && exists(businessPath(businessId))
         && get(businessPath(businessId)).data.ownerUid == request.auth.uid
         && get(businessPath(businessId)).data.active != false;
@@ -30,9 +41,7 @@ service cloud.firestore {
     }
 
     function isOwner(businessId) {
-      return isBusinessOwner(businessId)
-        || (isActiveMember(businessId)
-          && get(memberPath(businessId, request.auth.uid)).data.role == 'owner');
+      return isBusinessOwner(businessId);
     }
 
     function isCashierForBranch(businessId, branchId) {
@@ -45,34 +54,35 @@ service cloud.firestore {
 
     function validCashierMember(memberId) {
       return request.resource.data.keys().hasOnly([
-          'uid', 'email', 'displayName', 'role', 'branchIds', 'status',
-          'createdAt', 'updatedAt', 'createdBy'
+          'uid', 'email', 'displayName', 'role', 'branchIds',
+          'status', 'createdAt', 'updatedAt', 'createdBy'
         ])
+        && request.resource.data.uid == memberId
+        && request.resource.data.email is string
+        && request.resource.data.displayName is string
         && request.resource.data.role == 'cashier'
         && request.resource.data.status == 'active'
-        && request.resource.data.uid == memberId
         && request.resource.data.branchIds is list
         && request.resource.data.branchIds.size() == 1
-        && request.resource.data.email is string
-        && request.resource.data.displayName is string;
+        && request.resource.data.createdBy == request.auth.uid;
     }
 
     match /businesses/{businessId} {
-      // A signed-in Owner can read the parent doc using ownerUid. Active members
-      // can read it using their membership. Do not allow public listing.
-      allow get: if (signedIn() && resource.data.ownerUid == request.auth.uid) || isActiveMember(businessId);
+      // Owner reads only the configured business. Active Members may read the
+      // same document so the app can resolve their role and assigned Branch.
+      allow get: if isBusinessOwner(businessId) || isActiveMember(businessId);
       allow list: if false;
-      allow create: if signedIn()
+
+      // Bootstrap is restricted to the already-created Owner UID only.
+      allow create: if isConfiguredOwner(businessId)
         && request.resource.data.ownerUid == request.auth.uid
         && request.resource.data.active == true;
-      allow update: if signedIn()
+      allow update: if isConfiguredOwner(businessId)
         && resource.data.ownerUid == request.auth.uid
         && request.resource.data.ownerUid == resource.data.ownerUid;
-      // Deleting a parent document does not delete subcollections; keep it disabled.
       allow delete: if false;
 
       match /members/{memberId} {
-        // Each signed-in user can read only their own membership; Owner can manage list.
         allow get: if (signedIn() && request.auth.uid == memberId) || isOwner(businessId);
         allow list: if isOwner(businessId);
         allow create: if isOwner(businessId) && validCashierMember(memberId);
@@ -93,10 +103,8 @@ service cloud.firestore {
         allow create, update, delete: if isOwner(businessId);
 
         match /{collectionName}/{recordId} {
-          // Limited Cashier can read the assigned branch catalog only. Sales
-          // documents are visible by direct get only when attributed to that UID.
-          // The current app keeps cashier checkout local; Cloud stock-changing
-          // writes remain Owner-only until a trusted transaction endpoint exists.
+          // Cashier may read assigned-Branch catalog only. Checkout remains
+          // local until a trusted, idempotent server transaction is available.
           allow get: if isOwner(businessId)
             || (isCashierForBranch(businessId, branchId)
               && (collectionName in ['categories', 'products']
@@ -110,14 +118,10 @@ service cloud.firestore {
         }
       }
 
-      // Legacy direct shared documents are kept for backwards compatibility.
       match /shared/{collectionName}/{recordId} {
         allow read, write: if isOwner(businessId);
       }
 
-      // Current app path: shared/{collectionName}/records/{recordId}.
-      // The extra `records` collection level is required by CloudSyncPanel
-      // and OwnerAutoSync for both customers and suppliers.
       match /shared/{collectionName}/records/{recordId} {
         allow read, write: if isOwner(businessId);
       }
@@ -127,7 +131,6 @@ service cloud.firestore {
       }
     }
 
-    // Legacy per-account sync is retained for backwards compatibility.
     match /posAccounts/{userId}/posRecords/{recordId} {
       allow read, write: if signedIn() && request.auth.uid == userId;
     }
@@ -135,8 +138,9 @@ service cloud.firestore {
       allow read, write: if signedIn() && request.auth.uid == userId;
     }
 
-    // Legacy root-level stores/sales/store_settings collections are deliberately
-    // not opened by these rules. Review their existing app usage before publishing
-    // a full rules replacement, so older data flows are not accidentally blocked.
+    // All unspecified paths remain closed by default.
+    match /{document=**} {
+      allow read, write: if false;
+    }
   }
 }

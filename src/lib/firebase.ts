@@ -2,47 +2,37 @@ import { getApps, initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { getFirestore, initializeFirestore, persistentLocalCache, persistentMultipleTabManager } from 'firebase/firestore';
 
-// This app is intentionally pinned to the user's confirmed Firebase project.
-// Do not let an old .env.local from another project silently redirect Auth/Firestore.
+// Dedicated Minimart Firebase project created for the new production workspace.
+// The Web API key is public Firebase client configuration; access is protected
+// by Authentication and the Firestore Security Rules shipped with this project.
 export const firebaseConfig = {
-  apiKey: 'AIzaSyAxF46-Xzgo0FmVc7v-Zp8JNMQldZl_eQg',
-  authDomain: 'store-mini.firebaseapp.com',
-  databaseURL: 'https://store-mini-default-rtdb.asia-southeast1.firebasedatabase.app',
-  projectId: 'store-mini',
-  storageBucket: 'store-mini.firebasestorage.app',
-  messagingSenderId: '889663357607',
-  appId: '1:889663357607:web:30530c32408e3d03bb1182',
-  measurementId: 'G-E7EJRTDBQD',
+  apiKey: 'AIzaSyBG2_GhdQ4XLbIVrqdgnaXhUHetVLLVV0Y',
+  authDomain: 'minimart-production.firebaseapp.com',
+  projectId: 'minimart-production',
+  storageBucket: 'minimart-production.firebasestorage.app',
+  messagingSenderId: '1048943501819',
+  appId: '1:1048943501819:web:134f8b10669493ab702b5e',
+  measurementId: 'G-HDEZGPEKG1',
 };
 
 export const firebaseConfigured = true;
 
-// Reuse a Firebase app only when it is actually connected to store-mini.
-// This avoids accidentally reusing a stale [DEFAULT] app initialized for
-// another Firebase project during development/HMR or from another module.
-const expectedApiKey = firebaseConfig.apiKey;
+// Use a project-specific named app so an old [DEFAULT] app or HMR session
+// connected to store-mini cannot be silently reused for minimart-production.
+const appName = 'minimart-minimart-production';
 const isExpectedProject = (app: ReturnType<typeof getApps>[number]) =>
-  app.options.projectId === firebaseConfig.projectId && app.options.apiKey === expectedApiKey;
+  app.options.projectId === firebaseConfig.projectId && app.options.apiKey === firebaseConfig.apiKey;
 
 const existingExpectedApp = getApps().find(isExpectedProject);
-const hasDefaultApp = getApps().some((app) => app.name === '[DEFAULT]');
-const minimartNamedApp = getApps().find((app) => app.name === 'minimart-store-mini' && isExpectedProject(app));
-
-export const firebaseApp = existingExpectedApp
-  || minimartNamedApp
-  || (hasDefaultApp
-    ? initializeApp(firebaseConfig, 'minimart-store-mini')
-    : initializeApp(firebaseConfig));
-
+export const firebaseApp = existingExpectedApp || initializeApp(firebaseConfig, appName);
 export const firebaseAuth = getAuth(firebaseApp);
-// Long-polling transport is more tolerant of restrictive networks and proxies.
-// During Vite HMR the Firestore instance may already exist, so fall back to it.
+
+// Firestore database is provisioned in asia-southeast1 (Singapore) in Firebase.
+// No Realtime Database URL is configured because this application uses Firestore.
 export const firestore = (() => {
   try {
     return initializeFirestore(firebaseApp, {
       experimentalForceLongPolling: true,
-      // Keep Firestore's own pending writes and cache in IndexedDB across reloads.
-      // POS business data itself remains in the existing Zustand/localStorage store.
       localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
     });
   } catch {
@@ -50,5 +40,6 @@ export const firestore = (() => {
   }
 })();
 
-// The membership namespace is intentionally fixed for this Minimart business.
+// Retain the existing business namespace so the app's data paths stay stable.
+// This is a Firestore business document ID, not the Firebase project ID.
 export const FIREBASE_BUSINESS_ID = 'store-mini-main';

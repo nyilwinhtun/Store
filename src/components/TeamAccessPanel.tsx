@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { deleteApp, initializeApp } from 'firebase/app';
 import { createUserWithEmailAndPassword, getAuth, sendPasswordResetEmail, signOut } from 'firebase/auth';
-import { collection, doc, getDocs, runTransaction, updateDoc } from 'firebase/firestore';
-import { BadgeCheck, KeyRound, LoaderCircle, LockKeyhole, Plus, RefreshCw, ShieldCheck, Store, UserRound, UserX } from 'lucide-react';
+import { collection, doc, getDocFromServer, getDocs, runTransaction, updateDoc } from 'firebase/firestore';
+import { BadgeCheck, Copy, KeyRound, LoaderCircle, LockKeyhole, Plus, RefreshCw, ShieldCheck, Store, UserRound, UserX } from 'lucide-react';
 import { FIREBASE_BUSINESS_ID, firebaseApp, firebaseAuth, firebaseConfig, firestore } from '../lib/firebase';
 import { useBusinessAccess } from '../lib/businessAccess';
 import { usePosStore, type Branch } from '../store/usePosStore';
@@ -10,7 +10,10 @@ import { usePosStore, type Branch } from '../store/usePosStore';
 type ProvisionMode = 'create' | 'link';
 
 type MemberRecord = {
+  /** Canonical Firestore document ID; this must match Firebase Auth UID. */
   uid: string;
+  /** UID stored inside the document, retained to detect legacy/mismatched records. */
+  storedUid?: string;
   email: string;
   displayName: string;
   role: 'owner' | 'cashier';
@@ -54,12 +57,57 @@ export function TeamAccessPanel() {
   const loadMembers = useCallback(async () => {
     if (!firestore || access.status !== 'active' || access.role !== 'owner') return;
     const snapshot = await getDocs(collection(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'members'));
-    const rows = snapshot.docs.map((entry) => ({ uid: entry.id, ...entry.data() } as MemberRecord));
+    const rows = snapshot.docs.map((entry) => {
+      const data = entry.data();
+      // Firestore document ID is the authoritative Auth UID. Do not let a stale
+      // `uid` field inside the document overwrite it in the UI.
+      return { ...data, uid: entry.id, storedUid: typeof data.uid === 'string' ? data.uid : '' } as MemberRecord;
+    });
     rows.sort((a, b) => (a.role === 'owner' ? -1 : b.role === 'owner' ? 1 : a.email.localeCompare(b.email)));
     setMembers(rows);
   }, [access.role, access.status]);
 
   useEffect(() => { void loadMembers().catch((reason: unknown) => setError(messageFor(reason))); }, [loadMembers]);
+
+  const copyValue = async (value: string, label: string) => {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard API မရရှိပါ။');
+      await navigator.clipboard.writeText(value);
+      setMessage(`${label} ကို ကူးယူပြီးပါပြီ။`);
+      setError('');
+    } catch {
+      window.prompt(`${label} ကို ကိုယ်တိုင် Copy လုပ်ပါ။`, value);
+    }
+  };
+
+  const verifyMember = async (member: MemberRecord) => {
+    if (!firestore) return;
+    setBusy(true); setError(''); setMessage('');
+    const memberPath = `businesses/${FIREBASE_BUSINESS_ID}/members/${member.uid}`;
+    try {
+      const snapshot = await getDocFromServer(doc(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'members', member.uid));
+      if (!snapshot.exists()) {
+        setError(`Member Document မတွေ့ပါ: ${memberPath}`);
+        return;
+      }
+      const data = snapshot.data();
+      const issues: string[] = [];
+      if (data.uid !== member.uid) issues.push('Document ID နဲ့ uid Field မတူပါ');
+      if (String(data.email || '').trim().toLowerCase() !== member.email.trim().toLowerCase()) issues.push('Email မကိုက်ညီပါ');
+      if (data.role !== 'cashier') issues.push('Role သည် cashier မဟုတ်ပါ');
+      if (data.status !== 'active') issues.push('Status သည် active မဟုတ်ပါ');
+      if (!Array.isArray(data.branchIds) || data.branchIds.length !== 1 || typeof data.branchIds[0] !== 'string') issues.push('Branch တစ်ခုတည်း မသတ်မှတ်ထားပါ');
+      if (issues.length) {
+        setError(`Membership စစ်ဆေးရာတွင် မကိုက်ညီမှုရှိပါတယ်: ${issues.join('၊ ')}။ Path: ${memberPath}`);
+        return;
+      }
+      setMessage(`Membership မှန်ကန်ကြောင်း Server မှ အတည်ပြုပြီးပါပြီ။ Cashier Login UID နဲ့ ဒီ Document ID ကို တိုက်စစ်ပါ: ${memberPath}`);
+    } catch (reason) {
+      setError(`Membership ကို Server မှ မစစ်နိုင်ပါ: ${messageFor(reason)} · ${memberPath}`);
+    } finally {
+      setBusy(false);
+    }
+  };
   useEffect(() => {
     if (branchIds.length === 0 && activeBranches.length > 0) setBranchIds([activeBranches[0].id]);
   }, [activeBranches, branchIds.length]);
@@ -115,6 +163,20 @@ export function TeamAccessPanel() {
       }
       transaction.set(memberRef, memberData);
     });
+
+    // Read the exact document back from the server. This catches a successful
+    // Auth creation with a missing/wrongly keyed Business membership before
+    // telling the Owner that the Cashier is ready to sign in.
+    const savedMember = await getDocFromServer(memberRef);
+    if (!savedMember.exists()) {
+      throw new Error(`Firestore Member Record ပြန်စစ်ရာတွင် မတွေ့ပါ: businesses/${FIREBASE_BUSINESS_ID}/members/${uid.trim()}`);
+    }
+    const savedData = savedMember.data();
+    if (savedData.uid !== uid.trim() || savedData.role !== 'cashier' || savedData.status !== 'active'
+      || !Array.isArray(savedData.branchIds) || savedData.branchIds.length !== 1
+      || String(savedData.email || '').trim().toLowerCase() !== email.trim().toLowerCase()) {
+      throw new Error(`Firestore Member Record ရှိသော်လည်း UID / Email / Role / Branch အချက်အလက် မကိုက်ညီပါ။ Member Path: businesses/${FIREBASE_BUSINESS_ID}/members/${uid.trim()}`);
+    }
   };
 
   const createCashier = async (event: FormEvent) => {
@@ -253,9 +315,9 @@ export function TeamAccessPanel() {
     <div className="panel-heading team-list-heading"><div><h4>Member စာရင်း</h4><p>{members.length} accounts</p></div><button className="button button-outline" type="button" onClick={() => void loadMembers()} disabled={busy}><RefreshCw size={14} /> ပြန်စစ်ရန်</button></div>
     {members.length === 0 ? <div className="empty-state"><UserRound size={22} /><strong>Member မရှိသေးပါ</strong><p>Owner Account ကို Firestore မှာ အရင်အတည်ပြုပြီး Cashier အသစ် ဖန်တီးနိုင်ပါတယ်။</p></div> : <div className="team-member-list">{members.map((member) => <div className="team-member-row" key={member.uid}>
       <div className="team-member-avatar">{member.role === 'owner' ? <BadgeCheck size={18} /> : <UserRound size={18} />}</div>
-      <div className="team-member-main"><strong>{member.displayName || member.email || member.uid}</strong><small>{member.email} · {member.role === 'owner' ? 'Owner' : 'Limited Cashier'}</small>{member.role === 'owner' ? <small>ဆိုင်အားလုံး</small> : <label className="team-member-branch-assignment">တာဝန်ယူမည့် ဆိုင်ခွဲ <select value={member.branchIds?.length === 1 ? member.branchIds[0] : ''} onChange={(event) => void reassignMemberBranch(member, event.target.value)} disabled={busy}><option value="">ဆိုင်ခွဲတစ်ခု ရွေးချယ်ပါ</option>{activeBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>}{member.role === 'cashier' && member.branchIds?.length !== 1 && <small className="team-member-branch-warning">Branch တစ်ခုတည်း သတ်မှတ်ရန် လိုအပ်ပါသည်။</small>}</div>
+      <div className="team-member-main"><strong>{member.displayName || member.email || member.uid}</strong><small>{member.email} · {member.role === 'owner' ? 'Owner' : 'Limited Cashier'}</small><small className="team-member-uid">Firestore Document UID: <code>{member.uid}</code><button className="team-copy-uid" type="button" onClick={() => void copyValue(member.uid, 'Firebase UID')} title="UID ကူးရန်"><Copy size={12} /> UID ကူးရန်</button></small>{member.storedUid && member.storedUid !== member.uid && <small className="team-member-branch-warning">သတိပြုရန်: Document ID နှင့် Document ထဲက uid Field မတူပါ။ Cashier Login UID ကို Document ID နဲ့ တိုက်စစ်ပါ။</small>}{member.role === 'owner' ? <small>ဆိုင်အားလုံး</small> : <label className="team-member-branch-assignment">တာဝန်ယူမည့် ဆိုင်ခွဲ <select value={member.branchIds?.length === 1 ? member.branchIds[0] : ''} onChange={(event) => void reassignMemberBranch(member, event.target.value)} disabled={busy}><option value="">ဆိုင်ခွဲတစ်ခု ရွေးချယ်ပါ</option>{activeBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>}{member.role === 'cashier' && member.branchIds?.length !== 1 && <small className="team-member-branch-warning">Branch တစ်ခုတည်း သတ်မှတ်ရန် လိုအပ်ပါသည်။</small>}</div>
       <span className={`tag ${member.status === 'active' ? 'tag-success' : 'tag-warn'}`}>{member.status === 'active' ? 'Active' : 'Disabled'}</span>
-      {member.role === 'cashier' && <div className="team-member-actions"><button className="small-action" type="button" onClick={() => void resendReset(member)} disabled={busy} title="Password Reset Email ပို့ရန်"><KeyRound size={14} /></button><button className="small-action" type="button" onClick={() => void setMemberStatus(member, member.status === 'active' ? 'disabled' : 'active')} disabled={busy} title={member.status === 'active' ? 'ပိတ်ရန်' : 'ပြန်ဖွင့်ရန်'}>{member.status === 'active' ? <UserX size={14} /> : <BadgeCheck size={14} />}</button></div>}
+      {member.role === 'cashier' && <div className="team-member-actions"><button className="small-action" type="button" onClick={() => void verifyMember(member)} disabled={busy} title="Firestore Member Path ကို Server မှ စစ်ရန်"><ShieldCheck size={14} /></button><button className="small-action" type="button" onClick={() => void copyValue(`businesses/${FIREBASE_BUSINESS_ID}/members/${member.uid}`, 'Member Path')} disabled={busy} title="Member Path ကူးရန်"><Copy size={14} /></button><button className="small-action" type="button" onClick={() => void resendReset(member)} disabled={busy} title="Password Reset Email ပို့ရန်"><KeyRound size={14} /></button><button className="small-action" type="button" onClick={() => void setMemberStatus(member, member.status === 'active' ? 'disabled' : 'active')} disabled={busy} title={member.status === 'active' ? 'ပိတ်ရန်' : 'ပြန်ဖွင့်ရန်'}>{member.status === 'active' ? <UserX size={14} /> : <BadgeCheck size={14} />}</button></div>}
     </div>)}</div>}
     {message && <div className="cloud-help">{message}</div>}
     {error && <div className="cloud-error">{error}</div>}
