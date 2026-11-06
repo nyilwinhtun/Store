@@ -491,3 +491,10 @@
 .auto-sync-conflict .auto-sync-status-title,
 .auto-sync-error .auto-sync-status-title { color: #b45309; }
 .auto-sync-conflict, .auto-sync-error { border-color: #f0c7a7; }
+
+/* v2.9.0: single-branch assignment controls for Limited Cashier */
+.team-single-branch-select{display:flex;align-items:center;gap:9px;max-width:420px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--muted)}
+.team-single-branch-select select,.team-member-branch-assignment select{min-width:0;flex:1;border:0;outline:0;background:transparent;color:var(--ink);font:inherit;padding:4px 2px}
+.team-member-branch-assignment{display:flex;align-items:center;gap:7px;max-width:320px;font-size:10px;color:var(--muted)}
+.team-member-branch-assignment select{border:1px solid var(--line);border-radius:8px;padding:6px 8px;background:var(--panel-soft)}
+.team-member-branch-warning{color:#b45309!important;font-weight:700}

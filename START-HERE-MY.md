@@ -1,6 +1,9 @@
-# Minimart POS v2.8.3 — PWA + Automatic Owner Device Sync
 
-ဒီ Version က v2.7.5 ရဲ့ လက်ရှိလုပ်ဆောင်ချက်အားလုံးကို ဆက်ထိန်းပြီး Owner Device များအကြား Real-time Auto Sync, Offline Recovery နဲ့ Sync Conflict Protection ကို ထပ်ဖြည့်ထားပါတယ်။
+> v2.8.5 React Runtime Fix: React/ReactDOM versions are now explicitly matched and Vite deduplicates React so Zustand hooks use the same runtime. See `V2.8.5-REACT-RUNTIME-FIX-MY.md` for update steps.
+
+# Minimart POS v2.8.5 — PWA + Device Sync + Cashier Account Fix
+
+ဒီ Version က v2.8.3 ရဲ့ Owner Device Auto Sync နဲ့ PWA ပြင်ဆင်ချက်များကို ဆက်ထိန်းပြီး Cashier Account ဖန်တီးခြင်း၊ ရှိပြီးသား Firebase Account ကို UID ဖြင့် ချိတ်ဆက်ခြင်းနှင့် Member Record ပြန်လည်ပြင်ဆင်နိုင်မှုကို ထပ်ဖြည့်ထားပါတယ်။
 
 ## Mac မှာ စတင်ရန်
 
@@ -81,3 +84,15 @@ Browser မှာ `http://localhost:5173` ကို ဖွင့်ပါ။ Loc
 - Customer/Supplier Firestore Rules မပြည့်စုံလျှင် Shared Data ကို ခေတ္တကျော်ပြီး Product/Stock/Sales စသည့် Branch Data Sync ကို ဆက်လုပ်မည်။ Customer/Supplier Sync အပြည့်ရရန် `FIRESTORE-SHARED-RULES-PATCH-MY.md` ကို Firebase Console တွင် Publish လုပ်ရန် လိုသည်။
 - **Branch သတိပြုရန်:** Device တစ်ခုချင်းစီ၏ Active Branch ကို သီးခြားရွေးထားသည်။ Laptop သည် Branch A၊ Phone သည် Branch B ဖြစ်လျှင် Branch A ၏ Product ကို Phone ၏ Branch B စာရင်းထဲတွင် မပြပါ။ နှိုင်းယှဉ်စမ်းသပ်ရာတွင် Device နှစ်ခုလုံး၌ Branch တူအောင် ရွေးပါ။ Branch မတူဘဲ သီးခြားအသုံးပြုခြင်းသည် Multi-Branch POS ၏ ရည်ရွယ်ထားသောလုပ်ဆောင်ပုံဖြစ်သည်။
 - Cashier Auto Sync ကို ဤဗားရှင်းတွင် မဖွင့်သေးပါ။ Owner Account အတွက်သာ Auto Sync ဖြစ်သည်။
+
+
+## v2.8.5 — Cashier Account Fix
+
+1. Profile → **ဝန်ထမ်းအကောင့် / Branch Permission** သို့ ဝင်ပါ။
+2. Account အသစ်အတွက် **Account အသစ်ဖန်တီးရန်** ကိုရွေးပြီး အမည်၊ Email၊ Password နှင့် Branch များ ဖြည့်ပါ။
+3. Firebase Authentication ထဲတွင် Email ရှိပြီးသားဆိုလျှင် ထပ်ဖန်တီးမည့်အစား **ရှိပြီးသား Account ချိတ်ရန်** ကိုရွေးပါ။
+4. Firebase Console → Authentication → Users မှ အဲဒီ Account ၏ UID အတိအကျကို ကူးပြီး App ထဲထည့်ပါ။ အမည်၊ Email နှင့် Branch များကို ပြည့်စုံစွာ ဖြည့်ပြီး ချိတ်ပါ။
+5. Member စာရင်းထဲ Account ပေါ်လာပြီးနောက် Password မသိပါက Password Reset ခလုတ်ဖြင့် Email ပို့နိုင်ပါတယ်။
+6. Firestore Rules ထဲတွင် Owner သည် `businesses/{businessId}/members/{uid}` ကို Create လုပ်ခွင့်ရှိကြောင်း စစ်ဆေးပါ။ Rules ပြင်ပြီးပါက Firebase Console မှ Publish လုပ်ပါ။
+
+**အရေးကြီး:** Auth Account ဖန်တီးပြီး Firestore Member Record မသိမ်းနိုင်ခဲ့ပါက Error ထဲမှာ UID ပြပါမယ်။ Account အသစ်ထပ်မဖန်တီးဘဲ “ရှိပြီးသား Account ချိတ်ရန်” မှာ အဲဒီ UID ကို အသုံးပြုပါ။ ဒီ update က Cashier Auto Sync သို့မဟုတ် Server-side POS Sale Posting ကို မထည့်ထားသေးပါ။

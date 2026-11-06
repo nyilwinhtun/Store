@@ -1,4 +1,4 @@
-# Firebase Owner / Cashier Access & Cloud Sync — v2.8.2
+# Firebase Owner / Cashier Access & Cloud Sync — v2.8.4
 
 ## Project
 - Firebase Project: `store-mini`
@@ -41,3 +41,12 @@ Logo / Banner / Owner Photo များသည် Local IndexedDB ထဲမှ�
 4. တူညီသော Record ကို နှစ်ဖက်ပြင်ထားလျှင် Conflict ပြပြီး Sync ရပ်မည်။
 
 ဒီ Version သည် Manual Owner Sync ဖြစ်ပြီး Real-time Auto Sync / Cashier Offline Outbox မပါသေးပါ။
+
+
+## v2.8.4 Cashier Account Create / Link
+
+Owner သည် App ထဲမှ Secondary Firebase Auth App ကိုသုံးပြီး Cashier Account အသစ်ဖန်တီးနိုင်သည်။ Auth Account ဖန်တီးပြီး Firestore Membership Write မအောင်မြင်ပါက Account UID ကို ပြသမည်။ အဲဒီ Account ကို ထပ်မဖန်တီးဘဲ **ရှိပြီးသား Account ချိတ်ရန်** မှ UID အတိအကျဖြင့် Member Document ဖန်တီးနိုင်သည်။
+
+Membership Path: `businesses/store-mini-main/members/{uid}`. Owner-only `create` Rule သည် `role == 'cashier'`, `status == 'active'`, `uid == memberId`, `branchIds` သည် non-empty list ဖြစ်ခြင်း၊ allow-listed fields သုံးခြင်းတို့ကို စစ်ဆေးရမည်။ Project ထဲက `firestore.rules` တွင် ဒီစစ်ဆေးချက်များ ပါဝင်ပြီးသားဖြစ်သော်လည်း Firebase Console ထဲက deployed Rules သည် အတူတူဟုတ်မဟုတ် သီးခြားစစ်ပါ။
+
+Existing Auth User ကို link လုပ်ရာတွင် Firebase Console → Authentication → Users မှ UID ကို အတိအကျယူပါ။ UID မမှန်လျှင် မမှန်သော User အတွက် Membership တည်ဆောက်မိနိုင်သည်။ Owner/Cashier ရှိပြီးသား Member Document ကို overwrite မလုပ်စေရန် App က transaction ဖြင့် ရှိမရှိစစ်ပြီးမှ create လုပ်သည်။

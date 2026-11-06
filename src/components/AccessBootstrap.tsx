@@ -210,11 +210,13 @@ export function AccessBootstrap() {
             });
             return;
           }
-          if (!role || (role === 'cashier' && branchIds.length === 0)) {
+          if (!role || (role === 'cashier' && branchIds.length !== 1)) {
             setAccess({
               status: 'error', uid: user.uid, email: user.email || '',
               displayName: user.displayName || '', role: null, branchIds,
-              message: 'Member Role သို့မဟုတ် Branch Assignment မမှန်ကန်ပါ။ Cashier အတွက် branchIds အနည်းဆုံးတစ်ခု လိုအပ်ပါတယ်။',
+              message: role === 'cashier'
+                ? `Limited Cashier အတွက် Branch တစ်ခုတည်း သတ်မှတ်ထားရပါမယ်။ လက်ရှိ ${branchIds.length} ခု ရှိနေပါတယ်။ Owner ကို ဆက်သွယ်ပြီး Team Access မှာ Branch တစ်ခုတည်း ပြန်ရွေးပါ။`
+                : 'Member Role မမှန်ကန်ပါ။ Owner ကို ဆက်သွယ်ပါ။',
             });
             return;
           }

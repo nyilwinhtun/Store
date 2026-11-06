@@ -53,6 +53,9 @@ export type Sale = {
   total: number;
   profit: number;
   status: 'completed' | 'voided';
+  createdByUid?: string;
+  createdByEmail?: string;
+  createdByName?: string;
 };
 export type Expense = {
   branchId?: string;

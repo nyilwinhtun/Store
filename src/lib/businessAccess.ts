@@ -40,9 +40,10 @@ export const useBusinessAccess = create<BusinessAccessState>((set) => ({
 
 export function canUsePage(role: BusinessRole | null, page: string): boolean {
   if (role !== 'cashier') return true;
-  return ['dashboard', 'pos', 'sales', 'cash'].includes(page);
+  // Limited Cashier: POS and only their own sales history.
+  return ['pos', 'sales'].includes(page);
 }
 
 export function canAccessBranch(role: BusinessRole | null, branchIds: string[], branchId: string): boolean {
-  return role !== 'cashier' || branchIds.includes(branchId);
+  return role !== 'cashier' || (branchIds.length === 1 && branchIds[0] === branchId);
 }

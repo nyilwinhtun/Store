@@ -38,7 +38,9 @@ service cloud.firestore {
     function isCashierForBranch(businessId, branchId) {
       return isActiveMember(businessId)
         && get(memberPath(businessId, request.auth.uid)).data.role == 'cashier'
-        && branchId in get(memberPath(businessId, request.auth.uid)).data.branchIds;
+        && get(memberPath(businessId, request.auth.uid)).data.branchIds is list
+        && get(memberPath(businessId, request.auth.uid)).data.branchIds.size() == 1
+        && get(memberPath(businessId, request.auth.uid)).data.branchIds[0] == branchId;
     }
 
     function validCashierMember(memberId) {
@@ -50,7 +52,7 @@ service cloud.firestore {
         && request.resource.data.status == 'active'
         && request.resource.data.uid == memberId
         && request.resource.data.branchIds is list
-        && request.resource.data.branchIds.size() > 0
+        && request.resource.data.branchIds.size() == 1
         && request.resource.data.email is string
         && request.resource.data.displayName is string;
     }
@@ -82,7 +84,7 @@ service cloud.firestore {
             'displayName', 'branchIds', 'status', 'updatedAt'
           ])
           && request.resource.data.branchIds is list
-          && request.resource.data.branchIds.size() > 0;
+          && request.resource.data.branchIds.size() == 1;
         allow delete: if isOwner(businessId) && resource.data.role == 'cashier';
       }
 
@@ -91,42 +93,37 @@ service cloud.firestore {
         allow create, update, delete: if isOwner(businessId);
 
         match /{collectionName}/{recordId} {
-          allow read: if isOwner(businessId) || isCashierForBranch(businessId, branchId);
-          allow create, update: if isOwner(businessId)
+          // Limited Cashier can read the assigned branch catalog only. Sales
+          // documents are visible by direct get only when attributed to that UID.
+          // The current app keeps cashier checkout local; Cloud stock-changing
+          // writes remain Owner-only until a trusted transaction endpoint exists.
+          allow get: if isOwner(businessId)
             || (isCashierForBranch(businessId, branchId)
-              && collectionName in [
-                'sales', 'heldItems', 'customerPayments', 'cashShifts',
-                'cashMovements', 'activityLogs'
-              ]);
-          allow delete: if isOwner(businessId);
+              && (collectionName in ['categories', 'products']
+                || (collectionName == 'sales'
+                  && resource.data.payload.createdByUid == request.auth.uid
+                  && resource.data.payload.branchId == branchId)));
+          allow list: if isOwner(businessId)
+            || (isCashierForBranch(businessId, branchId)
+              && collectionName in ['categories', 'products']);
+          allow create, update, delete: if isOwner(businessId);
         }
       }
 
       // Legacy direct shared documents are kept for backwards compatibility.
       match /shared/{collectionName}/{recordId} {
-        allow read: if isOwner(businessId) || isActiveMember(businessId);
-        allow create, update: if isOwner(businessId)
-          || (isActiveMember(businessId)
-            && get(memberPath(businessId, request.auth.uid)).data.role == 'cashier'
-            && collectionName == 'customers');
-        allow delete: if isOwner(businessId);
+        allow read, write: if isOwner(businessId);
       }
 
       // Current app path: shared/{collectionName}/records/{recordId}.
       // The extra `records` collection level is required by CloudSyncPanel
       // and OwnerAutoSync for both customers and suppliers.
       match /shared/{collectionName}/records/{recordId} {
-        allow read: if isOwner(businessId) || isActiveMember(businessId);
-        allow create, update: if isOwner(businessId)
-          || (isActiveMember(businessId)
-            && get(memberPath(businessId, request.auth.uid)).data.role == 'cashier'
-            && collectionName == 'customers');
-        allow delete: if isOwner(businessId);
+        allow read, write: if isOwner(businessId);
       }
 
       match /meta/{metaId} {
-        allow read: if isOwner(businessId) || isActiveMember(businessId);
-        allow write: if isOwner(businessId);
+        allow read, write: if isOwner(businessId);
       }
     }
 

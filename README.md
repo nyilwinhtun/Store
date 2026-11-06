@@ -1,6 +1,16 @@
-# Minimart POS — v2.8.3
 
-## v2.8.3 Auto Device Sync Repair
+> v2.8.5 React Runtime Fix: React/ReactDOM versions are now explicitly matched and Vite deduplicates React so Zustand hooks use the same runtime. See `V2.8.5-REACT-RUNTIME-FIX-MY.md` for update steps.
+
+# Minimart POS — v2.9.0
+
+### Cashier Account Recovery / Existing Account Linking — v2.8.5
+- Owner can create a new Cashier using a secondary Firebase Auth app without signing out the Owner session.
+- If Authentication account creation succeeds but the Firestore membership write fails, the created UID is preserved and shown for recovery; it is not silently deleted.
+- Owner can link an existing Firebase Authentication user by exact UID, email, display name, and assigned branches.
+- Membership creation uses a Firestore transaction and refuses to overwrite an existing Member or Owner record.
+- Cashier account linking requires the deployed Firestore Rules to allow the authenticated Business Owner to create `businesses/{businessId}/members/{uid}` documents.
+
+## v2.8.4 Auto Device Sync Repair
 - Owner device with no local sync baseline now performs an automatic, non-destructive Cloud/Local merge after Owner access is verified.
 - Cloud-only records are pulled; unique local records are uploaded; same-ID conflicting data stops for review instead of overwriting either side.
 - Customer/Supplier permission-denied rules no longer block Product, Stock, Sales, and other branch-record synchronization. Customer/Supplier sync remains paused until the nested Firestore rules are published.
@@ -41,7 +51,7 @@ npm run dev -- --host --port 5173 --strictPort
 ```
 
 ## Important limitations
-- v2.8.3 automatically bootstraps a new Owner device with a safe Cloud/Local merge. Existing Owner devices use real-time sync after their per-device baseline exists.
+- v2.8.4 automatically bootstraps a new Owner device with a safe Cloud/Local merge. Existing Owner devices use real-time sync after their per-device baseline exists.
 - Reversal is local-first. Do not reverse the same transfer on another device before synchronizing. Sync the latest state first to avoid conflicting local copies.
 - Reversal is intentionally refused when the exact transferred batch quantity is no longer available at the destination.
 - Firestore Security Rules are not automatically changed by this update. Review and publish rules safely before production use.
@@ -61,7 +71,7 @@ See `V2.8.0-REALTIME-CLOUD-SYNC-MY.md` for setup, limitations, and test steps.
 - GitHub Pages project path အတွက် relative PWA path များကို သတ်မှတ်ထားသည်။
 - Service Worker navigation fallback ပါဝင်သည်။
 
-## v2.8.2 — PWA + Cloud Sync Reliability Fix (superseded by v2.8.3)
+## v2.8.2 — PWA + Cloud Sync Reliability Fix (superseded by v2.8.4)
 
 - PWA `start_url` ကို `./index.html` သတ်မှတ်ပြီး Service Worker ကို registration scope အောက်ရှိ URL များကိုသာ cache လုပ်စေသည်။
 - Cache cleanup သည် Minimart အမည်တပ်ထားသော cache များကိုသာ ဖျက်သည်။ GitHub Pages origin တူညီသည့် အခြား project များ၏ cache ကို မထိပါ။

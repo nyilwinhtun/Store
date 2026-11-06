@@ -18,5 +18,9 @@ export default defineConfig({
   // Relative asset paths work for both a domain root and GitHub Pages project paths.
   base: './',
   plugins: [react(), offlinePrecacheManifest],
+  // Zustand's React bindings must resolve the exact same React runtime as ReactDOM.
+  // This prevents a null hook dispatcher when dependency trees contain duplicate React copies.
+  resolve: { dedupe: ['react', 'react-dom'] },
+  optimizeDeps: { include: ['react', 'react-dom', 'zustand'] },
   build: { outDir: 'dist', sourcemap: false },
 });
