@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="my">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0f766e" />
+    <script>
+      try {
+        if (localStorage.getItem('minimart-ui-theme-v1') === 'dark') {
+          document.documentElement.dataset.theme = 'dark';
+          document.querySelector('meta[name="theme-color"]')?.setAttribute('content', '#0b1220');
+        }
+      } catch { /* Theme preference is optional when browser storage is unavailable. */ }
+    </script>
+    <script>
+      // In local development, remove an older root-scoped PWA worker that may
+      // keep serving a previous app title. This does not clear LocalStorage or IndexedDB.
+      try {
+        const isLocalDev = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+        const cleanupKey = 'minimart-dev-sw-cleanup-v271';
+        if (isLocalDev && 'serviceWorker' in navigator && !sessionStorage.getItem(cleanupKey)) {
+          navigator.serviceWorker.getRegistrations().then(async (registrations) => {
+            const rootScope = `${location.origin}/`;
+            const stale = registrations.filter((registration) => registration.scope === rootScope);
+            if (stale.length) {
+              sessionStorage.setItem(cleanupKey, '1');
+              await Promise.all(stale.map((registration) => registration.unregister()));
+              location.reload();
+            }
+          }).catch(() => {});
+        }
+      } catch { /* Development cache cleanup is best-effort only. */ }
+    </script>
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <link rel="apple-touch-icon" href="./icon-192.png" />
+    <meta name="application-name" content="Minimart POS" />
+    <meta name="apple-mobile-web-app-title" content="Minimart" />
+    <meta name="description" content="Minimart POS — Sales, inventory and branch management" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Pyidaungsu:wght@400;600;700&display=swap" rel="stylesheet" />
+    <title>Minimart POS</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./src/main.tsx"></script>
+  </body>
+</html>

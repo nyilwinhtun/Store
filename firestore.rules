@@ -1,0 +1,132 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function businessPath(businessId) {
+      return /databases/$(database)/documents/businesses/$(businessId);
+    }
+
+    function memberPath(businessId, uid) {
+      return /databases/$(database)/documents/businesses/$(businessId)/members/$(uid);
+    }
+
+    // Owner bootstrap: the pre-existing business document stores ownerUid.
+    // Only that authenticated UID can read the business document as its Owner.
+    function isBusinessOwner(businessId) {
+      return signedIn()
+        && exists(businessPath(businessId))
+        && get(businessPath(businessId)).data.ownerUid == request.auth.uid
+        && get(businessPath(businessId)).data.active != false;
+    }
+
+    function isActiveMember(businessId) {
+      return signedIn()
+        && exists(memberPath(businessId, request.auth.uid))
+        && get(memberPath(businessId, request.auth.uid)).data.status == 'active'
+        && get(memberPath(businessId, request.auth.uid)).data.uid == request.auth.uid;
+    }
+
+    function isOwner(businessId) {
+      return isBusinessOwner(businessId)
+        || (isActiveMember(businessId)
+          && get(memberPath(businessId, request.auth.uid)).data.role == 'owner');
+    }
+
+    function isCashierForBranch(businessId, branchId) {
+      return isActiveMember(businessId)
+        && get(memberPath(businessId, request.auth.uid)).data.role == 'cashier'
+        && branchId in get(memberPath(businessId, request.auth.uid)).data.branchIds;
+    }
+
+    function validCashierMember(memberId) {
+      return request.resource.data.keys().hasOnly([
+          'uid', 'email', 'displayName', 'role', 'branchIds', 'status',
+          'createdAt', 'updatedAt', 'createdBy'
+        ])
+        && request.resource.data.role == 'cashier'
+        && request.resource.data.status == 'active'
+        && request.resource.data.uid == memberId
+        && request.resource.data.branchIds is list
+        && request.resource.data.branchIds.size() > 0
+        && request.resource.data.email is string
+        && request.resource.data.displayName is string;
+    }
+
+    match /businesses/{businessId} {
+      // A signed-in Owner can read the parent doc using ownerUid. Active members
+      // can read it using their membership. Do not allow public listing.
+      allow get: if (signedIn() && resource.data.ownerUid == request.auth.uid) || isActiveMember(businessId);
+      allow list: if false;
+      allow create: if signedIn()
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.active == true;
+      allow update: if signedIn()
+        && resource.data.ownerUid == request.auth.uid
+        && request.resource.data.ownerUid == resource.data.ownerUid;
+      // Deleting a parent document does not delete subcollections; keep it disabled.
+      allow delete: if false;
+
+      match /members/{memberId} {
+        // Each signed-in user can read only their own membership; Owner can manage list.
+        allow get: if (signedIn() && request.auth.uid == memberId) || isOwner(businessId);
+        allow list: if isOwner(businessId);
+        allow create: if isOwner(businessId) && validCashierMember(memberId);
+        allow update: if isOwner(businessId)
+          && resource.data.role == 'cashier'
+          && request.resource.data.role == 'cashier'
+          && request.resource.data.uid == memberId
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'displayName', 'branchIds', 'status', 'updatedAt'
+          ])
+          && request.resource.data.branchIds is list
+          && request.resource.data.branchIds.size() > 0;
+        allow delete: if isOwner(businessId) && resource.data.role == 'cashier';
+      }
+
+      match /branches/{branchId} {
+        allow read: if isOwner(businessId) || isCashierForBranch(businessId, branchId);
+        allow create, update, delete: if isOwner(businessId);
+
+        match /{collectionName}/{recordId} {
+          allow read: if isOwner(businessId) || isCashierForBranch(businessId, branchId);
+          allow create, update: if isOwner(businessId)
+            || (isCashierForBranch(businessId, branchId)
+              && collectionName in [
+                'sales', 'heldItems', 'customerPayments', 'cashShifts',
+                'cashMovements', 'activityLogs'
+              ]);
+          allow delete: if isOwner(businessId);
+        }
+      }
+
+      match /shared/{collectionName}/{recordId} {
+        allow read: if isOwner(businessId) || isActiveMember(businessId);
+        allow create, update: if isOwner(businessId)
+          || (isActiveMember(businessId)
+            && get(memberPath(businessId, request.auth.uid)).data.role == 'cashier'
+            && collectionName == 'customers');
+        allow delete: if isOwner(businessId);
+      }
+
+      match /meta/{metaId} {
+        allow read: if isOwner(businessId) || isActiveMember(businessId);
+        allow write: if isOwner(businessId);
+      }
+    }
+
+    // Legacy per-account sync is retained for backwards compatibility.
+    match /posAccounts/{userId}/posRecords/{recordId} {
+      allow read, write: if signedIn() && request.auth.uid == userId;
+    }
+    match /posAccounts/{userId}/posMeta/{metaId} {
+      allow read, write: if signedIn() && request.auth.uid == userId;
+    }
+
+    // Legacy root-level stores/sales/store_settings collections are deliberately
+    // not opened by these rules. Review their existing app usage before publishing
+    // a full rules replacement, so older data flows are not accidentally blocked.
+  }
+}
