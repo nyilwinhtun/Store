@@ -1,21 +1,30 @@
-## New Dedicated Firebase Project
+# Minimart POS — v2.9.7
 
-This build is connected to `minimart-production` (Firestore region: Singapore). The internal Firestore Business ID remains `store-mini-main`. Seed the Owner document and publish `firestore.rules` using `NEW-FIREBASE-PROJECT-SETUP-MY.md` before running.
-
-> v2.9.4 Cashier Access + Mobile Split POS: TeamAccessPanel treats the Firestore member document ID as the canonical Firebase Auth UID, exposes copyable UID/path, and adds a server-side member verification action. The unassigned gate provides Cashier-specific owner-linking instructions. Firebase Login is centralized at Profile → Firebase Business Account. Mobile POS uses independently scrollable product and cart panes with a visible checkout area. ZM04 Android native Bluetooth printing remains a separate Capacitor/Android integration phase; desktop/browser printing is retained. Cashier Cloud Auto Sync / server-side sales posting is not included in v2.9.4.
-
-> v2.9.3 Barcode Upgrade: Products support an optional dedicated barcode field (separate from SKU), Bluetooth HID keyboard scanners, POS scan-to-cart, receiving scan lookup, duplicate code protection, and phone camera scanning with ZXing. See `V2.9.3-BARCODE-AND-CAMERA-SCAN-MY.md`. Camera requires HTTPS/localhost permission. Physical scanner and camera hardware tests remain pending.
-
-> v2.9.1 Receipt Print Choice: Checkout now saves the sale first, then lets the cashier print a receipt or keep an amount-only screen. Includes 58/80mm selection and test print. Direct Bluetooth pairing is not implemented; see `V2.9.1-RECEIPT-PRINT-CHOICE-MY.md` for platform limitations and hardware test steps.
+Firebase Project: `minimart-production` · Firestore Region: Singapore (`asia-southeast1`) · Business ID: `store-mini-main`.
 
 
-> v2.8.5 React Runtime Fix: React/ReactDOM versions are now explicitly matched and Vite deduplicates React so Zustand hooks use the same runtime. See `V2.8.5-REACT-RUNTIME-FIX-MY.md` for update steps.
+## v2.9.7 — Cashier Cloud Sales & Atomic Stock Protection
+- Cashier Sales are committed with Product Stock and Stock Batch deductions in one Firestore transaction. A stable Sale ID is used as an idempotency key so retries do not decrement stock twice.
+- Offline Cashier Sales are stored in a per-user/per-branch LocalStorage queue and only appear in Owner Cloud Sales after the transaction succeeds. The POS displays pending, rules-error and owner-review states. Do not clear site data while a queue is pending.
+- Publish the included `firestore.rules` before enabling Cashier Cloud Sales. Keep a backup of existing rules and verify the configured Owner UID and active Cashier membership.
+- Client-side validation is not a fully trusted server accounting backend; server-authoritative price/discount validation remains future work.
 
-> v2.9.5 Cloud Sync Efficiency: Existing devices use per-collection `updatedAt` cursors for historical collections; Product / Category / Stock remain realtime. New-device bootstrap merges from the already-received listener snapshots instead of performing a duplicate full scan. Reconnect or a long background period (25 minutes or more) reopens historical listeners from the newest cursor. Manual Sync now reconciles from active listener state and does not run a full cloud scan. See `V2.9.5-CLOUD-SYNC-EFFICIENCY-MY.md`.
+## v2.9.6 — Data Safety & Cloud Monitoring
+- Owner-only cleanup for the legacy `businesses/store-mini-main/members/000000` placeholder is available only after a valid active Cashier Member with the same email and a real UID is confirmed from Firestore. It re-reads both documents from the server before deleting only the placeholder. It never deletes Firebase Authentication users or the valid UID document.
+- Firestore client diagnostics show estimated Reads/Writes/Deletes and listener starts for the current browser/device over a rolling 24-hour window. Counters are stored in LocalStorage only; no telemetry writes are sent to Firebase.
+- Initial server snapshots are counted once per listener lifecycle; later Added/Modified server document changes are counted separately. Cache-only snapshots are excluded.
+- **Important:** Client diagnostics are estimates, not the official billable count. Use Firebase Console → Firestore → Usage for billable project usage. Different browser origins/devices maintain separate local counters.
 
-# Minimart POS — v2.9.5
+## v2.9.5 — Cloud Sync Efficiency (retained)
+- Historical collections use `updatedAt` cursor queries; Product / Category / Stock remain realtime.
+- New-device bootstrap reuses snapshots already received by listeners rather than performing a duplicate full scan.
+- Manual Sync reconciles from active listener state and does not run a full cloud scan.
+- Reconnect / long background refresh resumes historical reads from saved cursors.
 
-> v2.9.5 Cloud Sync Efficiency: Historical collections use updatedAt cursor queries, new-device bootstrap reuses existing listener snapshots, manual Sync no longer performs full cloud scans, and local diagnostics report listener / transaction counts without writing telemetry to Firestore. See `V2.9.5-CLOUD-SYNC-EFFICIENCY-MY.md`.
+## New Firebase setup
+- Before running, seed the Owner Business document and publish the included `firestore.rules` as described in `NEW-FIREBASE-PROJECT-SETUP-MY.md`.
+- Owner UID is pinned in the included rules for `minimart-production`. Do not change it unless deliberately migrating ownership.
+- Back up LocalStorage data before updating. Do not run Initial Snapshot more than once or from multiple devices before verifying the first bootstrap.
 
 ### Cashier Account Recovery / Existing Account Linking — v2.8.5
 - Owner can create a new Cashier using a secondary Firebase Auth app without signing out the Owner session.
@@ -76,9 +85,9 @@ npm run dev -- --host --port 5173 --strictPort
 - Owner devices with an existing Sync Baseline start listening for remote changes automatically.
 - Local changes are reconciled with Cloud changes; simultaneous edits to the same record stop automatic sync instead of overwriting either side.
 - Existing local POS storage and manual Upload / Download / Sync Changes actions are preserved.
-- Cashier auto sync and trusted server-side stock posting are not included yet.
+- In v2.8.0, Cashier auto sync and trusted server-side stock posting were not included. Cashier Cloud Sales was introduced later in v2.9.7 using a client transaction and Firestore Rules; this is not a fully trusted server-side accounting backend.
 
-See `V2.8.0-REALTIME-CLOUD-SYNC-MY.md` for setup, limitations, and test steps.
+See `V2.8.0-REALTIME-CLOUD-SYNC-MY.md` for the historical v2.8.0 behavior.
 
 ## v2.8.1 — PWA Launch Fix
 
@@ -97,3 +106,6 @@ See `V2.8.0-REALTIME-CLOUD-SYNC-MY.md` for setup, limitations, and test steps.
 - Firebase Project `minimart-production`, Business ID `store-mini-main`, Auth flow, POS LocalStorage key/schema, Stock Transfer business logic ကို မပြောင်းထားပါ။
 - Firestore nested rule ကို Console မှာ ထည့်/Publish လုပ်ရန် `FIRESTORE-SHARED-RULES-PATCH-MY.md` ကို ဖတ်ပါ။
 - အသေးစိတ် `V2.8.2-RELIABILITY-FIX-MY.md` ကို ဖတ်ပါ။
+
+
+> v2.9.6 Data Safety & Local Cloud Diagnostics: Owner can safely remove only the legacy `members/000000` placeholder when a valid active Cashier Member with the same email already exists. Firestore read/write estimates are stored locally in the current browser only; no telemetry is written to Firestore. Firebase Console Usage remains the billing source of truth.

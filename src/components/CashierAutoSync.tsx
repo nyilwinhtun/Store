@@ -1,0 +1,180 @@
+import { useEffect, useState } from 'react';
+import { onAuthStateChanged, type User } from 'firebase/auth';
+import {
+  collection,
+  doc,
+  limit,
+  onSnapshot,
+  query,
+  where,
+  type DocumentData,
+  type QuerySnapshot,
+} from 'firebase/firestore';
+import { firebaseAuth, firestore, FIREBASE_BUSINESS_ID } from '../lib/firebase';
+import { useBusinessAccess } from '../lib/businessAccess';
+import { usePosStore, type Branch, type Category, type Product, type Sale, type StockBatch } from '../store/usePosStore';
+import { publishAutoSyncStatus } from '../lib/autoSyncStatus';
+import { recordFirestoreActivity } from '../lib/firestoreDiagnostics';
+import { flushCashierSaleQueue, listenForCashierQueue } from '../lib/cashierSalesSync';
+
+const listenOptions = { includeMetadataChanges: true } as const;
+
+function decodeRecords<T extends { id: string; branchId?: string }>(snapshot: QuerySnapshot<DocumentData>, branchId: string): T[] {
+  return snapshot.docs
+    .filter((entry) => entry.data().deleted !== true)
+    .map((entry) => {
+      const data = entry.data();
+      const payload = data.payload && typeof data.payload === 'object' ? data.payload as Record<string, unknown> : data;
+      return { ...payload, id: typeof payload.id === 'string' ? payload.id : entry.id, branchId } as T;
+    });
+}
+
+function replaceBranchRecords<T extends { branchId?: string }>(current: T[], branchId: string, incoming: T[]): T[] {
+  return [...current.filter((entry) => entry.branchId !== branchId), ...incoming];
+}
+
+/** Cashier-only catalog and own-sales listeners. Stock changes are committed with each sale transaction. */
+export function CashierAutoSyncProvider() {
+  const access = useBusinessAccess();
+  const [user, setUser] = useState<User | null>(null);
+
+  useEffect(() => {
+    if (!firebaseAuth) return;
+    return onAuthStateChanged(firebaseAuth, setUser);
+  }, []);
+
+  useEffect(() => {
+    const uid = user?.uid;
+    const branchId = access.branchIds.length === 1 ? access.branchIds[0] : '';
+    const isCashier = !!uid && access.status === 'active' && access.role === 'cashier' && access.uid === uid && !!branchId;
+    if (!isCashier || !firestore) return;
+
+    let disposed = false;
+    let branch: Branch | null = null;
+    let categories: Category[] = [];
+    let products: Product[] = [];
+    let stockBatches: StockBatch[] = [];
+    let sales: Sale[] = [];
+    const ready = new Set<string>();
+    const firstServerSnapshot = new Set<string>();
+    const unsubscribers: Array<() => void> = [];
+    let queueFlushStarted = false;
+
+    const applyToStore = () => {
+      if (disposed) return;
+      const current = usePosStore.getState();
+      const branches = branch
+        ? [...current.branches.filter((entry) => entry.id !== branchId), branch]
+        : current.branches;
+      const mergedSales = new Map<string, Sale>();
+      current.sales.filter((entry) => entry.branchId === branchId && entry.createdByUid === uid).forEach((entry) => mergedSales.set(entry.id, entry));
+      sales.forEach((entry) => mergedSales.set(entry.id, entry));
+      current.importData({
+        ...(branch ? { branches, activeBranchId: branchId } : {}),
+        categories: replaceBranchRecords(current.categories, branchId, categories),
+        products: replaceBranchRecords(current.products, branchId, products),
+        stockBatches: replaceBranchRecords(current.stockBatches, branchId, stockBatches),
+        sales: [
+          ...current.sales.filter((entry) => entry.branchId !== branchId || entry.createdByUid !== uid),
+          ...mergedSales.values(),
+        ],
+      });
+    };
+
+    const recordSnapshot = (key: string, size: number, changes: number, fromCache: boolean) => {
+      if (fromCache) return;
+      if (!firstServerSnapshot.has(key)) {
+        recordFirestoreActivity(uid, 'read', `cashier-listener-initial:${key}`, size);
+        firstServerSnapshot.add(key);
+      } else if (changes > 0) {
+        recordFirestoreActivity(uid, 'read', `cashier-listener-changes:${key}`, changes);
+      }
+      ready.add(key);
+      if (ready.size >= 5) {
+        publishAutoSyncStatus(uid, {
+          state: 'synced',
+          message: `Cashier Cloud Catalog ချိတ်ဆက်ပြီးပါပြီ။ ${branch?.name || branchId} ဆိုင်ခွဲ၏ Product / Stock နဲ့ မိမိရဲ့ Sales ကို Sync လုပ်နေပါတယ်။`,
+          savedAt: new Date().toISOString(),
+        });
+        if (!queueFlushStarted) {
+          queueFlushStarted = true;
+          void flushCashierSaleQueue(uid, branchId);
+        }
+      }
+    };
+
+    const branchRef = doc(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId);
+    recordFirestoreActivity(uid, 'listenerStart', 'cashier-listener:branch', 1);
+    const unsubscribeBranch = onSnapshot(branchRef, listenOptions, (snapshot) => {
+      if (disposed) return;
+      if (!snapshot.exists() || snapshot.data().deleted === true || !snapshot.data().payload) {
+        publishAutoSyncStatus(uid, { state: 'error', message: `သတ်မှတ်ထားသော Branch ကို Cloud မှ မတွေ့ပါ: ${branchId}` });
+        return;
+      }
+      branch = { ...(snapshot.data().payload as Branch), id: branchId };
+      if (!snapshot.metadata.fromCache) recordSnapshot('branch', snapshot.exists() ? 1 : 0, 1, false);
+      applyToStore();
+    }, (error) => publishAutoSyncStatus(uid, {
+      state: error.code === 'unavailable' ? 'offline' : 'error',
+      message: error.code === 'permission-denied' ? 'Cashier Branch Read Permission မရပါ။ Firestore Rules ကို စစ်ဆေးပါ။' : error.message,
+    }));
+    unsubscribers.push(unsubscribeBranch);
+
+    const attachCollection = <T extends { id: string; branchId?: string }>(kind: 'categories' | 'products' | 'stockBatches', apply: (items: T[]) => void) => {
+      const ref = collection(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, kind);
+      recordFirestoreActivity(uid, 'listenerStart', `cashier-listener:${kind}`, 1);
+      const unsubscribe = onSnapshot(ref, listenOptions, (snapshot) => {
+        if (disposed) return;
+        apply(decodeRecords<T>(snapshot, branchId));
+        if (!snapshot.metadata.fromCache) {
+          const changes = snapshot.docChanges().filter((change) => change.type === 'added' || change.type === 'modified').length;
+          recordSnapshot(kind, snapshot.size, changes, false);
+        }
+        applyToStore();
+      }, (error) => publishAutoSyncStatus(uid, {
+        state: error.code === 'unavailable' ? 'offline' : 'error',
+        message: error.code === 'permission-denied' ? `Cashier ${kind} Read Permission မရပါ။ Firestore Rules ကို v2.9.7 အတိုင်း Publish လုပ်ပါ။` : error.message,
+      }));
+      unsubscribers.push(unsubscribe);
+    };
+
+    attachCollection<Category>('categories', (items) => { categories = items; });
+    attachCollection<Product>('products', (items) => { products = items; });
+    attachCollection<StockBatch>('stockBatches', (items) => { stockBatches = items; });
+
+    const ownSalesQuery = query(
+      collection(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, 'sales'),
+      where('payload.createdByUid', '==', uid),
+      limit(100),
+    );
+    recordFirestoreActivity(uid, 'listenerStart', 'cashier-listener:own-sales', 1);
+    const unsubscribeSales = onSnapshot(ownSalesQuery, listenOptions, (snapshot) => {
+      if (disposed) return;
+      sales = decodeRecords<Sale>(snapshot, branchId).sort((a, b) => b.date.localeCompare(a.date));
+      if (!snapshot.metadata.fromCache) {
+        const changes = snapshot.docChanges().filter((change) => change.type === 'added' || change.type === 'modified').length;
+        recordSnapshot('own-sales', snapshot.size, changes, false);
+      }
+      applyToStore();
+    }, (error) => publishAutoSyncStatus(uid, {
+      state: error.code === 'unavailable' ? 'offline' : 'error',
+      message: error.code === 'permission-denied' ? 'မိမိရဲ့ Sales History ကို ဖတ်ခွင့်မရပါ။ Cashier Sales Rules ကို စစ်ဆေးပါ။' : error.message,
+    }));
+    unsubscribers.push(unsubscribeSales);
+
+    const onOnline = () => { void flushCashierSaleQueue(uid, branchId); };
+    window.addEventListener('online', onOnline);
+    const unlistenQueue = listenForCashierQueue(uid, branchId, () => { void flushCashierSaleQueue(uid, branchId); });
+
+    publishAutoSyncStatus(uid, { state: 'connecting', message: 'Cashier အတွက် Branch Catalog / Stock / မိမိ Sales ကို Cloud မှ ချိတ်ဆက်နေပါတယ်။' });
+
+    return () => {
+      disposed = true;
+      unsubscribers.forEach((unsubscribe) => unsubscribe());
+      unlistenQueue();
+      window.removeEventListener('online', onOnline);
+    };
+  }, [user?.uid, access.status, access.role, access.uid, access.branchIds.join('|')]);
+
+  return null;
+}

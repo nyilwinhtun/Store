@@ -3,6 +3,7 @@ import { onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc, getDocFromServer, type DocumentReference } from 'firebase/firestore';
 import { FIREBASE_BUSINESS_ID, firebaseApp, firebaseAuth, firestore } from '../lib/firebase';
 import { useBusinessAccess, type BusinessRole } from '../lib/businessAccess';
+import { recordFirestoreActivity } from '../lib/firestoreDiagnostics';
 
 const REQUEST_TIMEOUT_MS = 15000;
 
@@ -37,7 +38,9 @@ function withTimeout<T>(operation: Promise<T>, label: string): Promise<T> {
 
 async function readAccessDocument(reference: DocumentReference, label: string) {
   try {
-    return await withTimeout(getDocFromServer(reference), label);
+    const snapshot = await withTimeout(getDocFromServer(reference), label);
+    recordFirestoreActivity(firebaseAuth?.currentUser?.uid || 'anonymous', 'read', 'access-document-get', 1);
+    return snapshot;
   } catch (serverError) {
     if (!isNetworkError(serverError)) throw serverError;
     // Firestore is configured with persistent IndexedDB cache. When the device

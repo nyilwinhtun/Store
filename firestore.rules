@@ -5,9 +5,7 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    // This new Firebase project is dedicated to one Minimart business.
-    // The first Owner UID is pinned so the already-created Cashier account
-    // cannot claim the business document during initial setup.
+    // Dedicated Minimart Production project. Keep the configured Owner UID pinned.
     function isConfiguredOwner(businessId) {
       return signedIn()
         && businessId == 'store-mini-main'
@@ -26,6 +24,10 @@ service cloud.firestore {
       return /databases/$(database)/documents/businesses/$(businessId)/branches/$(branchId);
     }
 
+    function salePath(businessId, branchId, saleId) {
+      return /databases/$(database)/documents/businesses/$(businessId)/branches/$(branchId)/sales/$(saleId);
+    }
+
     function isBusinessOwner(businessId) {
       return isConfiguredOwner(businessId)
         && exists(businessPath(businessId))
@@ -33,15 +35,15 @@ service cloud.firestore {
         && get(businessPath(businessId)).data.active != false;
     }
 
+    function isOwner(businessId) {
+      return isBusinessOwner(businessId);
+    }
+
     function isActiveMember(businessId) {
       return signedIn()
         && exists(memberPath(businessId, request.auth.uid))
-        && get(memberPath(businessId, request.auth.uid)).data.status == 'active'
-        && get(memberPath(businessId, request.auth.uid)).data.uid == request.auth.uid;
-    }
-
-    function isOwner(businessId) {
-      return isBusinessOwner(businessId);
+        && get(memberPath(businessId, request.auth.uid)).data.uid == request.auth.uid
+        && get(memberPath(businessId, request.auth.uid)).data.status == 'active';
     }
 
     function isCashierForBranch(businessId, branchId) {
@@ -67,13 +69,138 @@ service cloud.firestore {
         && request.resource.data.createdBy == request.auth.uid;
     }
 
+    function validCashierSaleCreate(businessId, branchId, saleId) {
+      return isCashierForBranch(businessId, branchId)
+        && request.resource.data.keys().hasOnly([
+          'scope', 'kind', 'branchId', 'deleted', 'updatedAt', 'updatedBy', 'payload'
+        ])
+        && request.resource.data.scope == 'branchRecord'
+        && request.resource.data.kind == 'sales'
+        && request.resource.data.branchId == branchId
+        && request.resource.data.deleted == false
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.updatedAt is string
+        && request.resource.data.payload is map
+        && request.resource.data.payload.id == saleId
+        && request.resource.data.payload.branchId == branchId
+        && request.resource.data.payload.createdByUid == request.auth.uid
+        && request.resource.data.payload.status == 'completed'
+        && request.resource.data.payload.receiptNo is string
+        && request.resource.data.payload.items is list
+        && request.resource.data.payload.items.size() > 0
+        && request.resource.data.payload.total is number
+        && request.resource.data.payload.total >= 0
+        && request.resource.data.payload.paymentMethod in ['Cash', 'Credit']
+        && request.resource.data.payload.productDeltas is map
+        && request.resource.data.payload.productDeltas.keys().size() > 0
+        && request.resource.data.payload.stockLines is list
+        && request.resource.data.payload.stockLines.size() == request.resource.data.payload.productDeltas.keys().size()
+        && request.resource.data.payload.batchDeltas is map
+        && request.resource.data.payload.batchLines is list
+        && request.resource.data.payload.batchLines.size() == request.resource.data.payload.batchDeltas.keys().size()
+        && request.resource.data.payload.cashierSyncVersion == 1;
+    }
+
+    // A Cashier may only reduce stock as part of the same atomic transaction
+    // that creates a new Sale. A replay cannot decrement stock a second time.
+    function linkedProductStockReduction(businessId, branchId, productId) {
+      let saleId = request.resource.data.sourceSaleId;
+      let linkedSale = salePath(businessId, branchId, saleId);
+      let reduction = resource.data.payload.stock - request.resource.data.payload.stock;
+      return isCashierForBranch(businessId, branchId)
+        && resource.data.kind == 'products'
+        && resource.data.branchId == branchId
+        && resource.data.deleted != true
+        && request.resource.data.scope == 'branchRecord'
+        && request.resource.data.kind == 'products'
+        && request.resource.data.branchId == branchId
+        && request.resource.data.deleted == false
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.sourceSaleId is string
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'payload', 'updatedAt', 'updatedBy', 'sourceSaleId'
+        ])
+        && request.resource.data.payload.diff(resource.data.payload).affectedKeys().hasOnly(['stock'])
+        && resource.data.payload.stock is number
+        && request.resource.data.payload.stock is number
+        && reduction > 0
+        && request.resource.data.payload.stock >= 0
+        && !exists(linkedSale)
+        && existsAfter(linkedSale)
+        && getAfter(linkedSale).data.kind == 'sales'
+        && getAfter(linkedSale).data.branchId == branchId
+        && getAfter(linkedSale).data.updatedBy == request.auth.uid
+        && getAfter(linkedSale).data.payload.createdByUid == request.auth.uid
+        && getAfter(linkedSale).data.payload.status == 'completed'
+        && getAfter(linkedSale).data.payload.productDeltas[productId] == reduction
+        && getAfter(linkedSale).data.payload.stockLines.hasAny([
+          { 'productId': productId, 'quantity': reduction }
+        ]);
+    }
+
+    function linkedBatchStockReduction(businessId, branchId, batchId) {
+      let saleId = request.resource.data.sourceSaleId;
+      let linkedSale = salePath(businessId, branchId, saleId);
+      let reduction = resource.data.payload.quantity - request.resource.data.payload.quantity;
+      return isCashierForBranch(businessId, branchId)
+        && resource.data.kind == 'stockBatches'
+        && resource.data.branchId == branchId
+        && resource.data.deleted != true
+        && request.resource.data.scope == 'branchRecord'
+        && request.resource.data.kind == 'stockBatches'
+        && request.resource.data.branchId == branchId
+        && request.resource.data.deleted == false
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.sourceSaleId is string
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'payload', 'updatedAt', 'updatedBy', 'sourceSaleId'
+        ])
+        && request.resource.data.payload.diff(resource.data.payload).affectedKeys().hasOnly(['quantity'])
+        && resource.data.payload.quantity is number
+        && request.resource.data.payload.quantity is number
+        && reduction > 0
+        && request.resource.data.payload.quantity >= 0
+        && !exists(linkedSale)
+        && existsAfter(linkedSale)
+        && getAfter(linkedSale).data.kind == 'sales'
+        && getAfter(linkedSale).data.branchId == branchId
+        && getAfter(linkedSale).data.updatedBy == request.auth.uid
+        && getAfter(linkedSale).data.payload.createdByUid == request.auth.uid
+        && getAfter(linkedSale).data.payload.status == 'completed'
+        && getAfter(linkedSale).data.payload.batchDeltas[batchId] == reduction
+        && getAfter(linkedSale).data.payload.batchLines.hasAny([
+          { 'batchId': batchId, 'quantity': reduction }
+        ]);
+    }
+
+    function validCashierCustomerCreate(businessId, recordId) {
+      let branchId = request.resource.data.branchId;
+      let saleId = request.resource.data.sourceSaleId;
+      let linkedSale = salePath(businessId, branchId, saleId);
+      return isCashierForBranch(businessId, branchId)
+        && request.resource.data.keys().hasOnly([
+          'scope', 'kind', 'branchId', 'payload', 'updatedAt', 'updatedBy', 'sourceSaleId'
+        ])
+        && request.resource.data.scope == 'shared'
+        && request.resource.data.kind == 'customers'
+        && request.resource.data.payload is map
+        && request.resource.data.payload.id == recordId
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.sourceSaleId is string
+        && !exists(linkedSale)
+        && existsAfter(linkedSale)
+        && getAfter(linkedSale).data.kind == 'sales'
+        && getAfter(linkedSale).data.updatedBy == request.auth.uid
+        && getAfter(linkedSale).data.payload.createdByUid == request.auth.uid
+        && getAfter(linkedSale).data.payload.paymentMethod == 'Credit'
+        && getAfter(linkedSale).data.payload.customerId == recordId
+        && getAfter(linkedSale).data.payload.customerSnapshot.id == recordId;
+    }
+
     match /businesses/{businessId} {
-      // Owner reads only the configured business. Active Members may read the
-      // same document so the app can resolve their role and assigned Branch.
       allow get: if isBusinessOwner(businessId) || isActiveMember(businessId);
       allow list: if false;
 
-      // Bootstrap is restricted to the already-created Owner UID only.
       allow create: if isConfiguredOwner(businessId)
         && request.resource.data.ownerUid == request.auth.uid
         && request.resource.data.active == true;
@@ -99,22 +226,34 @@ service cloud.firestore {
       }
 
       match /branches/{branchId} {
-        allow read: if isOwner(businessId) || isCashierForBranch(businessId, branchId);
+        allow get: if isOwner(businessId) || isCashierForBranch(businessId, branchId);
+        allow list: if isOwner(businessId);
         allow create, update, delete: if isOwner(businessId);
 
         match /{collectionName}/{recordId} {
-          // Cashier may read assigned-Branch catalog only. Checkout remains
-          // local until a trusted, idempotent server transaction is available.
           allow get: if isOwner(businessId)
             || (isCashierForBranch(businessId, branchId)
-              && (collectionName in ['categories', 'products']
+              && (collectionName in ['categories', 'products', 'stockBatches']
                 || (collectionName == 'sales'
-                  && resource.data.payload.createdByUid == request.auth.uid
-                  && resource.data.payload.branchId == branchId)));
+                  && (!exists(salePath(businessId, branchId, recordId))
+                    || (resource.data.payload.createdByUid == request.auth.uid
+                      && resource.data.payload.branchId == branchId)))));
+
           allow list: if isOwner(businessId)
             || (isCashierForBranch(businessId, branchId)
-              && collectionName in ['categories', 'products']);
-          allow create, update, delete: if isOwner(businessId);
+              && (collectionName in ['categories', 'products', 'stockBatches']
+                || (collectionName == 'sales'
+                  && request.query.limit <= 100
+                  && resource.data.payload.createdByUid == request.auth.uid)));
+
+          allow create: if isOwner(businessId)
+            || (collectionName == 'sales' && validCashierSaleCreate(businessId, branchId, recordId));
+
+          allow update: if isOwner(businessId)
+            || (collectionName == 'products' && linkedProductStockReduction(businessId, branchId, recordId))
+            || (collectionName == 'stockBatches' && linkedBatchStockReduction(businessId, branchId, recordId));
+
+          allow delete: if isOwner(businessId);
         }
       }
 
@@ -123,7 +262,11 @@ service cloud.firestore {
       }
 
       match /shared/{collectionName}/records/{recordId} {
-        allow read, write: if isOwner(businessId);
+        allow get: if isOwner(businessId) || isActiveMember(businessId);
+        allow list: if isOwner(businessId);
+        allow create: if isOwner(businessId)
+          || (collectionName == 'customers' && validCashierCustomerCreate(businessId, recordId));
+        allow update, delete: if isOwner(businessId);
       }
 
       match /meta/{metaId} {
@@ -131,6 +274,7 @@ service cloud.firestore {
       }
     }
 
+    // Per-user legacy POS data remains private to its authenticated user.
     match /posAccounts/{userId}/posRecords/{recordId} {
       allow read, write: if signedIn() && request.auth.uid == userId;
     }

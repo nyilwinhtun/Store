@@ -62,6 +62,8 @@ export type Sale = {
   createdByUid?: string;
   createdByEmail?: string;
   createdByName?: string;
+  /** Customer snapshot used to safely create a shared customer during a Cashier credit sale. */
+  customerSnapshot?: Customer;
 };
 export type Expense = {
   branchId?: string;
@@ -335,7 +337,7 @@ type PosState = {
   updateProduct: (id: string, changes: Partial<Omit<Product, 'id' | 'createdAt'>>) => void;
   deleteProduct: (id: string) => void;
   adjustStock: (id: string, quantity: number) => boolean;
-  addSale: (sale: Sale) => void;
+  addSale: (sale: Sale) => Sale | null;
   voidSale: (id: string) => void;
   addExpense: (expense: Omit<Expense, 'id'>) => void;
   deleteExpense: (id: string) => void;
@@ -684,7 +686,9 @@ export const usePosStore = create<PosState>()(
         }));
         return true;
       },
-      addSale: (sale) => set((state) => {
+      addSale: (sale) => {
+        let savedSale: Sale | null = null;
+        set((state) => {
         const branchId = state.activeBranchId;
         const invalidSaleItem = sale.items.find((item) => {
           const product = state.products.find((entry) => entry.id === item.productId && entry.branchId === branchId);
@@ -693,12 +697,14 @@ export const usePosStore = create<PosState>()(
         if (invalidSaleItem) return state;
         let customers = state.customers;
         let customerId = sale.customerId;
+        let customerSnapshot: Customer | undefined;
         if (sale.paymentMethod === 'Credit') {
           const existing = customers.find((customer) => customer.id === customerId || normalizedName(customer.name) === normalizedName(sale.customer));
-          if (existing) customerId = existing.id;
+          if (existing) { customerId = existing.id; customerSnapshot = { ...existing }; }
           else {
             customerId = newId();
-            customers = [...customers, { id: customerId, name: sale.customer || 'အမည်မသိ Customer', phone: '', address: '', note: '', createdAt: new Date().toISOString() }];
+            customerSnapshot = { id: customerId, name: sale.customer || 'အမည်မသိ Customer', phone: '', address: '', note: '', createdAt: new Date().toISOString() };
+            customers = [...customers, customerSnapshot];
           }
         }
         const stockBatches = state.stockBatches.map((batch) => ({ ...batch }));
@@ -723,19 +729,22 @@ export const usePosStore = create<PosState>()(
         });
         const paidAmount = sale.paymentMethod === 'Cash' ? sale.total : Math.max(0, Math.min(sale.total, sale.paidAmount ?? 0));
         const dueAmount = sale.paymentMethod === 'Cash' ? 0 : Math.max(0, sale.total - paidAmount);
-        const savedSale: Sale = { ...sale, branchId, customerId, paidAmount, dueAmount, items: saleItems };
+        const saleToSave: Sale = { ...sale, branchId, customerId, paidAmount, dueAmount, items: saleItems, ...(customerSnapshot ? { customerSnapshot } : {}) };
+        savedSale = saleToSave;
         return {
           customers,
           stockBatches,
-          sales: [savedSale, ...state.sales],
-          activityLogs: prependAudit(state.activityLogs, makeAudit('CHECKOUT', 'Sale', `Voucher ${savedSale.receiptNo} · ${savedSale.customer} · ${savedSale.total} MMK`, savedSale.id, state.activeBranchId)),
+          sales: [saleToSave, ...state.sales],
+          activityLogs: prependAudit(state.activityLogs, makeAudit('CHECKOUT', 'Sale', `Voucher ${saleToSave.receiptNo} · ${saleToSave.customer} · ${saleToSave.total} MMK`, saleToSave.id, state.activeBranchId)),
           products: state.products.map((product) => {
             if (product.branchId !== branchId) return product;
             const sold = sale.items.filter((item) => item.productId === product.id).reduce((sum, item) => sum + item.quantity, 0);
             return sold ? { ...product, stock: cleanQuantity(Math.max(0, product.stock - sold), quantityModeForProduct(product)) } : product;
           }),
         };
-      }),
+        });
+        return savedSale;
+      },
       voidSale: (id) => set((state) => {
         const sale = state.sales.find((entry) => entry.id === id && entry.branchId === state.activeBranchId);
         if (!sale || sale.status === 'voided' || (sale.paymentMethod === 'Credit' && (sale.paidAmount ?? 0) > 0)) return state;

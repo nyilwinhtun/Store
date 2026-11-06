@@ -623,3 +623,39 @@
   .main-area:has(.pos-layout-mobile-split) .topbar{flex:0 0 73px}
   .main-area:has(.pos-layout-mobile-split) .content-area{flex:1 1 auto;min-height:0;overflow:hidden;padding:8px 10px calc(82px + env(safe-area-inset-bottom));}
 }
+
+
+/* v2.9.6: local-only Cloud diagnostics and guarded invalid-member cleanup */
+.cloud-diagnostics-card { margin-top: 16px; padding: 16px; border: 1px solid var(--border, #dbe5e2); border-radius: 14px; background: var(--panel-muted, rgba(148,163,184,.06)); }
+.cloud-diagnostics-card .panel-heading { margin-bottom: 12px; }
+.cloud-diagnostics-card .panel-heading h4 { margin: 0 0 4px; }
+.cloud-diagnostics-card .panel-heading p { margin: 0; color: var(--muted, #64748b); font-size: 12px; line-height: 1.6; }
+.cloud-diagnostics-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
+.cloud-diagnostics-grid > div { padding: 10px; border-radius: 10px; background: var(--surface, #fff); border: 1px solid var(--border, #dbe5e2); min-width: 0; }
+.cloud-diagnostics-grid small { display: block; color: var(--muted, #64748b); font-size: 11px; }
+.cloud-diagnostics-grid strong { display: block; margin-top: 4px; font-size: 20px; font-variant-numeric: tabular-nums; }
+.cloud-diagnostics-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.small-action-danger { color: #b42318 !important; border-color: #f2b8b5 !important; }
+@media (max-width: 700px) { .cloud-diagnostics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+.cloud-diagnostics-breakdown { margin: 10px 0; padding: 10px; background: var(--surface, #fff); border: 1px solid var(--border, #dbe5e2); border-radius: 10px; }
+.cloud-diagnostics-breakdown > strong { display: block; margin-bottom: 6px; font-size: 12px; }
+.cloud-diagnostics-breakdown > div { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; color: var(--muted, #64748b); font-size: 11px; }
+.cloud-diagnostics-breakdown b { color: var(--foreground, #18312f); font-variant-numeric: tabular-nums; }
+
+/* v2.9.7: visible cashier cloud-sales queue and retry status */
+.cashier-cloud-sales-state { display:flex; align-items:center; gap:10px; margin:8px 0; padding:9px 11px; border:1px solid var(--border,#dbe5e2); border-radius:11px; background:var(--panel-muted,rgba(148,163,184,.06)); min-width:0; }
+.cashier-cloud-sales-icon { display:grid; place-items:center; flex:0 0 30px; width:30px; height:30px; border-radius:9px; background:var(--surface,#fff); }
+.cashier-cloud-sales-copy { display:flex; flex:1 1 auto; flex-direction:column; gap:2px; min-width:0; }
+.cashier-cloud-sales-copy strong { font-size:11px; line-height:1.4; }
+.cashier-cloud-sales-copy small { color:var(--muted,#64748b); font-size:10px; line-height:1.45; }
+.cashier-cloud-sales-state .button { flex:0 0 auto; padding:7px 9px; font-size:10px; }
+.cashier-cloud-sales-state.tone-success { border-color:rgba(16,185,129,.25); }
+.cashier-cloud-sales-state.tone-success .cashier-cloud-sales-icon { color:#059669; }
+.cashier-cloud-sales-state.tone-warning { border-color:rgba(217,153,54,.38); background:rgba(217,153,54,.07); }
+.cashier-cloud-sales-state.tone-warning .cashier-cloud-sales-icon { color:#b7791f; }
+.cashier-cloud-sales-state.tone-danger { border-color:rgba(220,80,80,.4); background:rgba(220,80,80,.06); }
+.cashier-cloud-sales-state.tone-danger .cashier-cloud-sales-icon { color:#c24141; }
+@keyframes cashier-cloud-spin { to { transform:rotate(360deg); } }
+.cashier-cloud-sales-state .spin { animation:cashier-cloud-spin 1s linear infinite; }
+@media (max-width:520px) { .cashier-cloud-sales-state { gap:7px; padding:8px; } .cashier-cloud-sales-copy small { font-size:9px; } .cashier-cloud-sales-state .button { padding:7px 8px; } }

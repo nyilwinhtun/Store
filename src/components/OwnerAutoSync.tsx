@@ -5,6 +5,7 @@ import { firebaseAuth, firestore, FIREBASE_BUSINESS_ID } from '../lib/firebase';
 import { useBusinessAccess } from '../lib/businessAccess';
 import { usePosStore } from '../store/usePosStore';
 import { publishAutoSyncStatus } from '../lib/autoSyncStatus';
+import { recordFirestoreActivity } from '../lib/firestoreDiagnostics';
 import {
   branchRecordKinds,
   buildLocalItems,
@@ -78,8 +79,8 @@ function friendlyConflict(key: string): string {
 }
 
 /**
- * Owner-only app-wide realtime sync. Cashier writes are intentionally excluded
- * until stock-affecting sales can be committed through a trusted server workflow.
+ * Owner-only app-wide realtime sync. Cashier sales are committed separately
+ * through an idempotent atomic Firestore transaction and arrive through these listeners.
  */
 export function OwnerAutoSyncProvider() {
   const access = useBusinessAccess();
@@ -109,6 +110,15 @@ export function OwnerAutoSyncProvider() {
     // A missing nested Firestore Rule must not freeze Product / Stock / Sales.
     const ready = new Set<string>();
     const pendingWrites = new Set<string>();
+    const serverSnapshotSeen = new Set<string>();
+    const recordServerSnapshotReads = (listenerKey: string, size: number, addedOrModified: number) => {
+      if (!serverSnapshotSeen.has(listenerKey)) {
+        recordFirestoreActivity(uid, 'read', `listener-initial:${listenerKey}`, size);
+        serverSnapshotSeen.add(listenerKey);
+      } else {
+        recordFirestoreActivity(uid, 'read', `listener-changes:${listenerKey}`, addedOrModified);
+      }
+    };
     const remoteItems = new Map<string, SyncItem>();
     const sharedReady = new Set<SharedRecordKind>();
     const sharedBlocked = new Set<SharedRecordKind>();
@@ -308,6 +318,7 @@ export function OwnerAutoSyncProvider() {
       // Enforce one active subscription per branch/collection key.
       if (branchUnsubscribers.get(branchId)?.has(kind)) return;
       const listenerKey = `branch:${branchId}:${kind}`;
+      serverSnapshotSeen.delete(listenerKey);
       const collectionRef = collection(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, kind);
       const savedBaseline = bootstrapping ? null : readManifest(uid);
       const branchHasBaseline = !!savedBaseline && Object.values(savedBaseline.records).some((entry) => entry.scope === 'branch' && entry.id === branchId);
@@ -318,9 +329,15 @@ export function OwnerAutoSyncProvider() {
       const listenedRef = isIncremental && existingCursor
         ? query(collectionRef, where('updatedAt', '>=', new Date(Date.parse(existingCursor) - 120_000).toISOString()))
         : collectionRef;
+      recordFirestoreActivity(uid, 'listenerStart', `listener:${listenerKey}`, 1);
       const unsubscribe = onSnapshot(listenedRef, listenOptions, (snapshot) => {
         if (disposed) return;
         const changes = snapshot.docChanges();
+        if (snapshot.metadata.fromCache) serverSnapshotSeen.delete(listenerKey);
+        else {
+          const billableLikeChanges = changes.filter((change) => change.type === 'added' || change.type === 'modified').length;
+          recordServerSnapshotReads(listenerKey, snapshot.size, billableLikeChanges);
+        }
         changes.forEach((change) => {
           const item = toItem(change.doc.id, change.doc.data(), 'branchRecord', kind, branchId);
           if (change.type === 'removed') remoteItems.delete(item.key);
@@ -347,9 +364,15 @@ export function OwnerAutoSyncProvider() {
     };
 
     const branchCollectionRef = collection(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches');
+    recordFirestoreActivity(uid, 'listenerStart', 'listener:branches', 1);
     const unsubscribeBranches = onSnapshot(branchCollectionRef, listenOptions, (snapshot) => {
       if (disposed) return;
       const nextIds = snapshot.docs.map((record) => record.id).sort();
+      if (snapshot.metadata.fromCache) serverSnapshotSeen.delete('branches');
+      else {
+        const billableLikeChanges = snapshot.docChanges().filter((change) => change.type === 'added' || change.type === 'modified').length;
+        recordServerSnapshotReads('branches', snapshot.size, billableLikeChanges);
+      }
       snapshot.docChanges().forEach((change) => {
         const item = toItem(change.doc.id, change.doc.data(), 'branch', 'branches', change.doc.id);
         if (change.type === 'removed') remoteItems.delete(item.key);
@@ -367,6 +390,7 @@ export function OwnerAutoSyncProvider() {
         const listeners = branchUnsubscribers.get(branchId);
         listeners?.forEach((unsubscribe, kind) => {
           unsubscribe();
+          serverSnapshotSeen.delete(`branch:${branchId}:${kind}`);
           ready.delete(`branch:${branchId}:${kind}`);
           pendingWrites.delete(`branch:${branchId}:${kind}`);
         });
@@ -401,6 +425,7 @@ export function OwnerAutoSyncProvider() {
       // Shared records also have exactly one active subscription per device.
       if (sharedUnsubscribers.has(kind)) return;
       const listenerKey = `shared:${kind}`;
+      serverSnapshotSeen.delete(listenerKey);
       const ref = collection(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'shared', kind, 'records');
       // Reuse the prior manifest timestamp only when this shared kind was
       // already part of the device baseline. If it was previously denied, do
@@ -413,8 +438,14 @@ export function OwnerAutoSyncProvider() {
       const listenedRef = existingCursor
         ? query(ref, where('updatedAt', '>=', new Date(Date.parse(existingCursor) - 120_000).toISOString()))
         : ref;
+      recordFirestoreActivity(uid, 'listenerStart', `listener:${listenerKey}`, 1);
       const unsubscribe = onSnapshot(listenedRef, listenOptions, (snapshot) => {
         if (disposed) return;
+        if (snapshot.metadata.fromCache) serverSnapshotSeen.delete(listenerKey);
+        else {
+          const billableLikeChanges = snapshot.docChanges().filter((change) => change.type === 'added' || change.type === 'modified').length;
+          recordServerSnapshotReads(listenerKey, snapshot.size, billableLikeChanges);
+        }
         snapshot.docChanges().forEach((change) => {
           const item = toItem(change.doc.id, change.doc.data(), 'shared', kind);
           if (change.type === 'removed') remoteItems.delete(item.key);
@@ -456,8 +487,11 @@ export function OwnerAutoSyncProvider() {
     sharedRecordKinds.forEach(attachSharedCollection);
 
     const metaRef = doc(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'meta', 'settings');
+    recordFirestoreActivity(uid, 'listenerStart', 'listener:meta-settings', 1);
     const unsubscribeMeta = onSnapshot(metaRef, listenOptions, (snapshot) => {
       if (disposed) return;
+      if (snapshot.metadata.fromCache) serverSnapshotSeen.delete('meta-settings');
+      else recordServerSnapshotReads('meta-settings', snapshot.exists() ? 1 : 0, snapshot.exists() ? 1 : 0);
       const key = keyOf('meta', 'settings', 'settings');
       if (snapshot.exists()) remoteItems.set(key, toItem('settings', snapshot.data(), 'meta', 'settings'));
       else remoteItems.delete(key);
@@ -526,6 +560,7 @@ export function OwnerAutoSyncProvider() {
         for (const kind of incrementalBranchKinds) {
           listeners.get(kind)?.();
           listeners.delete(kind);
+          serverSnapshotSeen.delete(`branch:${branchId}:${kind}`);
           ready.delete(`branch:${branchId}:${kind}`);
         }
       });

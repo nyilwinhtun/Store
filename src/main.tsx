@@ -4,6 +4,7 @@ import App from './App';
 import './index.css';
 import { AccessBootstrap } from './components/AccessBootstrap';
 import { OwnerAutoSyncProvider } from './components/OwnerAutoSync';
+import { CashierAutoSyncProvider } from './components/CashierAutoSync';
 
 class AppErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
   state = { hasError: false };
@@ -47,6 +48,7 @@ createRoot(document.getElementById('root')!).render(
         Firestore listeners during local testing. The visible app stays strict. */}
     <AccessBootstrap />
     <OwnerAutoSyncProvider />
+    <CashierAutoSyncProvider />
     <StrictMode>
       <App />
     </StrictMode>

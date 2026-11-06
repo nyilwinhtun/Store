@@ -20,7 +20,9 @@ import { signOut } from 'firebase/auth';
 import { BranchManagementPage } from './components/BranchManagementPage';
 import { ProfileManagementPage } from './components/ProfileManagementPage';
 import { BarcodeCameraScanner } from './components/BarcodeCameraScanner';
+import { CashierSalesQueueStatus } from './components/CashierSalesQueueStatus';
 import { normalizeBarcode } from './lib/barcode';
+import { submitCashierSale } from './lib/cashierSalesSync';
 import { exportLocalImages, importLocalImages, migrateDataUrlImage, useLocalImageSource } from './lib/localImages';
 import { formatQuantity, hasLegacyFractionalQuantity, inferQuantityMode, isValidQuantity, quantityModeForProduct, quantityStep, type QuantityMode } from './lib/quantity';
 
@@ -398,13 +400,24 @@ function App() {
       createdByEmail: access.email || firebaseAuth?.currentUser?.email || '',
       createdByName: access.displayName || firebaseAuth?.currentUser?.displayName || access.email || 'Owner',
     };
-    addSale(sale);
-    setLastSale(sale);
-    setCheckoutResultSale(sale);
+    const savedSale = addSale(sale);
+    if (!savedSale) { notify('Stock သို့မဟုတ် ပစ္စည်းအချက်အလက် ပြောင်းလဲသွားပါတယ်။ Cart ကို ပြန်စစ်ပါ။'); return; }
+    setLastSale(savedSale);
+    setCheckoutResultSale(savedSale);
     setAmountOnlyMode(false);
     setShowCheckoutResult(true);
     setPrintTestMode(false);
     setCart([]); setDiscount('0'); setCustomer('လက်လီဝယ်သူ'); setPaymentMethod('Cash');
+    if (cashierMode && access.uid) {
+      void submitCashierSale(savedSale, access.uid, activeBranchId).then((result) => {
+        if (result === 'synced') notify('အရောင်းကို Cloud ထဲ သိမ်းပြီး Stock ကို တစ်ကြိမ်တည်း လျှော့ပြီးပါပြီ။');
+        else if (result === 'queued') notify('အရောင်းကို ဒီ Device မှာ သိမ်းထားပါတယ်။ Internet/Cloud ချိတ်ဆက်မှု ပြန်ကောင်းရင် ပြန်ပို့ပါမယ်။');
+        else if (result === 'rules-error') notify('အရောင်းကို ဒီ Device မှာ ထိန်းထားပါတယ်။ Firebase Firestore Rules က ခွင့်မပြုသေးပါ။ Owner ကို အသိပေးပါ။');
+        else notify('အရောင်းကို Local မှာ သိမ်းထားပါတယ်။ Cloud Stock မကိုက်ညီမှုရှိလို့ Owner ကို စစ်ဆေးခိုင်းပါ။');
+      }).catch((error: unknown) => {
+        notify(error instanceof Error ? `Cloud Sync မအောင်မြင်ပါ: ${error.message}` : 'Cloud Sync မအောင်မြင်ပါ။ အရောင်းကို Local မှာ သိမ်းထားပါတယ်။');
+      });
+    }
   };
   const printReceipt = (sale: Sale) => {
     setLastSale(sale);
@@ -581,7 +594,7 @@ function App() {
           <p className="nav-caption">WORKSPACE</p>
           {navItems.map((item) => <button key={item.id} className={`nav-item ${page === item.id ? 'active' : ''}`} onClick={() => navTo(item.id)}>{item.icon}<span>{item.label}</span>{item.id === 'pos' && cart.length > 0 && <b className="nav-count">{cart.length}</b>}</button>)}
         </nav>
-        <div className="sidebar-bottom"><div className="offline-card"><div className="offline-icon"><Activity size={17} /></div><div><strong>Offline Ready</strong><small>Local data storage active</small></div><span className="live-dot" /></div><small className="version">MINIMART POS · v2.9.5</small></div>
+        <div className="sidebar-bottom"><div className="offline-card"><div className="offline-icon"><Activity size={17} /></div><div><strong>Offline Ready</strong><small>Local data storage active</small></div><span className="live-dot" /></div><small className="version">MINIMART POS · v2.9.7</small></div>
       </aside>
       {mobileMenu && <button className="sidebar-backdrop" onClick={() => setMobileMenu(false)} aria-label="Close navigation" />}
 
@@ -605,7 +618,7 @@ function App() {
           {page === 'pos' && <section className="pos-layout pos-layout-mobile-split">
             <div className="pos-products-panel">
               <div className="section-heading"><div><h2>ပစ္စည်းရွေးချယ်ရန်</h2><p>ရောင်းချမည့်ပစ္စည်းကို ရွေးပြီး Cart ထဲထည့်ပါ။</p></div><span className="subtle-count">{filteredProducts.length} items</span></div>
-              <div className="toolbar barcode-pos-toolbar"><div className="search-box"><Search size={17} /><input value={productSearch} onChange={(e) => setProductSearch(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addScannedProductToCart(productSearch); } }} placeholder="ပစ္စည်းအမည် / SKU / Barcode scan..." /><button className="barcode-inline-camera" type="button" title="Phone Camera ဖြင့် Barcode ဖတ်ရန်" onClick={() => setCameraScannerTarget('pos')}><Camera size={17} /></button></div><select className="select-control category-select" value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}><option>အားလုံး</option>{categories.map((c) => <option key={c}>{c}</option>)}</select></div><small className="barcode-scan-hint">Bluetooth Scanner သုံးလျှင် Search Box ကို တစ်ချက်နှိပ်ပြီး Scan ဖတ်ပါ။ Scanner မှ Enter ပို့လျှင် Product ကို Cart ထဲထည့်ပါမယ်။</small>
+              <div className="toolbar barcode-pos-toolbar"><div className="search-box"><Search size={17} /><input value={productSearch} onChange={(e) => setProductSearch(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addScannedProductToCart(productSearch); } }} placeholder="ပစ္စည်းအမည် / SKU / Barcode scan..." /><button className="barcode-inline-camera" type="button" title="Phone Camera ဖြင့် Barcode ဖတ်ရန်" onClick={() => setCameraScannerTarget('pos')}><Camera size={17} /></button></div><select className="select-control category-select" value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}><option>အားလုံး</option>{categories.map((c) => <option key={c}>{c}</option>)}</select></div>{cashierMode && access.uid && <CashierSalesQueueStatus uid={access.uid} branchId={activeBranchId} />}<small className="barcode-scan-hint">Bluetooth Scanner သုံးလျှင် Search Box ကို တစ်ချက်နှိပ်ပြီး Scan ဖတ်ပါ။ Scanner မှ Enter ပို့လျှင် Product ကို Cart ထဲထည့်ပါမယ်။</small>
               {products.length === 0 ? <EmptyState icon={<ShoppingBag size={25} />} title="ပစ္စည်း မရှိသေးပါ" text="အရင်ဆုံး Inventory ထဲမှာ ပစ္စည်းထည့်ပြီးမှ POS မှာ ရောင်းချနိုင်ပါမယ်။" action="ပစ္စည်းထည့်ရန်" onAction={() => navTo('inventory')} /> :
                 filteredProducts.length === 0 ? <EmptyState icon={<Search size={25} />} title="မတွေ့ပါ" text="ရှာဖွေမှု စကားလုံး သို့မဟုတ် Category ကို ပြောင်းကြည့်ပါ။" /> :
                 <div className="product-grid">{filteredProducts.map((product) => <button key={product.id} className={`product-tile ${sellableStock(product) <= 0 ? 'out-of-stock' : ''}`} onClick={() => addToCart(product)} disabled={sellableStock(product) <= 0}><div className="product-tile-icon"><ShoppingBag size={22} /></div><strong>{product.name}</strong><span className="product-sku">{product.sku}</span><div className="product-tile-bottom"><b>{product.retailPrice > 0 ? money(product.retailPrice, settings.currency) : 'ဈေးမသတ်မှတ်ရသေး'}</b><span className={sellableStock(product) <= product.lowStockAt ? 'stock-warning' : 'stock-ok'}>{formatQuantity(sellableStock(product), quantityModeForProduct(product))} {product.unit} ရောင်းနိုင်</span></div></button>)}</div>}

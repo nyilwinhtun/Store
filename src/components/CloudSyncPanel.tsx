@@ -6,6 +6,7 @@ import { firebaseAuth, firebaseConfigured, firestore, FIREBASE_BUSINESS_ID } fro
 import { useBusinessAccess } from '../lib/businessAccess';
 import { usePosStore, type Branch } from '../store/usePosStore';
 import { OwnerAutoSyncStatus } from './OwnerAutoSyncStatus';
+import { clearFirestoreDiagnostics, FIRESTORE_DIAGNOSTICS_EVENT, readFirestoreDiagnostics, type FirestoreDiagnosticsSummary, recordFirestoreActivity } from '../lib/firestoreDiagnostics';
 
 export type BranchRecordKind = 'categories' | 'products' | 'sales' | 'expenses' | 'heldItems' | 'customerPayments' | 'purchases' | 'supplierPayments' | 'purchaseReturns' | 'stockBatches' | 'stockReceipts' | 'stockTransfers' | 'cashShifts' | 'cashMovements' | 'activityLogs';
 export type SharedRecordKind = 'customers' | 'suppliers';
@@ -290,6 +291,8 @@ export async function writeItemsIfBaselineUnchanged(items: SyncItem[], uid: stri
     });
     transactionChunkCount += 1;
     committedWriteCount += committedAttemptWriteCount;
+    recordFirestoreActivity(uid, 'read', 'sync-transaction-check', chunk.length);
+    recordFirestoreActivity(uid, 'write', 'sync-transaction-commit', committedAttemptWriteCount);
   }
   // Count-only diagnostics stay in this device's console; never write usage
   // telemetry back to Firestore, which would create more billing traffic.
@@ -355,12 +358,23 @@ export function CloudSyncPanel({ onOpenProfile }: { onOpenProfile?: () => void }
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [lastSynced, setLastSynced] = useState('');
+  const [diagnostics, setDiagnostics] = useState<FirestoreDiagnosticsSummary>(() => readFirestoreDiagnostics(access.uid));
 
   useEffect(() => {
     if (!firebaseAuth) return;
     return onAuthStateChanged(firebaseAuth, setUser);
   }, []);
   const isOwner = access.status === 'active' && access.role === 'owner' && !!user && user.uid === access.uid;
+
+  useEffect(() => {
+    if (!user) return;
+    const refresh = () => setDiagnostics(readFirestoreDiagnostics(user.uid));
+    refresh();
+    const onStorage = (event: StorageEvent) => { if (event.key?.includes(user.uid)) refresh(); };
+    window.addEventListener(FIRESTORE_DIAGNOSTICS_EVENT, refresh);
+    window.addEventListener('storage', onStorage);
+    return () => { window.removeEventListener(FIRESTORE_DIAGNOSTICS_EVENT, refresh); window.removeEventListener('storage', onStorage); };
+  }, [user?.uid]);
   const [manifest, setManifest] = useState<SyncManifest | null>(null);
 
   useEffect(() => {
@@ -386,14 +400,26 @@ export function CloudSyncPanel({ onOpenProfile }: { onOpenProfile?: () => void }
   return <div className="panel cloud-panel">
     <div className="panel-heading"><div className="panel-icon"><Cloud size={18} /></div><div><h3>Business Cloud Sync</h3><p>Branch အလိုက် Product / Stock / Sales နှင့် Shared Customer / Supplier ကို Owner Device များအကြား Sync လုပ်ပါ။</p></div><span className="tag tag-success">{access.status === 'active' ? 'Access Active' : access.status}</span></div>
     {user ? <>
-      <div className="cloud-status"><ShieldCheck size={19} color="#0f766e" /><div><strong>{isOwner ? 'Business Owner Account ချိတ်ဆက်ထားသည်' : 'Owner Permission အတည်ပြုရန် လိုအပ်သည်'}</strong><small className="cloud-email">{user.email || user.uid} · {FIREBASE_BUSINESS_ID}</small></div><button className="button button-outline" type="button" onClick={onOpenProfile} disabled={!onOpenProfile}><UserRound size={14} /> Account စီမံရန်</button></div>
-      {!isOwner ? <div className="cloud-error">Business Cloud Sync ကို Owner Account သာ အသုံးပြုနိုင်ပါတယ်။ Access Status: {access.status}။ Cashier Auto Sync ကို နောက် Phase မှာ သီးခြားစီမံပါမယ်။</div> : <>
-        <div className="cloud-help"><strong>Optimized Owner Device Sync</strong><br />Device အသစ်တွင် Realtime Listener မှ ရရှိပြီးသား Server Snapshot ကို အသုံးပြုပြီး Safe Bootstrap လုပ်ပါမယ်။ တူညီတဲ့ Collection တွေကို Full Scan ထပ်မဖတ်ပါ။ Baseline ရှိပြီးသား Device မှာ Product / Category / Stock လို POS အရေးကြီး Data ကို Realtime ဆက်နားထောင်ပြီး Sales / Purchase / Activity History နဲ့ Customer / Supplier ပြောင်းလဲမှုတွေကို updatedAt Cursor အလိုက်သာ ဖတ်ပါမယ်။ Device နှစ်ခုလုံးမှာ Baseline ရှိပြီးသားဆိုရင် မပြောင်းလဲတဲ့ Record ကို ထပ်မရေးပါ။ ID တူ Data နှစ်ဖက်လုံး ပြောင်းထားရင် Conflict အဖြစ် ရပ်ပါမယ်။<br /><br />Customer / Supplier Profile ကို Shared ထားပြီး Purchase / Payment / Stock / Sales ကို Branch အလိုက် ခွဲထားပါတယ်။ Product ကို အခြား Device မှာ မမြင်ရလျှင် Device နှစ်ခုလုံး Branch တူမတူ စစ်ပါ။ Admin PIN နဲ့ Local Logo / Banner / Owner Photo ကို Cloud သို့ မတင်ပါ။ Cashier Cloud Sales ကို ဒီ Phase မှာ မဖွင့်သေးပါ။ IndexedDB Cloud Cache သည် Sign Out လုပ်ရုံဖြင့် မရှင်းပါ။ မျှဝေသုံး Device များတွင် သတိထားပါ။</div>
+      <div className="cloud-status"><ShieldCheck size={19} color="#0f766e" /><div><strong>{isOwner ? 'Business Owner Account ချိတ်ဆက်ထားသည်' : 'Business Access စစ်ဆေးရန် လိုအပ်သည်'}</strong><small className="cloud-email">{user.email || user.uid} · {FIREBASE_BUSINESS_ID}</small></div><button className="button button-outline" type="button" onClick={onOpenProfile} disabled={!onOpenProfile}><UserRound size={14} /> Account စီမံရန်</button></div>
+      {!isOwner ? <div className="cloud-error">Owner Manual Sync ကို Owner Account သာ အသုံးပြုနိုင်ပါတယ်။ Cashier အတွက် Product / Stock Read နဲ့ ကိုယ်ပိုင် Sales Cloud Queue ကို သီးခြား Auto Sync လုပ်နေပါတယ်။ Access Status: {access.status}။</div> : <>
+        <div className="cloud-help"><strong>Optimized Owner Device Sync</strong><br />Device အသစ်တွင် Realtime Listener မှ ရရှိပြီးသား Server Snapshot ကို အသုံးပြုပြီး Safe Bootstrap လုပ်ပါမယ်။ တူညီတဲ့ Collection တွေကို Full Scan ထပ်မဖတ်ပါ။ Baseline ရှိပြီးသား Device မှာ Product / Category / Stock လို POS အရေးကြီး Data ကို Realtime ဆက်နားထောင်ပြီး Sales / Purchase / Activity History နဲ့ Customer / Supplier ပြောင်းလဲမှုတွေကို updatedAt Cursor အလိုက်သာ ဖတ်ပါမယ်။ Device နှစ်ခုလုံးမှာ Baseline ရှိပြီးသားဆိုရင် မပြောင်းလဲတဲ့ Record ကို ထပ်မရေးပါ။ ID တူ Data နှစ်ဖက်လုံး ပြောင်းထားရင် Conflict အဖြစ် ရပ်ပါမယ်။<br /><br />Customer / Supplier Profile ကို Shared ထားပြီး Purchase / Payment / Stock / Sales ကို Branch အလိုက် ခွဲထားပါတယ်။ Product ကို အခြား Device မှာ မမြင်ရလျှင် Device နှစ်ခုလုံး Branch တူမတူ စစ်ပါ။ Admin PIN နဲ့ Local Logo / Banner / Owner Photo ကို Cloud သို့ မတင်ပါ။ Cashier ရောင်းအားကို Sale + Product Stock + Stock Batch အဖြစ် Atomic Transaction တစ်ခုတည်းနဲ့ Cloud ထဲ သိမ်းပြီး Owner Device တွေက Sales Sync နဲ့ လက်ခံပါမယ်။ Offline ဖြစ်ချိန်မှာ Cashier Sale ကို Local Queue ထဲ ထိန်းထားပြီး ပြန်ချိတ်မိမှ ပို့ပါမယ်။ IndexedDB Cloud Cache သည် Sign Out လုပ်ရုံဖြင့် မရှင်းပါ။ မျှဝေသုံး Device များတွင် သတိထားပါ။</div>
         <div className="cloud-actions">
           <button className="button button-primary" disabled={!manifest} onClick={requestIncrementalSync}><ArrowLeftRight size={15} /> Sync Now (ပြောင်းလဲမှုများသာ)</button>
         </div>
         <small className="field-hint">{manifest ? `ဒီ Device မှာ Sync Baseline ရှိပါတယ်။ နောက်ဆုံး Baseline: ${new Date(manifest.savedAt).toLocaleString()}` : 'ဒီ Device မှာ Baseline မရှိသေးပါ။ Owner Auto Sync က Listener Server Snapshot ရရှိတာနဲ့ Backup-safe Bootstrap ကို အလိုအလျောက် စတင်ပါမယ်။ Backup JSON ကို အရင်သိမ်းထားပါ။'}</small>
         {lastSynced && <small className="field-hint">နောက်ဆုံး Manual Sync တောင်းဆိုမှု: {lastSynced}</small>}<OwnerAutoSyncStatus userUid={user.uid} />
+        <div className="cloud-diagnostics-card">
+          <div className="panel-heading"><div><h4>ဒီ Device ၏ Firestore Activity (နောက်ဆုံး 24 နာရီ)</h4><p>Firebase သို့ တကယ် Bill လုပ်သည့် Usage မဟုတ်ဘဲ App မှ မြင်ရသော Read/Write ခန့်မှန်းကိန်း ဖြစ်ပါတယ်။ ဒီကောင်တာကို ဒီ Browser LocalStorage ထဲမှာသာ သိမ်းပြီး Firebase ထဲ Telemetry မပို့ပါ။</p></div></div>
+          <div className="cloud-diagnostics-grid">
+            <div><small>Read Estimate</small><strong>{diagnostics.reads.toLocaleString()}</strong></div>
+            <div><small>Write Estimate</small><strong>{diagnostics.writes.toLocaleString()}</strong></div>
+            <div><small>Delete Estimate</small><strong>{diagnostics.deletes.toLocaleString()}</strong></div>
+            <div><small>Listener Starts</small><strong>{diagnostics.listenerStarts.toLocaleString()}</strong></div>
+          </div>
+          {Object.entries(diagnostics.operations).sort((a, b) => b[1] - a[1]).slice(0, 5).length > 0 && <div className="cloud-diagnostics-breakdown"><strong>အများဆုံး လုပ်ဆောင်ချက်များ</strong>{Object.entries(diagnostics.operations).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([operation, count]) => <div key={operation}><span>{operation}</span><b>{count.toLocaleString()}</b></div>)}</div>}
+          <div className="cloud-diagnostics-actions"><button className="button button-outline" type="button" onClick={() => setDiagnostics(readFirestoreDiagnostics(user.uid))}>ကောင်တာ ပြန်ဖတ်ရန်</button><button className="button button-outline" type="button" onClick={() => { if (window.confirm('ဒီ Device ၏ Local Usage ကောင်တာကိုသာ ရှင်းမလား။ Firebase Data မထိခိုက်ပါ။')) { clearFirestoreDiagnostics(user.uid); setDiagnostics(readFirestoreDiagnostics(user.uid)); } }}>Local ကောင်တာ ရှင်းရန်</button></div>
+          <small className="field-hint">မှတ်ချက်: Query Listener မှာ Server Snapshot ရောက်လာတဲ့ Added/Modified Document များနှင့် Code မှ ခြေရာခံထားသော Transaction Read/Write များကို ခန့်မှန်းတွက်ထားပါတယ်။ Firebase Console → Firestore → Usage ကိုသာ Billable Usage အတည်ပြုချက်အဖြစ် သုံးပါ။ Local-only activity ကြောင့် Browser/Device တစ်ခုချင်းစီမှာ ကောင်တာ သီးခြားဖြစ်ပါတယ်။</small>
+        </div>
       </>}
     </> : <>
       <div className="cloud-help"><strong>Firebase Business Account Login</strong><br />Owner နဲ့ Cashier နှစ်မျိုးလုံး အကောင့်ဝင်ရန် Profile → Firebase Business Account တစ်နေရာတည်းကို အသုံးပြုပါ။ ဒီ Cloud Sync အပိုင်းမှာ Login Form သီးခြားမရှိတော့ပါ။ Login ပြီးသည့် Role အလိုက် Owner Dashboard သို့မဟုတ် Limited Cashier POS ကို ဖွင့်ပေးပါမယ်။</div>
