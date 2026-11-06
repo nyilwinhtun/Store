@@ -1,15 +1,17 @@
 import { useMemo, useState, type FormEvent } from 'react';
-import { ClipboardList, PackagePlus, Plus, RotateCcw, Save, Store, X } from 'lucide-react';
+import { Camera, ClipboardList, PackagePlus, Plus, RotateCcw, Save, Store, X } from 'lucide-react';
 import { DEFAULT_BRANCH_ID, usePosStore } from '../store/usePosStore';
 import { formatQuantity, inferQuantityMode, quantityModeForProduct, quantityStep, summarizeQuantities } from '../lib/quantity';
+import { BarcodeCameraScanner } from './BarcodeCameraScanner';
+import { normalizeBarcode } from '../lib/barcode';
 
-type IntakeLine = { key: string; name: string; quantity: string; unit: string };
+type IntakeLine = { key: string; name: string; quantity: string; unit: string; barcode: string };
 const today = () => {
   const value = new Date();
   return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
 };
 const newKey = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-const blankLine = (): IntakeLine => ({ key: newKey(), name: '', quantity: '1', unit: 'ခု' });
+const blankLine = (): IntakeLine => ({ key: newKey(), name: '', quantity: '1', unit: 'ခု', barcode: '' });
 const dateLabel = (value: string) => value ? new Date(value).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
 
 export function StockReceivingPage({ notify }: { notify: (message: string) => void }) {
@@ -24,9 +26,11 @@ export function StockReceivingPage({ notify }: { notify: (message: string) => vo
   const [note, setNote] = useState('');
   const [lines, setLines] = useState<IntakeLine[]>([blankLine()]);
   const [search, setSearch] = useState('');
+  const [cameraLineKey, setCameraLineKey] = useState<string | null>(null);
 
   const updateLine = (key: string, changes: Partial<IntakeLine>) => setLines((current) => current.map((line) => line.key === key ? { ...line, ...changes } : line));
-  const lineMode = (line: IntakeLine) => { const existing = products.find((product) => product.name.trim().toLocaleLowerCase() === line.name.trim().toLocaleLowerCase() && (product.unit || 'ခု').trim().toLocaleLowerCase() === (line.unit || 'ခု').trim().toLocaleLowerCase()); return existing ? quantityModeForProduct(existing) : inferQuantityMode(line.unit); };
+  const findLineProduct = (line: IntakeLine) => { const code = normalizeBarcode(line.barcode); return products.find((product) => (code && (normalizeBarcode(product.barcode) === code || normalizeBarcode(product.sku) === code)) || (product.name.trim().toLocaleLowerCase() === line.name.trim().toLocaleLowerCase() && (product.unit || 'ခု').trim().toLocaleLowerCase() === (line.unit || 'ခု').trim().toLocaleLowerCase())); };
+  const lineMode = (line: IntakeLine) => { const existing = findLineProduct(line); return existing ? quantityModeForProduct(existing) : inferQuantityMode(line.unit); };
   const trackedUnits = summarizeQuantities(receipts.flatMap((receipt) => receipt.items.map((item) => ({ quantity: item.quantity, unit: item.unit || 'ခု' }))));
   const filteredReceipts = receipts.filter((receipt) => {
     const query = search.trim().toLocaleLowerCase();
@@ -36,7 +40,7 @@ export function StockReceivingPage({ notify }: { notify: (message: string) => vo
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (!hubBranch) { notify('အဓိကဆိုင် မရှိသေးပါ။ ဆိုင်စာရင်းကို စစ်ဆေးပါ။'); return; }
-    const items = lines.map((line) => ({ name: line.name.trim(), quantity: Number(line.quantity), unit: line.unit.trim() || 'ခု' }));
+    const items = lines.map((line) => ({ name: line.name.trim(), quantity: Number(line.quantity), unit: line.unit.trim() || 'ခု', barcode: normalizeBarcode(line.barcode) || undefined }));
     if (items.some((item) => !item.name || !Number.isFinite(item.quantity) || item.quantity <= 0)) {
       notify('ပစ္စည်းအမည်နဲ့ အရေအတွက်ကို မှန်ကန်စွာ ဖြည့်ပါ။'); return;
     }
@@ -44,6 +48,16 @@ export function StockReceivingPage({ notify }: { notify: (message: string) => vo
     if (!receiptId) { notify('ကုန်ရောက်စာရင်း မသိမ်းနိုင်ပါ။ အမည်၊ ယူနစ်နဲ့ အရေအတွက်ကို စစ်ဆေးပါ။'); return; }
     setLines([blankLine()]); setNote(''); setReceivedDate(today());
     notify(`${hubBranch.name} သို့ ကုန်ရောက်စာရင်း သိမ်းပြီး Stock တိုးပြီးပါပြီ။ ဈေးနှုန်းနဲ့ Barcode ကို နောက်မှ ဖြည့်နိုင်ပါတယ်။`);
+  };
+
+  const handleCameraDetected = (rawCode: string) => {
+    const code = normalizeBarcode(rawCode);
+    const product = products.find((entry) => normalizeBarcode(entry.barcode) === code || normalizeBarcode(entry.sku) === code);
+    if (cameraLineKey) {
+      updateLine(cameraLineKey, { barcode: code, ...(product ? { name: product.name, unit: product.unit || 'ခု' } : {}) });
+    }
+    setCameraLineKey(null);
+    notify(product ? `${product.name} ကို Barcode ဖြင့် တွေ့ရှိပါပြီ။` : 'Barcode ဖတ်ပြီးပါပြီ။ Product အသစ်ဆို ပစ္စည်းအမည် ဖြည့်ပါ။');
   };
 
   return <section className="page-stack">
@@ -78,6 +92,7 @@ export function StockReceivingPage({ notify }: { notify: (message: string) => vo
               const match = products.find((product) => product.name.trim().toLocaleLowerCase() === name.trim().toLocaleLowerCase());
               updateLine(line.key, { name, ...(match ? { unit: match.unit || 'ခု' } : {}) });
             }} placeholder="ဥပမာ - Coca Cola" /></label>
+            <label>Barcode (optional)<div className="barcode-field-control"><input value={line.barcode} onChange={(event) => { const barcode = event.target.value; const code = normalizeBarcode(barcode); const match = products.find((product) => normalizeBarcode(product.barcode) === code || (!product.barcode && normalizeBarcode(product.sku) === code)); updateLine(line.key, { barcode, ...(match ? { name: match.name, unit: match.unit || 'ခု' } : {}) }); }} placeholder="Bluetooth Scanner ဖြင့် ဖတ်ပါ" inputMode="text" onKeyDown={(event) => { if (event.key === 'Enter') event.preventDefault(); }} /><button className="button button-outline barcode-camera-button" type="button" onClick={() => setCameraLineKey(line.key)} title="Camera ဖြင့် Barcode ဖတ်ရန်"><Camera size={14} /> Scan</button></div></label>
             <label>အရေအတွက် *<input required type="number" min={quantityStep(lineMode(line))} step={quantityStep(lineMode(line))} value={line.quantity} onChange={(event) => updateLine(line.key, { quantity: event.target.value })} /></label>
             <label>ယူနစ်<input value={line.unit} onChange={(event) => updateLine(line.key, { unit: event.target.value })} placeholder="ခု / ဘူး / ထုပ် / အိတ်" /></label>
           </div>
@@ -91,7 +106,8 @@ export function StockReceivingPage({ notify }: { notify: (message: string) => vo
 
     <div className="panel">
       <div className="panel-heading"><div><h3>အဓိကဆိုင် ကုန်ရောက်မှတ်တမ်း</h3><p>ဆိုင်တစ်ဆိုင်တည်းအတွက် မဟုတ်ဘဲ ကုန်စရောက်လာသည့် မူလမှတ်တမ်းများ</p></div><div className="heading-actions"><input className="inline-search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Receipt / ပစ္စည်း ရှာရန်" /></div></div>
-      {filteredReceipts.length === 0 ? <div className="empty-state"><div className="empty-icon"><ClipboardList size={23} /></div><strong>ကုန်ရောက်မှတ်တမ်း မရှိသေးပါ</strong><p>အပေါ်ကနေ ပစ္စည်းအမည်နဲ့ အရေအတွက် ထည့်နိုင်ပါတယ်။</p></div> : <div className="table-wrap"><table><thead><tr><th>နေ့စွဲ</th><th>Receipt No.</th><th>ပစ္စည်းများ</th><th>စုစုပေါင်း Qty</th><th>မှတ်ချက်</th><th>အသေးစိတ်</th></tr></thead><tbody>{filteredReceipts.map((receipt) => <tr key={receipt.id}><td>{dateLabel(receipt.date)}</td><td><b className="mono">{receipt.receiptNo}</b></td><td>{receipt.items.length} မျိုး</td><td><b>{summarizeQuantities(receipt.items.map((item) => ({ quantity: item.quantity, unit: item.unit || 'ခု' })))}</b></td><td>{receipt.note || '—'}</td><td><details className="receipt-details"><summary>ကြည့်ရန်</summary><div>{receipt.items.map((item) => <p key={item.id}>{item.productName} × {formatQuantity(item.quantity, inferQuantityMode(item.unit || 'ခု'))} {item.unit || 'ခု'} · {item.sku ? `Barcode: ${item.sku}` : 'Barcode မထည့်ရသေး'}</p>)}</div></details></td></tr>)}</tbody></table></div>}
+      {filteredReceipts.length === 0 ? <div className="empty-state"><div className="empty-icon"><ClipboardList size={23} /></div><strong>ကုန်ရောက်မှတ်တမ်း မရှိသေးပါ</strong><p>အပေါ်ကနေ ပစ္စည်းအမည်နဲ့ အရေအတွက် ထည့်နိုင်ပါတယ်။</p></div> : <div className="table-wrap"><table><thead><tr><th>နေ့စွဲ</th><th>Receipt No.</th><th>ပစ္စည်းများ</th><th>စုစုပေါင်း Qty</th><th>မှတ်ချက်</th><th>အသေးစိတ်</th></tr></thead><tbody>{filteredReceipts.map((receipt) => <tr key={receipt.id}><td>{dateLabel(receipt.date)}</td><td><b className="mono">{receipt.receiptNo}</b></td><td>{receipt.items.length} မျိုး</td><td><b>{summarizeQuantities(receipt.items.map((item) => ({ quantity: item.quantity, unit: item.unit || 'ခု' })))}</b></td><td>{receipt.note || '—'}</td><td><details className="receipt-details"><summary>ကြည့်ရန်</summary><div>{receipt.items.map((item) => <p key={item.id}>{item.productName} × {formatQuantity(item.quantity, inferQuantityMode(item.unit || 'ခု'))} {item.unit || 'ခု'} · {item.barcode ? `Barcode: ${item.barcode}` : item.sku ? `SKU: ${item.sku}` : 'Barcode မထည့်ရသေး'}</p>)}</div></details></td></tr>)}</tbody></table></div>}
     </div>
+    <BarcodeCameraScanner open={cameraLineKey !== null} onClose={() => setCameraLineKey(null)} onDetected={handleCameraDetected} title="ကုန်ရောက် Barcode ဖတ်ရန်" />
   </section>;
 }

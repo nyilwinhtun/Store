@@ -1,7 +1,11 @@
+> v2.9.3 Barcode Upgrade: Products support an optional dedicated barcode field (separate from SKU), Bluetooth HID keyboard scanners, POS scan-to-cart, receiving scan lookup, duplicate code protection, and phone camera scanning with ZXing. See `V2.9.3-BARCODE-AND-CAMERA-SCAN-MY.md`. Camera requires HTTPS/localhost permission. Physical scanner and camera hardware tests remain pending.
+
+> v2.9.1 Receipt Print Choice: Checkout now saves the sale first, then lets the cashier print a receipt or keep an amount-only screen. Includes 58/80mm selection and test print. Direct Bluetooth pairing is not implemented; see `V2.9.1-RECEIPT-PRINT-CHOICE-MY.md` for platform limitations and hardware test steps.
+
 
 > v2.8.5 React Runtime Fix: React/ReactDOM versions are now explicitly matched and Vite deduplicates React so Zustand hooks use the same runtime. See `V2.8.5-REACT-RUNTIME-FIX-MY.md` for update steps.
 
-# Minimart POS — v2.9.0
+# Minimart POS — v2.9.3
 
 ### Cashier Account Recovery / Existing Account Linking — v2.8.5
 - Owner can create a new Cashier using a secondary Firebase Auth app without signing out the Owner session.

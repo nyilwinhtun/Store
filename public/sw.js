@@ -1,5 +1,5 @@
 const CACHE_PREFIX = 'minimart-pos-';
-const CACHE_NAME = `${CACHE_PREFIX}v283-auto-device-sync`;
+const CACHE_NAME = `${CACHE_PREFIX}v293-barcode-camera-scan`;
 
 function scopedUrl(path) {
   return new URL(path, self.registration.scope).toString();

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { cleanQuantity, inferQuantityMode, isValidQuantity, quantityModeForProduct, summarizeQuantities, type QuantityMode } from '../lib/quantity';
+import { normalizeBarcode } from '../lib/barcode';
 
 export type PriceMode = 'retail' | 'wholesale';
 export type BranchSettings = { storeName: string; currency: string; receiptFooter: string; receiptHeader?: string };
@@ -15,6 +16,8 @@ export type Product = {
   id: string;
   name: string;
   sku: string;
+  /** Optional retail barcode; old products without this field remain valid. */
+  barcode?: string;
   category: string;
   costPrice: number;
   retailPrice: number;
@@ -35,6 +38,9 @@ export type CartItem = {
   costPrice: number;
   mode: PriceMode;
   stockAtAdd: number;
+  /** Snapshot the sale unit so old receipts remain accurate if the catalog is edited later. */
+  unit?: string;
+  quantityMode?: QuantityMode;
   batchAllocations?: BatchAllocation[];
 };
 export type Sale = {
@@ -149,6 +155,7 @@ export type StockReceiptLine = {
   productId: string;
   productName: string;
   sku: string;
+  barcode?: string;
   quantity: number;
   unitCost: number;
   lineTotal: number;
@@ -196,7 +203,7 @@ export type StockReceiptDraft = {
   receivedDate?: string;
   items: StockReceiptDraftItem[];
 };
-export type QuickGoodsArrivalItem = { name: string; quantity: number; unit?: string };
+export type QuickGoodsArrivalItem = { name: string; quantity: number; unit?: string; barcode?: string };
 export type StockTransferBatchAllocation = {
   sourceBatchId: string;
   destinationBatchId: string;
@@ -594,8 +601,16 @@ export const usePosStore = create<PosState>()(
       },
       addProduct: (product) => {
         const state = get();
-        const skuKey = normalizedName(product.sku);
-        if (state.products.some((entry) => entry.branchId === state.activeBranchId && skuKey && normalizedName(entry.sku) === skuKey)) return false;
+        const skuKey = normalizeBarcode(product.sku);
+        const barcodeKey = normalizeBarcode(product.barcode);
+        if (state.products.some((entry) => {
+          if (entry.branchId !== state.activeBranchId) return false;
+          const existingSku = normalizeBarcode(entry.sku);
+          const existingBarcode = normalizeBarcode(entry.barcode);
+          // SKU and barcode share the same lookup namespace within a branch.
+          return (!!skuKey && (existingSku === skuKey || existingBarcode === skuKey))
+            || (!!barcodeKey && (existingSku === barcodeKey || existingBarcode === barcodeKey));
+        })) return false;
         const createdAt = new Date().toISOString();
         const saved: Product = { ...product, quantityMode: product.quantityMode || inferQuantityMode(product.unit), branchId: state.activeBranchId, id: newId(), createdAt };
         if (!isValidQuantity(saved.stock, quantityModeForProduct(saved), true) || !isValidQuantity(saved.lowStockAt, quantityModeForProduct(saved), true)) return false;
@@ -612,6 +627,15 @@ export const usePosStore = create<PosState>()(
       },
       updateProduct: (id, changes) => set((state) => {
         const current = state.products.find((product) => product.id === id && product.branchId === state.activeBranchId);
+        const barcodeKey = changes.barcode !== undefined ? normalizeBarcode(changes.barcode) : normalizeBarcode(current?.barcode);
+        const skuKey = changes.sku !== undefined ? normalizeBarcode(changes.sku) : normalizeBarcode(current?.sku);
+        if (state.products.some((product) => {
+          if (product.branchId !== state.activeBranchId || product.id === id) return false;
+          const existingBarcode = normalizeBarcode(product.barcode);
+          const existingSku = normalizeBarcode(product.sku);
+          return (!!barcodeKey && (existingBarcode === barcodeKey || existingSku === barcodeKey))
+            || (!!skuKey && (existingBarcode === skuKey || existingSku === skuKey));
+        })) return state;
         const nextUnit = changes.unit || current?.unit || 'ခု';
         const nextMode = changes.quantityMode || current?.quantityMode || inferQuantityMode(nextUnit);
         const nextStock = typeof changes.stock === 'number' && Number.isFinite(changes.stock) ? Math.max(0, changes.stock) : current?.stock;
@@ -937,15 +961,17 @@ export const usePosStore = create<PosState>()(
         if (!Number.isFinite(receivedDate.getTime())) return null;
         const receivedAt = receivedDate.toISOString();
         const receiptId = newId();
-        const grouped = new Map<string, { name: string; unit: string; quantity: number }>();
+        const grouped = new Map<string, { name: string; unit: string; quantity: number; barcode?: string }>();
         for (const raw of input.items) {
           const name = String(raw.name || '').trim();
           const unit = String(raw.unit || 'ခု').trim() || 'ခု';
+          const barcode = normalizeBarcode(raw.barcode) || undefined;
           const quantity = Number(raw.quantity);
           if (!name || !Number.isFinite(quantity) || quantity <= 0 || quantity > 1000000) return null;
-          const key = `${normalizedName(name)}::${normalizedName(unit)}`;
+          const key = barcode ? `barcode:${barcode}` : `${normalizedName(name)}::${normalizedName(unit)}`;
           const previous = grouped.get(key);
-          grouped.set(key, { name, unit, quantity: (previous?.quantity || 0) + quantity });
+          if (previous && (normalizedName(previous.name) !== normalizedName(name) || normalizedName(previous.unit) !== normalizedName(unit))) return null;
+          grouped.set(key, { name, unit, barcode: barcode || previous?.barcode, quantity: (previous?.quantity || 0) + quantity });
         }
 
         const categories = [...state.categories];
@@ -960,18 +986,24 @@ export const usePosStore = create<PosState>()(
         const batches: StockBatch[] = [];
         const receiptItems: StockReceiptLine[] = [];
         for (const item of grouped.values()) {
-          const matches = products.filter((product) => product.branchId === hubBranch.id && normalizedName(product.name) === normalizedName(item.name) && normalizedName(product.unit || 'ခု') === normalizedName(item.unit));
-          if (matches.length > 1) return null;
-          let product = matches[0];
+          const barcodeMatches = item.barcode ? products.filter((product) => product.branchId === hubBranch.id && (normalizeBarcode(product.barcode) === item.barcode || normalizeBarcode(product.sku) === item.barcode)) : [];
+          if (barcodeMatches.length > 1) return null;
+          const nameMatches = products.filter((product) => product.branchId === hubBranch.id && normalizedName(product.name) === normalizedName(item.name) && normalizedName(product.unit || 'ခု') === normalizedName(item.unit));
+          if (nameMatches.length > 1) return null;
+          let product = barcodeMatches[0] || nameMatches[0];
+          if (barcodeMatches[0] && (normalizedName(barcodeMatches[0].name) !== normalizedName(item.name) || normalizedName(barcodeMatches[0].unit || 'ခု') !== normalizedName(item.unit))) return null;
+          if (product && item.barcode && product.barcode && normalizeBarcode(product.barcode) !== item.barcode) return null;
           if (product && !isValidQuantity(item.quantity, quantityModeForProduct(product))) return null;
           if (!product && !isValidQuantity(item.quantity, inferQuantityMode(item.unit))) return null;
           if (!product) {
             product = {
-              id: newId(), branchId: hubBranch.id, name: item.name, sku: '', category: defaultCategory.name,
+              id: newId(), branchId: hubBranch.id, name: item.name, sku: '', barcode: item.barcode, category: defaultCategory.name,
               costPrice: 0, retailPrice: 0, wholesalePrice: 0, stock: 0, lowStockAt: 5,
               unit: item.unit, quantityMode: inferQuantityMode(item.unit), createdAt: receivedAt,
             };
             products.push(product);
+          } else if (item.barcode && !product.barcode) {
+            product = { ...product, barcode: item.barcode };
           }
           const receivedUnitCost = Math.max(0, Number(product.costPrice) || 0);
           const updatedProduct = { ...product, stock: cleanQuantity(product.stock + item.quantity, quantityModeForProduct(product)) };
@@ -979,7 +1011,7 @@ export const usePosStore = create<PosState>()(
           if (productIndex >= 0) products[productIndex] = updatedProduct;
           const batchId = newId();
           batches.push({ id: batchId, branchId: hubBranch.id, productId: updatedProduct.id, purchaseId: '', supplierId: '', stockReceiptId: receiptId, quantity: item.quantity, receivedAt, expiryDate: '', unitCost: receivedUnitCost });
-          receiptItems.push({ id: newId(), productId: updatedProduct.id, productName: updatedProduct.name, sku: updatedProduct.sku || '', quantity: item.quantity, unit: item.unit, unitCost: receivedUnitCost, lineTotal: item.quantity * receivedUnitCost, retailPrice: updatedProduct.retailPrice, wholesalePrice: updatedProduct.wholesalePrice, expiryDate: '' });
+          receiptItems.push({ id: newId(), productId: updatedProduct.id, productName: updatedProduct.name, sku: updatedProduct.sku || '', barcode: updatedProduct.barcode || item.barcode, quantity: item.quantity, unit: item.unit, unitCost: receivedUnitCost, lineTotal: item.quantity * receivedUnitCost, retailPrice: updatedProduct.retailPrice, wholesalePrice: updatedProduct.wholesalePrice, expiryDate: '' });
         }
 
         const receipt: StockReceipt = {
