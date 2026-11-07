@@ -133,7 +133,7 @@ export function CashierAutoSyncProvider() {
         applyToStore();
       }, (error) => publishAutoSyncStatus(uid, {
         state: error.code === 'unavailable' ? 'offline' : 'error',
-        message: error.code === 'permission-denied' ? `Cashier ${kind} Read Permission မရပါ။ Firestore Rules ကို v2.9.7 အတိုင်း Publish လုပ်ပါ။` : error.message,
+        message: error.code === 'permission-denied' ? `Cashier ${kind} Read Permission မရပါ။ Firestore Rules ကို v2.9.8 အတိုင်း Publish လုပ်ပါ။` : error.message,
       }));
       unsubscribers.push(unsubscribe);
     };

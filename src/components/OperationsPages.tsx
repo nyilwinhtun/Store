@@ -1,6 +1,8 @@
-import { useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Activity, ArrowDownCircle, ArrowUpCircle, CheckCircle2, ClipboardList, Coins, Download, LockKeyhole, Plus, Wallet } from 'lucide-react';
 import { usePosStore } from '../store/usePosStore';
+import { useBusinessAccess } from '../lib/businessAccess';
+import { loadBranchSalesAudit, type SalesAuditEvent } from '../lib/salesAudit';
 
 const money = (value: number, currency = 'MMK') => `${new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(Math.round(value || 0))} ${currency}`;
 const dateTime = (value: string) => new Date(value).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -120,8 +122,25 @@ export function CashManagementPage() {
 }
 
 export function ActivityLogPage() {
+  const access = useBusinessAccess();
   const allLogs = usePosStore((state) => state.activityLogs);
   const activeBranchId = usePosStore((state) => state.activeBranchId);
+  const [cloudAudit, setCloudAudit] = useState<SalesAuditEvent[]>([]);
+  const [cloudAuditState, setCloudAuditState] = useState('Owner Cloud Audit ကို ဖွင့်မှတ်တမ်းကြည့်သည့်အခါမှသာ ဖတ်ပါမယ်။');
+  useEffect(() => {
+    if (access.status !== 'active' || access.role !== 'owner') { setCloudAudit([]); return; }
+    let cancelled = false;
+    setCloudAuditState('Cloud Sales Audit ကို ဖတ်နေပါတယ်။');
+    void loadBranchSalesAudit(activeBranchId).then((events) => {
+      if (cancelled) return;
+      setCloudAudit(events);
+      setCloudAuditState(`${events.length} ခုသော Cloud Audit Event ကို ဖတ်ပြီးပါပြီ။`);
+    }).catch((error: unknown) => {
+      if (cancelled) return;
+      setCloudAuditState(error instanceof Error ? error.message : 'Cloud Audit ကို ဖတ်မရပါ။');
+    });
+    return () => { cancelled = true; };
+  }, [activeBranchId, access.status, access.role]);
   const logs = useMemo(() => allLogs.filter((entry) => entry.branchId === activeBranchId), [allLogs, activeBranchId]);
   const [query, setQuery] = useState('');
   const filtered = useMemo(() => logs.filter((log) => `${log.action} ${log.entity} ${log.description} ${log.actor}`.toLowerCase().includes(query.toLowerCase())), [logs, query]);
@@ -130,10 +149,13 @@ export function ActivityLogPage() {
     ...filtered.map((log) => [log.at, log.actor, log.action, log.entity, log.description]),
   ]);
   return <section className="page-stack">
-    <div className="section-heading"><div><h2>Activity & Audit Log</h2><p>အရေးကြီးသော POS လုပ်ဆောင်ချက်များကို ဒီ Device ပေါ်တွင် မှတ်တမ်းတင်ထားပါသည်။</p></div><button className="button button-outline" onClick={exportLogs}><Download size={15} /> CSV Export</button></div>
-    <div className="panel"><div className="panel-heading"><div><h3>လုပ်ဆောင်မှုမှတ်တမ်း</h3><p>နောက်ဆုံးလုပ်ဆောင်ချက် ၁,၀၀၀ ခုအထိ သိမ်းဆည်းထားပါမည်။</p></div><input className="inline-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Action / Description ရှာရန်" /></div>
+    <div className="section-heading"><div><h2>Activity & Audit Log</h2><p>Device Local လုပ်ဆောင်ချက်များနှင့် Cloud Sales Audit ကို ခွဲခြားကြည့်နိုင်ပါတယ်။</p></div><button className="button button-outline" onClick={exportLogs}><Download size={15} /> CSV Export</button></div>
+    {access.status === 'active' && access.role === 'owner' && <div className="panel"><div className="panel-heading"><div><h3>Cloud Sales Audit (နောက်ဆုံး ၁၀၀ ခု)</h3><p>{cloudAuditState}</p></div><button className="button button-outline" type="button" onClick={() => { setCloudAuditState('Cloud Audit ကို ပြန်ဖတ်နေပါတယ်။'); void loadBranchSalesAudit(activeBranchId).then((events) => { setCloudAudit(events); setCloudAuditState(`${events.length} ခုသော Cloud Audit Event ကို ဖတ်ပြီးပါပြီ။`); }).catch((error: unknown) => setCloudAuditState(error instanceof Error ? error.message : 'Cloud Audit ကို ဖတ်မရပါ။')); }}>ပြန်ဖတ်ရန်</button></div>
+      {cloudAudit.length === 0 ? <div className="empty-state"><div className="empty-icon"><Activity size={23} /></div><strong>Cloud Sales Audit မရှိသေးပါ</strong><p>Cashier Sale Sync အသစ်များနှင့် Owner Void လုပ်ဆောင်ချက်များကို ဒီနေရာမှာ ပြပါမယ်။</p></div> : <div className="table-wrap"><table><thead><tr><th>အချိန်</th><th>လုပ်ဆောင်သူ</th><th>လုပ်ဆောင်ချက်</th><th>Voucher</th><th>ပမာဏ</th><th>အကြောင်းပြချက်</th></tr></thead><tbody>{cloudAudit.map((event) => <tr key={event.id}><td>{dateTime(event.occurredAt)}</td><td>{event.actorName || event.actorEmail}</td><td><span className={`tag ${event.eventType === 'SALE_VOIDED' ? 'tag-danger' : 'tag-success'}`}>{event.eventType === 'SALE_VOIDED' ? 'VOID' : 'SALE'}</span></td><td><strong className="mono">{event.receiptNo}</strong></td><td><b>{money(event.total)}</b></td><td>{event.reason || '—'}</td></tr>)}</tbody></table></div>}
+    </div>}
+    <div className="panel"><div className="panel-heading"><div><h3>Device Activity Log</h3><p>နောက်ဆုံးလုပ်ဆောင်ချက် ၁,၀၀၀ ခုအထိ သိမ်းဆည်းထားပါမည်။</p></div><input className="inline-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Action / Description ရှာရန်" /></div>
       {filtered.length === 0 ? <div className="empty-state"><div className="empty-icon"><Activity size={23} /></div><strong>မှတ်တမ်း မရှိသေးပါ</strong><p>Product, Sale, Stock, Payment, Purchase နှင့် Cash Shift လုပ်ဆောင်ချက်များ ဒီနေရာမှာ ပေါ်လာပါမယ်။</p></div> : <div className="table-wrap"><table><thead><tr><th>အချိန်</th><th>လုပ်ဆောင်သူ</th><th>Action</th><th>အမျိုးအစား</th><th>အသေးစိတ်</th></tr></thead><tbody>{filtered.map((log) => <tr key={log.id}><td>{dateTime(log.at)}</td><td>{log.actor}</td><td><span className="tag">{log.action}</span></td><td>{log.entity}</td><td>{log.description}</td></tr>)}</tbody></table></div>}
     </div>
-    <div className="panel security-note"><LockKeyhole size={18} /><div><strong>Audit Log ၏ ကန့်သတ်ချက်</strong><p>လက်ရှိမှတ်တမ်းသည် Local Device အတွင်း သိမ်းဆည်းသော လုပ်ဆောင်မှုမှတ်တမ်းဖြစ်ပြီး၊ အကောင့်အလိုက် အတည်ပြုထားသော ဝန်ထမ်းအမည် မဟုတ်ပါ။ Firebase Role-based Security နှင့် Employee Login ကို သီးခြားဖွင့်ပြီးမှ ဝန်ထမ်းတစ်ဦးချင်းအတွက် လုံခြုံရေးအာမခံနိုင်ပါမည်။</p></div></div>
+    <div className="panel security-note"><LockKeyhole size={18} /><div><strong>Audit Log ၏ ကန့်သတ်ချက်</strong><p>အပေါ်က Cloud Sales Audit သည် Firestore ထဲတွင် append-only သိမ်းထားသော Cashier Sale / Owner Void Event များဖြစ်ပါတယ်။ အောက်က Device Activity Log ကတော့ လက်ရှိ Device မှတ်တမ်းဖြစ်ပြီး Local ဖြစ်နေဆဲပါ။ ငွေပြန်အမ်းခြင်းနှင့် Partial Refund ကို ဒီ Version မှာ မထည့်သေးပါ။</p></div></div>
   </section>;
 }

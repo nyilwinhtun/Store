@@ -1,7 +1,14 @@
-# Minimart POS — v2.9.7
+# Minimart POS — v2.9.8
 
 Firebase Project: `minimart-production` · Firestore Region: Singapore (`asia-southeast1`) · Business ID: `store-mini-main`.
 
+
+## v2.9.8 — Sales Audit & Safe Void
+
+- Append-only Cloud Audit Events for Cashier Sale creation and Owner Sale void.
+- Owner-only atomic void restores product and batch stock once.
+- Void reason required; no cash refund or partial refund in this version.
+- Cloud audit history is fetched only when Owner opens Activity Log.
 
 ## v2.9.7 — Cashier Cloud Sales & Atomic Stock Protection
 - Cashier Sales are committed with Product Stock and Stock Batch deductions in one Firestore transaction. A stable Sale ID is used as an idempotency key so retries do not decrement stock twice.

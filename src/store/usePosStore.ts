@@ -59,6 +59,11 @@ export type Sale = {
   total: number;
   profit: number;
   status: 'completed' | 'voided';
+  voidReason?: string;
+  voidedAt?: string;
+  voidedByUid?: string;
+  voidedByEmail?: string;
+  voidedByName?: string;
   createdByUid?: string;
   createdByEmail?: string;
   createdByName?: string;
@@ -294,6 +299,8 @@ export type ActivityLog = {
   entity: string;
   entityId?: string;
   description: string;
+  actorUid?: string;
+  actorEmail?: string;
 };
 export type StoreSettings = {
   storeName: string;
@@ -338,7 +345,7 @@ type PosState = {
   deleteProduct: (id: string) => void;
   adjustStock: (id: string, quantity: number) => boolean;
   addSale: (sale: Sale) => Sale | null;
-  voidSale: (id: string) => void;
+  voidSale: (id: string, reason: string, actor: { uid: string; email: string; name: string }, voidedAt?: string) => boolean;
   addExpense: (expense: Omit<Expense, 'id'>) => void;
   deleteExpense: (id: string) => void;
   addCustomer: (customer: Omit<Customer, 'id' | 'createdAt'>) => string | null;
@@ -745,24 +752,39 @@ export const usePosStore = create<PosState>()(
         });
         return savedSale;
       },
-      voidSale: (id) => set((state) => {
-        const sale = state.sales.find((entry) => entry.id === id && entry.branchId === state.activeBranchId);
-        if (!sale || sale.status === 'voided' || (sale.paymentMethod === 'Credit' && (sale.paidAmount ?? 0) > 0)) return state;
-        const allocations = sale.items.flatMap((item) => item.batchAllocations || []);
-        return {
-          sales: state.sales.map((entry) => entry.id === id && entry.branchId === state.activeBranchId ? { ...entry, status: 'voided', dueAmount: 0 } : entry),
-          activityLogs: prependAudit(state.activityLogs, makeAudit('VOID', 'Sale', `Voucher ${sale.receiptNo} ကို ပယ်ဖျက်သည်`, id, state.activeBranchId)),
-          products: state.products.map((product) => {
-            if (product.branchId !== state.activeBranchId) return product;
-            const returned = sale.items.filter((item) => item.productId === product.id).reduce((sum, item) => sum + item.quantity, 0);
-            return returned ? { ...product, stock: cleanQuantity(product.stock + returned, quantityModeForProduct(product)) } : product;
-          }),
-          stockBatches: state.stockBatches.map((batch) => ({
-            ...batch,
-            quantity: batch.branchId === state.activeBranchId ? cleanQuantity(batch.quantity + allocations.filter((allocation) => allocation.batchId === batch.id).reduce((sum, allocation) => sum + allocation.quantity, 0), quantityModeForProduct(state.products.find((product) => product.id === batch.productId && product.branchId === state.activeBranchId) || { unit: 'ခု' })) : batch.quantity,
-          })),
-        };
-      }),
+      voidSale: (id, reason, actor, voidedAt) => {
+        let succeeded = false;
+        set((state) => {
+          const sale = state.sales.find((entry) => entry.id === id && entry.branchId === state.activeBranchId);
+          if (!sale) return state;
+          // Idempotent local application: a realtime Cloud snapshot may arrive before this callback.
+          if (sale.status === 'voided') { succeeded = true; return state; }
+          if (!reason.trim() || (sale.paymentMethod === 'Credit' && (sale.paidAmount ?? 0) > 0)) return state;
+          const allocations = sale.items.flatMap((item) => item.batchAllocations || []);
+          const now = voidedAt || new Date().toISOString();
+          const updatedSale = { ...sale, status: 'voided' as const, dueAmount: 0, voidReason: reason.trim(), voidedAt: now, voidedByUid: actor.uid, voidedByEmail: actor.email, voidedByName: actor.name };
+          const audit: ActivityLog = {
+            id: newId(), branchId: state.activeBranchId, at: now, actor: actor.name || actor.email || 'Owner',
+            actorUid: actor.uid, actorEmail: actor.email, action: 'SALE_VOID', entity: 'Sale', entityId: id,
+            description: `Voucher ${sale.receiptNo} ကို ပယ်ဖျက်သည် · ${reason.trim()}`,
+          };
+          succeeded = true;
+          return {
+            sales: state.sales.map((entry) => entry.id === id && entry.branchId === state.activeBranchId ? updatedSale : entry),
+            activityLogs: prependAudit(state.activityLogs, audit),
+            products: state.products.map((product) => {
+              if (product.branchId !== state.activeBranchId) return product;
+              const returned = sale.items.filter((item) => item.productId === product.id).reduce((sum, item) => sum + item.quantity, 0);
+              return returned ? { ...product, stock: cleanQuantity(product.stock + returned, quantityModeForProduct(product)) } : product;
+            }),
+            stockBatches: state.stockBatches.map((batch) => ({
+              ...batch,
+              quantity: batch.branchId === state.activeBranchId ? cleanQuantity(batch.quantity + allocations.filter((allocation) => allocation.batchId === batch.id).reduce((sum, allocation) => sum + allocation.quantity, 0), quantityModeForProduct(state.products.find((product) => product.id === batch.productId && product.branchId === state.activeBranchId) || { unit: 'ခု' })) : batch.quantity,
+            })),
+          };
+        });
+        return succeeded;
+      },
       addExpense: (expense) => set((state) => ({ expenses: [{ ...expense, branchId: state.activeBranchId, id: newId() }, ...state.expenses], activityLogs: prependAudit(state.activityLogs, makeAudit('CREATE', 'Expense', `${expense.title} · ${expense.amount} MMK`, undefined, state.activeBranchId)) })),
       deleteExpense: (id) => set((state) => { const target = state.expenses.find((expense) => expense.id === id && expense.branchId === state.activeBranchId); return { expenses: state.expenses.filter((expense) => !(expense.id === id && expense.branchId === state.activeBranchId)), activityLogs: prependAudit(state.activityLogs, makeAudit('DELETE', 'Expense', `အသုံးစရိတ်ဖျက်သည်: ${target?.title || id}`, id, state.activeBranchId)) }; }),
       addCustomer: (customer) => {

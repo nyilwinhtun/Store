@@ -65,7 +65,7 @@ function errorCode(error: unknown): string {
 
 function userFacingError(error: unknown): string {
   const code = errorCode(error);
-  if (code === 'permission-denied') return 'Cashier Sales / Stock Rules ကို Firebase မှ ခွင့်မပြုပါ။ Firestore Rules ကို v2.9.7 အတိုင်း Publish လုပ်ထားကြောင်း စစ်ပါ။';
+  if (code === 'permission-denied') return 'Cashier Sales / Stock Rules ကို Firebase မှ ခွင့်မပြုပါ။ Firestore Rules ကို v2.9.8 အတိုင်း Publish လုပ်ထားကြောင်း စစ်ပါ။';
   if (code === 'failed-precondition') return error instanceof Error ? error.message : 'Cloud Stock ပြောင်းလဲသွားသောကြောင့် အရောင်းကို အတည်မပြုနိုင်ပါ။';
   if (code === 'resource-exhausted') return 'Firebase Usage Quota ပြည့်နေသောကြောင့် Cloud သို့ မပို့နိုင်သေးပါ။ Sale ကို Local Queue ထဲ ထိန်းထားပါတယ်။';
   if (code === 'unavailable' || code === 'deadline-exceeded' || !navigator.onLine) return 'Internet မရှိသေးပါ။ အရောင်းကို ဒီ Device မှာ သိမ်းထားပြီး ပြန်ချိတ်မိလျှင် ပို့ပါမယ်။';
@@ -119,6 +119,8 @@ export async function commitCashierSale(sale: Sale, uid: string, branchId: strin
   }
 
   const saleRef = doc(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, 'sales', sale.id);
+  const auditId = `${sale.id}__created`;
+  const auditRef = doc(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, 'auditEvents', auditId);
   const productRefs = new Map([...productDeltas.keys()].map((id) => [id, productRef(branchId, id)]));
   const batchRefs = new Map([...batchDeltas.keys()].map((id) => [id, batchRef(branchId, id)]));
   const sharedCustomerRef = sale.paymentMethod === 'Credit' && sale.customerId
@@ -157,6 +159,10 @@ export async function commitCashierSale(sale: Sale, uid: string, branchId: strin
       }
       throw new Error('Voucher ID တူနေသော်လည်း Cloud Sale အချက်အလက် မတူပါ။ Owner ကို စစ်ဆေးခိုင်းပါ။');
     }
+
+    const existingAudit = await transaction.get(auditRef);
+    readsAcrossAttempts += 1;
+    if (existingAudit.exists()) throw new Error('ဒီ Voucher အတွက် Audit Record ရှိပြီး Sale မတွေ့ပါ။ Owner စစ်ဆေးရန်လိုပါတယ်။');
 
     const productEntries = [...productRefs.entries()];
     const batchEntries = [...batchRefs.entries()];
@@ -220,6 +226,13 @@ export async function commitCashierSale(sale: Sale, uid: string, branchId: strin
       });
       writesCommitted += 1;
     }
+    transaction.set(auditRef, {
+      id: auditId, eventType: 'SALE_CREATED', branchId, saleId: sale.id,
+      receiptNo: sale.receiptNo, actorUid: uid, actorEmail: sale.createdByEmail || '',
+      actorName: sale.createdByName || sale.createdByEmail || 'Cashier',
+      occurredAt: updatedAt, total: sale.total,
+    });
+    writesCommitted += 1;
     return 'created' as const;
     });
   } catch (error) {

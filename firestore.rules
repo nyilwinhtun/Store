@@ -27,7 +27,6 @@ service cloud.firestore {
     function salePath(businessId, branchId, saleId) {
       return /databases/$(database)/documents/businesses/$(businessId)/branches/$(branchId)/sales/$(saleId);
     }
-
     function isBusinessOwner(businessId) {
       return isConfiguredOwner(businessId)
         && exists(businessPath(businessId))
@@ -53,6 +52,53 @@ service cloud.firestore {
         && get(memberPath(businessId, request.auth.uid)).data.branchIds.size() == 1
         && get(memberPath(businessId, request.auth.uid)).data.branchIds[0] == branchId;
     }
+
+    function validCashierSaleAuditCreate(businessId, branchId, eventId) {
+      let saleId = request.resource.data.saleId;
+      let linkedSale = salePath(businessId, branchId, saleId);
+      return isCashierForBranch(businessId, branchId)
+        && request.resource.data.keys().hasOnly([
+          'id', 'eventType', 'branchId', 'saleId', 'receiptNo', 'actorUid',
+          'actorEmail', 'actorName', 'occurredAt', 'total'
+        ])
+        && request.resource.data.id == eventId
+        && eventId == request.resource.data.saleId + '__created'
+        && request.resource.data.eventType == 'SALE_CREATED'
+        && request.resource.data.branchId == branchId
+        && request.resource.data.actorUid == request.auth.uid
+        && request.resource.data.saleId is string
+        && request.resource.data.receiptNo is string
+        && request.resource.data.occurredAt is string
+        && request.resource.data.total is number
+        && !exists(linkedSale)
+        && existsAfter(linkedSale)
+        && getAfter(linkedSale).data.kind == 'sales'
+        && getAfter(linkedSale).data.branchId == branchId
+        && getAfter(linkedSale).data.payload.createdByUid == request.auth.uid
+        && getAfter(linkedSale).data.payload.status == 'completed';
+    }
+
+    function validOwnerVoidAuditCreate(businessId, branchId, eventId) {
+      let linkedSale = salePath(businessId, branchId, request.resource.data.saleId);
+      return isOwner(businessId)
+        && request.resource.data.keys().hasOnly([
+          'id', 'eventType', 'branchId', 'saleId', 'receiptNo', 'actorUid',
+          'actorEmail', 'actorName', 'occurredAt', 'total', 'reason'
+        ])
+        && request.resource.data.id == eventId
+        && eventId == request.resource.data.saleId + '__void'
+        && request.resource.data.eventType == 'SALE_VOIDED'
+        && request.resource.data.branchId == branchId
+        && request.resource.data.actorUid == request.auth.uid
+        && request.resource.data.reason is string
+        && request.resource.data.reason.size() >= 3
+        && exists(linkedSale)
+        && existsAfter(linkedSale)
+        && getAfter(linkedSale).data.payload.status == 'voided'
+        && getAfter(linkedSale).data.payload.voidedByUid == request.auth.uid
+        && getAfter(linkedSale).data.payload.voidReason == request.resource.data.reason;
+    }
+
 
     function validCashierMember(memberId) {
       return request.resource.data.keys().hasOnly([
@@ -237,7 +283,10 @@ service cloud.firestore {
                 || (collectionName == 'sales'
                   && (!exists(salePath(businessId, branchId, recordId))
                     || (resource.data.payload.createdByUid == request.auth.uid
-                      && resource.data.payload.branchId == branchId)))));
+                      && resource.data.payload.branchId == branchId)))
+                || (collectionName == 'auditEvents'
+                  && (!exists(/databases/$(database)/documents/businesses/$(businessId)/branches/$(branchId)/auditEvents/$(recordId))
+                    || resource.data.actorUid == request.auth.uid))));
 
           allow list: if isOwner(businessId)
             || (isCashierForBranch(businessId, branchId)
@@ -246,14 +295,16 @@ service cloud.firestore {
                   && request.query.limit <= 100
                   && resource.data.payload.createdByUid == request.auth.uid)));
 
-          allow create: if isOwner(businessId)
-            || (collectionName == 'sales' && validCashierSaleCreate(businessId, branchId, recordId));
+          allow create: if (isOwner(businessId) && collectionName != 'auditEvents')
+            || (collectionName == 'sales' && validCashierSaleCreate(businessId, branchId, recordId))
+            || (collectionName == 'auditEvents' && (validCashierSaleAuditCreate(businessId, branchId, recordId)
+              || validOwnerVoidAuditCreate(businessId, branchId, recordId)));
 
-          allow update: if isOwner(businessId)
+          allow update: if (isOwner(businessId) && collectionName != 'auditEvents')
             || (collectionName == 'products' && linkedProductStockReduction(businessId, branchId, recordId))
             || (collectionName == 'stockBatches' && linkedBatchStockReduction(businessId, branchId, recordId));
 
-          allow delete: if isOwner(businessId);
+          allow delete: if isOwner(businessId) && collectionName != 'auditEvents';
         }
       }
 

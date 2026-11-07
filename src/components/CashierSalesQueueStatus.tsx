@@ -49,7 +49,7 @@ export function CashierSalesQueueStatus({ uid, branchId }: { uid: string; branch
         setMessage(`${result.needsReview} ခုသော အရောင်းမှာ Cloud Stock/Voucher မကိုက်ညီပါ။ Owner စစ်ဆေးရန် လိုအပ်ပါတယ်။`);
       } else if (result.rulesError) {
         setState('rules-error');
-        setMessage('Firestore Rules က Cashier Sale ကို ခွင့်မပြုသေးပါ။ Owner က v2.9.7 Rules Publish လုပ်ပြီးမှ ပြန်ကြိုးစားပါ။');
+        setMessage('Firestore Rules က Cashier Sale ကို ခွင့်မပြုသေးပါ။ Owner က v2.9.8 Rules Publish လုပ်ပြီးမှ ပြန်ကြိုးစားပါ။');
       } else if (result.pending === 0) {
         setState('synced');
         setMessage(result.synced > 0 ? `${result.synced} ခုသော အရောင်းကို Cloud သို့ ပို့ပြီးပါပြီ။` : 'Cloud Queue ရှင်းလင်းပြီးပါပြီ။');
