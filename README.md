@@ -1,3 +1,20 @@
+# Minimart POS v3.0.1
+
+## Mobile POS & Smart Cart Upgrade
+
+- Fixes mobile viewport height calculation that could push the Checkout button below the visible area.
+- Makes Product Grid and Cart item list independent touch-scroll regions with larger tap targets.
+- Collapses the Not Buying list so parked items do not visually mix with active Cart lines.
+- Adds a payment confirmation step. Cash underpayment blocks Sale creation and Stock deduction; Cashier can return to Cart, reduce/remove items, and retry.
+- Persists optional `cashReceivedAmount` and `changeAmount` on new Cash sales and shows them in receipt/CSV. Existing Sale records remain compatible.
+- Keeps Credit validation, Firebase project config, cloud sales, stock transactions, branch receiving/transfer and desktop POS flow.
+
+Read `V3.0.1-START-HERE-MY.md` and `V3.0.1-TEST-PLAN-MY.md` before deployment.
+
+**Verification:** TS/TSX source transpile parsing and CSS parsing passed. Full dependency install timed out in this environment, so semantic typecheck, production build and device/live Firebase tests remain to be run on the Mac before production use.
+
+---
+
 # Minimart POS v3.0.0
 
 ## Central Inventory & Branch Receiving

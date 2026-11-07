@@ -51,6 +51,10 @@ export type Sale = {
   customer: string;
   customerId?: string;
   paymentMethod: 'Cash' | 'Credit';
+  /** Cash physically handed over by the customer; optional for older sales. */
+  cashReceivedAmount?: number;
+  /** Change returned to the customer; optional for older sales. */
+  changeAmount?: number;
   paidAmount?: number;
   dueAmount?: number;
   items: CartItem[];
