@@ -659,3 +659,48 @@
 @keyframes cashier-cloud-spin { to { transform:rotate(360deg); } }
 .cashier-cloud-sales-state .spin { animation:cashier-cloud-spin 1s linear infinite; }
 @media (max-width:520px) { .cashier-cloud-sales-state { gap:7px; padding:8px; } .cashier-cloud-sales-copy small { font-size:9px; } .cashier-cloud-sales-state .button { padding:7px 8px; } }
+
+
+/* v2.9.9 — Mobile checkout button overlap / ghost-text hotfix */
+@media (max-width: 600px) {
+  /* Receipt controls are managed in Settings on phones; never render them
+     underneath the checkout action. */
+  .pos-layout-mobile-split .printer-tools {
+    display: none !important;
+  }
+
+  /* Sticky positioning inside the flex cart summary caused the checkout
+     button to paint over the receipt controls and look like duplicated text. */
+  .pos-layout-mobile-split .checkout-button {
+    position: static !important;
+    inset: auto !important;
+    transform: none !important;
+    text-shadow: none !important;
+    box-shadow: none !important;
+    display: flex;
+    width: 100%;
+    min-height: 44px;
+    margin: 8px 0 0;
+    padding: 10px 12px;
+    line-height: 1.25;
+    white-space: normal;
+    overflow: visible;
+    isolation: isolate;
+  }
+
+  .pos-layout-mobile-split .cart-summary {
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+    position: relative;
+    overflow: visible;
+    gap: 0;
+    z-index: 3;
+    padding-bottom: calc(10px + env(safe-area-inset-bottom));
+  }
+
+  .pos-layout-mobile-split .cart-note {
+    margin: 5px 0 0;
+    line-height: 1.4;
+  }
+}
