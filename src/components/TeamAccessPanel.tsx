@@ -20,6 +20,7 @@ type MemberRecord = {
   role: 'owner' | 'cashier';
   branchIds: string[];
   status: 'active' | 'disabled';
+  canReceiveStock?: boolean;
   createdAt?: string;
   updatedAt?: string;
 };
@@ -148,6 +149,7 @@ export function TeamAccessPanel() {
       role: 'cashier' as const,
       branchIds,
       status: 'active' as const,
+      canReceiveStock: false,
       createdAt: now,
       updatedAt: now,
       createdBy: access.uid,
@@ -288,6 +290,24 @@ export function TeamAccessPanel() {
     finally { setBusy(false); }
   };
 
+  const setMemberReceiverPermission = async (member: MemberRecord, enabled: boolean) => {
+    if (!firestore || access.role !== 'owner' || member.role !== 'cashier' || member.status !== 'active') return;
+    if (enabled && member.branchIds?.length !== 1) {
+      setError('Stock Receiver ခွင့်ဖွင့်မီ Branch တစ်ခုတည်း သတ်မှတ်ပေးပါ။');
+      return;
+    }
+    setBusy(true); setError(''); setMessage('');
+    try {
+      await updateDoc(doc(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'members', member.uid), {
+        canReceiveStock: enabled, updatedAt: new Date().toISOString(),
+      });
+      recordFirestoreActivity(access.uid, 'write', 'team-member-stock-receiver-permission', 1);
+      setMembers((current) => current.map((entry) => entry.uid === member.uid ? { ...entry, canReceiveStock: enabled, updatedAt: new Date().toISOString() } : entry));
+      setMessage(`${member.displayName || member.email} အတွက် Stock Receiver ခွင့် ${enabled ? 'ဖွင့်' : 'ပိတ်'} ပြီးပါပြီ။ ဝန်ထမ်းကို ပြန် Login ဝင်ခိုင်းပါ။`);
+    } catch (reason) { setError(messageFor(reason)); }
+    finally { setBusy(false); }
+  };
+
   const removeInvalidPlaceholderMember = async (member: MemberRecord) => {
     // Only the known six-zero placeholder can be removed from this UI. Require
     // a separate, valid active Cashier document with the same email first.
@@ -371,7 +391,7 @@ export function TeamAccessPanel() {
     <div className="panel-heading team-list-heading"><div><h4>Member စာရင်း</h4><p>{members.length} accounts</p></div><button className="button button-outline" type="button" onClick={() => void loadMembers()} disabled={busy}><RefreshCw size={14} /> ပြန်စစ်ရန်</button></div>
     {members.length === 0 ? <div className="empty-state"><UserRound size={22} /><strong>Member မရှိသေးပါ</strong><p>Owner Account ကို Firestore မှာ အရင်အတည်ပြုပြီး Cashier အသစ် ဖန်တီးနိုင်ပါတယ်။</p></div> : <div className="team-member-list">{members.map((member) => <div className="team-member-row" key={member.uid}>
       <div className="team-member-avatar">{member.role === 'owner' ? <BadgeCheck size={18} /> : <UserRound size={18} />}</div>
-      <div className="team-member-main"><strong>{member.displayName || member.email || member.uid}</strong><small>{member.email} · {member.role === 'owner' ? 'Owner' : 'Limited Cashier'}</small><small className="team-member-uid">Firestore Document UID: <code>{member.uid}</code><button className="team-copy-uid" type="button" onClick={() => void copyValue(member.uid, 'Firebase UID')} title="UID ကူးရန်"><Copy size={12} /> UID ကူးရန်</button></small>{member.storedUid && member.storedUid !== member.uid && <small className="team-member-branch-warning">သတိပြုရန်: Document ID နှင့် Document ထဲက uid Field မတူပါ။ Cashier Login UID ကို Document ID နဲ့ တိုက်စစ်ပါ။</small>}{member.role === 'owner' ? <small>ဆိုင်အားလုံး</small> : <label className="team-member-branch-assignment">တာဝန်ယူမည့် ဆိုင်ခွဲ <select value={member.branchIds?.length === 1 ? member.branchIds[0] : ''} onChange={(event) => void reassignMemberBranch(member, event.target.value)} disabled={busy}><option value="">ဆိုင်ခွဲတစ်ခု ရွေးချယ်ပါ</option>{activeBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>}{member.role === 'cashier' && member.branchIds?.length !== 1 && <small className="team-member-branch-warning">Branch တစ်ခုတည်း သတ်မှတ်ရန် လိုအပ်ပါသည်။</small>}</div>
+      <div className="team-member-main"><strong>{member.displayName || member.email || member.uid}</strong><small>{member.email} · {member.role === 'owner' ? 'Owner' : 'Limited Cashier'}</small><small className="team-member-uid">Firestore Document UID: <code>{member.uid}</code><button className="team-copy-uid" type="button" onClick={() => void copyValue(member.uid, 'Firebase UID')} title="UID ကူးရန်"><Copy size={12} /> UID ကူးရန်</button></small>{member.storedUid && member.storedUid !== member.uid && <small className="team-member-branch-warning">သတိပြုရန်: Document ID နှင့် Document ထဲက uid Field မတူပါ။ Cashier Login UID ကို Document ID နဲ့ တိုက်စစ်ပါ။</small>}{member.role === 'owner' ? <small>ဆိုင်အားလုံး</small> : <label className="team-member-branch-assignment">တာဝန်ယူမည့် ဆိုင်ခွဲ <select value={member.branchIds?.length === 1 ? member.branchIds[0] : ''} onChange={(event) => void reassignMemberBranch(member, event.target.value)} disabled={busy}><option value="">ဆိုင်ခွဲတစ်ခု ရွေးချယ်ပါ</option>{activeBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>}{member.role === 'cashier' && <label className="team-member-receiver-toggle"><input type="checkbox" checked={member.canReceiveStock === true} onChange={(event) => void setMemberReceiverPermission(member, event.target.checked)} disabled={busy || member.status !== 'active' || member.branchIds?.length !== 1} /><span><strong>Stock Receiver ခွင့်</strong><small>ရောက်လာသော ပစ္စည်းကို စစ်ဆေးလက်ခံနိုင်သည်။ Owner Approval မတိုင်မီ Stock မတိုးပါ။</small></span></label>}{member.role === 'cashier' && member.branchIds?.length !== 1 && <small className="team-member-branch-warning">Branch တစ်ခုတည်း သတ်မှတ်ရန် လိုအပ်ပါသည်။</small>}</div>
       <span className={`tag ${member.status === 'active' ? 'tag-success' : 'tag-warn'}`}>{member.status === 'active' ? 'Active' : 'Disabled'}</span>
       {member.role === 'cashier' && <div className="team-member-actions"><button className="small-action" type="button" onClick={() => void verifyMember(member)} disabled={busy} title="Firestore Member Path ကို Server မှ စစ်ရန်"><ShieldCheck size={14} /></button><button className="small-action" type="button" onClick={() => void copyValue(`businesses/${FIREBASE_BUSINESS_ID}/members/${member.uid}`, 'Member Path')} disabled={busy} title="Member Path ကူးရန်"><Copy size={14} /></button><button className="small-action" type="button" onClick={() => void resendReset(member)} disabled={busy} title="Password Reset Email ပို့ရန်"><KeyRound size={14} /></button><button className="small-action" type="button" onClick={() => void setMemberStatus(member, member.status === 'active' ? 'disabled' : 'active')} disabled={busy} title={member.status === 'active' ? 'ပိတ်ရန်' : 'ပြန်ဖွင့်ရန်'}>{member.status === 'active' ? <UserX size={14} /> : <BadgeCheck size={14} />}</button>{member.uid === '000000' && <button className="small-action small-action-danger" type="button" onClick={() => void removeInvalidPlaceholderMember(member)} disabled={busy} title="မှန်ကန်သော UID Member အစားထိုးရှိကြောင်း စစ်ပြီး 000000 Record ဖယ်ရှားရန်"><Trash2 size={14} /></button>}</div>}
     </div>)}</div>}

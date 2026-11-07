@@ -11,6 +11,7 @@ export type BusinessAccessState = {
   displayName: string;
   role: BusinessRole | null;
   branchIds: string[];
+  canReceiveStock: boolean;
   message: string;
   setAccess: (value: Partial<Omit<BusinessAccessState, 'setAccess' | 'resetAccess'>>) => void;
   resetAccess: () => void;
@@ -23,6 +24,7 @@ const localAccess = {
   displayName: '',
   role: null as BusinessRole | null,
   branchIds: [] as string[],
+  canReceiveStock: false,
   message: '',
 };
 
@@ -38,10 +40,11 @@ export const useBusinessAccess = create<BusinessAccessState>((set) => ({
   resetAccess: () => set(localAccess),
 }));
 
-export function canUsePage(role: BusinessRole | null, page: string): boolean {
+export function canUsePage(role: BusinessRole | null, page: string, canReceiveStock = false): boolean {
   if (role !== 'cashier') return true;
-  // Limited Cashier: POS and only their own sales history.
-  return ['pos', 'sales'].includes(page);
+  // Limited Cashier: POS and own sales history. A separately assigned receiver
+  // can also access the receiving-only workflow for their one assigned branch.
+  return ['pos', 'sales'].includes(page) || (page === 'branchReceiving' && canReceiveStock);
 }
 
 export function canAccessBranch(role: BusinessRole | null, branchIds: string[], branchId: string): boolean {

@@ -12,7 +12,7 @@ import {
 } from 'firebase/firestore';
 import { firebaseAuth, firestore, FIREBASE_BUSINESS_ID } from '../lib/firebase';
 import { useBusinessAccess } from '../lib/businessAccess';
-import { usePosStore, type Branch, type Category, type Product, type Sale, type StockBatch } from '../store/usePosStore';
+import { usePosStore, type Branch, type Category, type Product, type Sale, type StockBatch, type BranchStockShipment } from '../store/usePosStore';
 import { publishAutoSyncStatus } from '../lib/autoSyncStatus';
 import { recordFirestoreActivity } from '../lib/firestoreDiagnostics';
 import { flushCashierSaleQueue, listenForCashierQueue } from '../lib/cashierSalesSync';
@@ -54,6 +54,7 @@ export function CashierAutoSyncProvider() {
     let categories: Category[] = [];
     let products: Product[] = [];
     let stockBatches: StockBatch[] = [];
+    let stockShipments: BranchStockShipment[] = [];
     let sales: Sale[] = [];
     const ready = new Set<string>();
     const firstServerSnapshot = new Set<string>();
@@ -74,6 +75,7 @@ export function CashierAutoSyncProvider() {
         categories: replaceBranchRecords(current.categories, branchId, categories),
         products: replaceBranchRecords(current.products, branchId, products),
         stockBatches: replaceBranchRecords(current.stockBatches, branchId, stockBatches),
+        ...(access.canReceiveStock ? { stockShipments: replaceBranchRecords(current.stockShipments, branchId, stockShipments) } : {}),
         sales: [
           ...current.sales.filter((entry) => entry.branchId !== branchId || entry.createdByUid !== uid),
           ...mergedSales.values(),
@@ -120,7 +122,7 @@ export function CashierAutoSyncProvider() {
     }));
     unsubscribers.push(unsubscribeBranch);
 
-    const attachCollection = <T extends { id: string; branchId?: string }>(kind: 'categories' | 'products' | 'stockBatches', apply: (items: T[]) => void) => {
+    const attachCollection = <T extends { id: string; branchId?: string }>(kind: 'categories' | 'products' | 'stockBatches' | 'stockShipments', apply: (items: T[]) => void) => {
       const ref = collection(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, kind);
       recordFirestoreActivity(uid, 'listenerStart', `cashier-listener:${kind}`, 1);
       const unsubscribe = onSnapshot(ref, listenOptions, (snapshot) => {
@@ -133,7 +135,7 @@ export function CashierAutoSyncProvider() {
         applyToStore();
       }, (error) => publishAutoSyncStatus(uid, {
         state: error.code === 'unavailable' ? 'offline' : 'error',
-        message: error.code === 'permission-denied' ? `Cashier ${kind} Read Permission မရပါ။ Firestore Rules ကို v2.9.8 အတိုင်း Publish လုပ်ပါ။` : error.message,
+        message: error.code === 'permission-denied' ? `Cashier ${kind} Read Permission မရပါ။ Firestore Rules မှာ Stock Receiver ခွင့်ပါဝင်သော v3.0.0 Rules ကို Publish လုပ်ပါ။` : error.message,
       }));
       unsubscribers.push(unsubscribe);
     };
@@ -141,6 +143,11 @@ export function CashierAutoSyncProvider() {
     attachCollection<Category>('categories', (items) => { categories = items; });
     attachCollection<Product>('products', (items) => { products = items; });
     attachCollection<StockBatch>('stockBatches', (items) => { stockBatches = items; });
+    if (access.canReceiveStock) {
+      attachCollection<BranchStockShipment>('stockShipments', (items) => {
+        stockShipments = items.filter((shipment) => shipment.toBranchId === branchId);
+      });
+    }
 
     const ownSalesQuery = query(
       collection(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, 'sales'),
@@ -166,7 +173,7 @@ export function CashierAutoSyncProvider() {
     window.addEventListener('online', onOnline);
     const unlistenQueue = listenForCashierQueue(uid, branchId, () => { void flushCashierSaleQueue(uid, branchId); });
 
-    publishAutoSyncStatus(uid, { state: 'connecting', message: 'Cashier အတွက် Branch Catalog / Stock / မိမိ Sales ကို Cloud မှ ချိတ်ဆက်နေပါတယ်။' });
+    publishAutoSyncStatus(uid, { state: 'connecting', message: access.canReceiveStock ? 'Cashier Catalog / Stock / Sales နဲ့ Assigned Stock Receiving ကို Cloud မှ ချိတ်ဆက်နေပါတယ်။' : 'Cashier အတွက် Branch Catalog / Stock / မိမိ Sales ကို Cloud မှ ချိတ်ဆက်နေပါတယ်။' });
 
     return () => {
       disposed = true;
@@ -174,7 +181,7 @@ export function CashierAutoSyncProvider() {
       unlistenQueue();
       window.removeEventListener('online', onOnline);
     };
-  }, [user?.uid, access.status, access.role, access.uid, access.branchIds.join('|')]);
+  }, [user?.uid, access.status, access.role, access.uid, access.branchIds.join('|'), access.canReceiveStock]);
 
   return null;
 }

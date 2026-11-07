@@ -53,6 +53,38 @@ service cloud.firestore {
         && get(memberPath(businessId, request.auth.uid)).data.branchIds[0] == branchId;
     }
 
+    function isStockReceiverForBranch(businessId, branchId) {
+      return isCashierForBranch(businessId, branchId)
+        && get(memberPath(businessId, request.auth.uid)).data.canReceiveStock == true;
+    }
+
+    // A receiver may only acknowledge a dispatched shipment addressed to their
+    // one assigned branch. This update cannot change Product or Stock documents.
+    function validStockShipmentReceiptUpdate(businessId, branchId) {
+      return isStockReceiverForBranch(businessId, branchId)
+        && resource.data.scope == 'branchRecord'
+        && resource.data.kind == 'stockShipments'
+        && resource.data.branchId == branchId
+        && resource.data.deleted != true
+        && resource.data.payload is map
+        && resource.data.payload.status == 'dispatched'
+        && request.resource.data.scope == 'branchRecord'
+        && request.resource.data.kind == 'stockShipments'
+        && request.resource.data.branchId == branchId
+        && request.resource.data.deleted == false
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['payload', 'updatedAt', 'updatedBy'])
+        && request.resource.data.payload.diff(resource.data.payload).affectedKeys().hasOnly([
+          'status', 'receivedItems', 'receivedAt', 'receivedByUid', 'receivedByEmail', 'receivedByName', 'receiverNote'
+        ])
+        && request.resource.data.payload.status == 'received'
+        && request.resource.data.payload.toBranchId == branchId
+        && request.resource.data.payload.receivedByUid == request.auth.uid
+        && request.resource.data.payload.receivedAt is string
+        && request.resource.data.payload.receivedItems is list
+        && request.resource.data.payload.receivedItems.size() == resource.data.payload.items.size();
+    }
+
     function validCashierSaleAuditCreate(businessId, branchId, eventId) {
       let saleId = request.resource.data.saleId;
       let linkedSale = salePath(businessId, branchId, saleId);
@@ -103,7 +135,7 @@ service cloud.firestore {
     function validCashierMember(memberId) {
       return request.resource.data.keys().hasOnly([
           'uid', 'email', 'displayName', 'role', 'branchIds',
-          'status', 'createdAt', 'updatedAt', 'createdBy'
+          'status', 'createdAt', 'updatedAt', 'createdBy', 'canReceiveStock'
         ])
         && request.resource.data.uid == memberId
         && request.resource.data.email is string
@@ -112,7 +144,8 @@ service cloud.firestore {
         && request.resource.data.status == 'active'
         && request.resource.data.branchIds is list
         && request.resource.data.branchIds.size() == 1
-        && request.resource.data.createdBy == request.auth.uid;
+        && request.resource.data.createdBy == request.auth.uid
+        && (!request.resource.data.keys().hasAny(['canReceiveStock']) || request.resource.data.canReceiveStock is bool);
     }
 
     function validCashierSaleCreate(businessId, branchId, saleId) {
@@ -264,8 +297,9 @@ service cloud.firestore {
           && request.resource.data.role == 'cashier'
           && request.resource.data.uid == memberId
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-            'displayName', 'branchIds', 'status', 'updatedAt'
+            'displayName', 'branchIds', 'status', 'updatedAt', 'canReceiveStock'
           ])
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['canReceiveStock']) || request.resource.data.canReceiveStock is bool)
           && request.resource.data.branchIds is list
           && request.resource.data.branchIds.size() == 1;
         allow delete: if isOwner(businessId) && resource.data.role == 'cashier';
@@ -280,6 +314,7 @@ service cloud.firestore {
           allow get: if isOwner(businessId)
             || (isCashierForBranch(businessId, branchId)
               && (collectionName in ['categories', 'products', 'stockBatches']
+                || (collectionName == 'stockShipments' && isStockReceiverForBranch(businessId, branchId))
                 || (collectionName == 'sales'
                   && (!exists(salePath(businessId, branchId, recordId))
                     || (resource.data.payload.createdByUid == request.auth.uid
@@ -291,6 +326,7 @@ service cloud.firestore {
           allow list: if isOwner(businessId)
             || (isCashierForBranch(businessId, branchId)
               && (collectionName in ['categories', 'products', 'stockBatches']
+                || (collectionName == 'stockShipments' && isStockReceiverForBranch(businessId, branchId))
                 || (collectionName == 'sales'
                   && request.query.limit <= 100
                   && resource.data.payload.createdByUid == request.auth.uid)));
@@ -301,6 +337,7 @@ service cloud.firestore {
               || validOwnerVoidAuditCreate(businessId, branchId, recordId)));
 
           allow update: if (isOwner(businessId) && collectionName != 'auditEvents')
+            || (collectionName == 'stockShipments' && validStockShipmentReceiptUpdate(businessId, branchId))
             || (collectionName == 'products' && linkedProductStockReduction(businessId, branchId, recordId))
             || (collectionName == 'stockBatches' && linkedBatchStockReduction(businessId, branchId, recordId));
 

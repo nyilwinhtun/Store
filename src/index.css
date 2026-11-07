@@ -704,3 +704,76 @@
     line-height: 1.4;
   }
 }
+
+/* v3.0.0 — central inventory and branch receiving */
+.team-member-receiver-toggle{display:flex!important;flex-direction:row!important;align-items:flex-start;gap:9px!important;margin-top:9px;padding:9px 10px;border:1px solid var(--line);border-radius:10px;background:var(--panel-soft);cursor:pointer}
+.team-member-receiver-toggle input{width:16px!important;height:16px!important;min-height:16px;margin:2px 0 0;accent-color:var(--teal);flex:0 0 auto}
+.team-member-receiver-toggle span{display:flex;flex-direction:column;gap:3px}
+.team-member-receiver-toggle strong{font-size:9px;color:var(--ink)}
+.team-member-receiver-toggle small{font-size:8px;color:var(--muted);line-height:1.45}
+.shipment-management{gap:14px}
+.shipment-info-banner{display:flex;align-items:flex-start;gap:11px;padding:13px 15px;border:1px solid rgba(20,145,128,.2);border-radius:12px;background:var(--teal-soft);color:var(--ink)}
+.shipment-info-banner>svg{flex:0 0 auto;color:var(--teal);margin-top:2px}
+.shipment-info-banner strong{font-size:11px}
+.shipment-info-banner p{margin:4px 0 0;color:var(--muted);font-size:9px;line-height:1.55}
+.shipment-form{gap:13px}
+.shipment-branch-grid{margin-bottom:4px}
+.shipment-draft-header{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:5px 0}
+.shipment-draft-header>strong{font-size:11px}
+.shipment-draft-list{display:flex;flex-direction:column;gap:9px}
+.shipment-draft-row{display:grid;grid-template-columns:27px minmax(190px,1fr) minmax(130px,170px) 34px;align-items:end;gap:8px;padding:11px;border:1px solid var(--line);border-radius:10px;background:var(--panel-soft)}
+.shipment-row-number{width:25px;height:25px;display:grid;place-items:center;border-radius:8px;background:var(--teal-soft);color:var(--teal);font-size:9px;font-weight:800;align-self:center}
+.shipment-draft-row label{display:flex;flex-direction:column;gap:5px;font-size:9px;color:var(--muted)}
+.shipment-draft-row select,.shipment-draft-row input{width:100%;min-width:0;min-height:36px;border:1px solid var(--line);border-radius:8px;padding:7px 9px;background:var(--panel);color:var(--ink);font:inherit;font-size:10px}
+.shipment-draft-row .small-action{width:32px;height:32px;align-self:center}
+.shipment-price-snapshot{grid-column:2/5;display:flex;flex-wrap:wrap;gap:6px 12px;color:var(--muted);font-size:8px;line-height:1.45}
+.shipment-form-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:5px}
+.shipment-form-footer small{color:var(--muted);font-size:8px;line-height:1.5;max-width:420px}
+.shipment-form-footer .button{white-space:nowrap}
+.shipment-history-heading{margin-top:8px}
+.shipment-card{display:flex;flex-direction:column;gap:10px;padding:14px;border:1px solid var(--line);border-radius:13px;background:var(--panel);box-shadow:var(--shadow)}
+.shipment-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.shipment-card-head>div{display:flex;flex-direction:column;gap:4px;min-width:0}
+.shipment-card-head>div>strong{font-size:11px;color:var(--ink)}
+.shipment-card-head>div>small{font-size:8px;color:var(--muted)}
+.shipment-card-head .tag{max-width:58%;white-space:normal;text-align:center;line-height:1.3}
+.shipment-history-meta{display:flex;flex-wrap:wrap;gap:6px 13px;color:var(--muted);font-size:8px}
+.shipment-note{margin:0;color:var(--muted);font-size:9px;line-height:1.45}
+.shipment-items-list{display:flex;flex-direction:column;gap:0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.shipment-receive-line,.shipment-history-line{display:flex;flex-direction:column;gap:8px;padding:10px 0;border-bottom:1px solid var(--line)}
+.shipment-receive-line:last-child,.shipment-history-line:last-child{border-bottom:0}
+.shipment-product-meta,.shipment-history-line>div:first-child{display:flex;flex-direction:column;gap:3px}
+.shipment-product-meta strong,.shipment-history-line>div:first-child strong{font-size:10px;color:var(--ink)}
+.shipment-product-meta small,.shipment-history-line>div:first-child small{font-size:8px;color:var(--muted)}
+.shipment-receive-inputs{display:grid;grid-template-columns:1fr 1fr 1.5fr;gap:8px}
+.shipment-receive-inputs label{display:flex;flex-direction:column;gap:4px;color:var(--muted);font-size:8px}
+.shipment-receive-inputs input{width:100%;min-width:0;min-height:34px;border:1px solid var(--line);border-radius:8px;padding:6px 8px;background:var(--panel-soft);color:var(--ink);font:inherit;font-size:10px}
+.shipment-received-summary,.shipment-history-quantities{display:flex;flex-wrap:wrap;gap:6px 12px;color:var(--muted);font-size:8px}
+.shipment-received-summary strong,.shipment-history-quantities strong{color:var(--teal)}
+.shipment-receive-footer,.shipment-receipt-review{display:flex;align-items:flex-end;justify-content:space-between;gap:12px}
+.shipment-receive-footer>label{flex:1;display:flex;flex-direction:column;gap:5px;color:var(--muted);font-size:8px}
+.shipment-receive-footer textarea{width:100%;border:1px solid var(--line);border-radius:8px;padding:8px;background:var(--panel-soft);color:var(--ink);font:inherit;font-size:9px;resize:vertical}
+.shipment-receipt-review>div{display:flex;flex-direction:column;gap:4px}
+.shipment-receipt-review strong{font-size:9px;color:var(--ink)}
+.shipment-receipt-review small{font-size:8px;color:var(--muted)}
+.shipment-receipt-review .button{white-space:nowrap}
+.shipment-status-note{display:flex;align-items:center;gap:7px;padding:9px 10px;border-radius:9px;background:var(--panel-soft);color:var(--muted);font-size:8px;line-height:1.45}
+.shipment-status-note svg{flex:0 0 auto}
+.shipment-status-note.shipment-success{background:var(--teal-soft);color:var(--teal)}
+:root[data-theme="dark"] .shipment-draft-row{background:var(--panel-soft)}
+@media(max-width:600px){
+  .team-member-receiver-toggle{padding:8px}
+  .shipment-info-banner{padding:11px}
+  .shipment-draft-row{grid-template-columns:24px minmax(0,1fr) 32px;gap:7px;padding:9px}
+  .shipment-row-number{width:22px;height:22px}
+  .shipment-product-select{grid-column:2/3}
+  .shipment-qty-select{grid-column:2/3}
+  .shipment-draft-row .small-action{grid-column:3;grid-row:1/3}
+  .shipment-price-snapshot{grid-column:2/4;font-size:7px}
+  .shipment-draft-header .button{padding:8px 9px;font-size:8px}
+  .shipment-form-footer,.shipment-receipt-review{align-items:stretch;flex-direction:column}
+  .shipment-form-footer .button,.shipment-receipt-review .button{width:100%;justify-content:center}
+  .shipment-receive-inputs{grid-template-columns:1fr 1fr}
+  .shipment-line-note{grid-column:1/3}
+  .shipment-card{padding:11px}
+}

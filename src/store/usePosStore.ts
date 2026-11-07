@@ -270,6 +270,73 @@ export type StockTransfer = {
 export type StockTransferActor = { uid?: string; email?: string; name?: string };
 export type StockTransferReversalResult = { ok: true; transferId: string; transferNo: string } | { ok: false; reason: 'not-found' | 'already-reversed' | 'invalid-transfer' | 'source-product-missing' | 'destination-product-missing' | 'destination-stock-insufficient' | 'transferred-batch-missing' | 'transferred-batch-insufficient' | 'batch-reconciliation-failed' | 'state-changed' };
 export type StockTransferDraftItem = { sourceProductId: string; quantity: number };
+export type ShipmentBatchAllocation = {
+  sourceBatchId: string;
+  quantity: number;
+  unitCost: number;
+  expiryDate: string;
+  receivedAt: string;
+  purchaseId?: string;
+  supplierId?: string;
+};
+export type BranchShipmentItem = {
+  sourceProductId: string;
+  productName: string;
+  sku: string;
+  barcode?: string;
+  category: string;
+  quantity: number;
+  unit: string;
+  quantityMode?: QuantityMode;
+  costPrice: number;
+  retailPrice: number;
+  wholesalePrice: number;
+  lowStockAt: number;
+  sourceStockBefore: number;
+  sourceStockAfter: number;
+  batchAllocations: ShipmentBatchAllocation[];
+  receivedQuantity?: number;
+  damagedQuantity?: number;
+  acceptedQuantity?: number;
+  receiverNote?: string;
+};
+export type BranchStockShipment = {
+  id: string;
+  /** Stored under the destination branch's stockShipments collection. */
+  branchId: string;
+  shipmentNo: string;
+  requestId?: string;
+  date: string;
+  fromBranchId: string;
+  toBranchId: string;
+  fromBranchName: string;
+  toBranchName: string;
+  dispatchedByUid?: string;
+  dispatchedByEmail?: string;
+  dispatchedByName?: string;
+  items: BranchShipmentItem[];
+  totalQuantity: number;
+  note: string;
+  status: 'dispatched' | 'received' | 'approved' | 'cancelled';
+  receivedItems?: Array<{ sourceProductId: string; receivedQuantity: number; damagedQuantity: number; note?: string }>;
+  receivedAt?: string;
+  receivedByUid?: string;
+  receivedByEmail?: string;
+  receivedByName?: string;
+  receiverNote?: string;
+  approvedAt?: string;
+  approvedByUid?: string;
+  approvedByEmail?: string;
+  approvedByName?: string;
+  approvalNote?: string;
+  cancelledAt?: string;
+  cancelledByUid?: string;
+  cancelledByEmail?: string;
+  cancelledByName?: string;
+  cancellationNote?: string;
+};
+export type BranchShipmentDraftItem = { sourceProductId: string; quantity: number };
+export type BranchShipmentReceiptInput = { sourceProductId: string; receivedQuantity: number; damagedQuantity: number; note?: string };
 export type CashShift = {
   branchId?: string;
   id: string;
@@ -326,6 +393,7 @@ type PosState = {
   stockBatches: StockBatch[];
   stockReceipts: StockReceipt[];
   stockTransfers: StockTransfer[];
+  stockShipments: BranchStockShipment[];
   cashShifts: CashShift[];
   cashMovements: CashMovement[];
   activityLogs: ActivityLog[];
@@ -360,6 +428,10 @@ type PosState = {
   addQuickGoodsArrival: (input: { receivedDate?: string; note?: string; items: QuickGoodsArrivalItem[] }) => string | null;
   transferStock: (input: { fromBranchId?: string; toBranchId: string; items: StockTransferDraftItem[]; note?: string; requestId?: string; actor?: StockTransferActor }) => StockTransferCommitResult | null;
   reverseStockTransfer: (input: { transferId: string; actor?: StockTransferActor; note: string }) => StockTransferReversalResult;
+  dispatchBranchStockShipment: (input: { fromBranchId?: string; toBranchId: string; items: BranchShipmentDraftItem[]; note?: string; requestId?: string; actor?: StockTransferActor }) => BranchStockShipment | null;
+  confirmBranchStockShipmentReceipt: (input: { shipmentId: string; receivedItems: BranchShipmentReceiptInput[]; actor?: StockTransferActor; note?: string }) => boolean;
+  approveBranchStockShipment: (input: { shipmentId: string; actor?: StockTransferActor; note?: string }) => boolean;
+  cancelBranchStockShipment: (input: { shipmentId: string; actor?: StockTransferActor; note: string }) => boolean;
   addSupplierPayment: (payment: Omit<SupplierPayment, 'id'>) => boolean;
   addPurchaseReturn: (purchaseId: string, quantity: number, note: string) => void;
   openCashShift: (openingCash: number, note?: string) => void;
@@ -371,7 +443,7 @@ type PosState = {
   removeHeldItem: (productId: string) => void;
   updateSettings: (changes: Partial<StoreSettings>) => void;
   updateOwnerProfile: (changes: Partial<OwnerProfile>) => void;
-  importData: (data: Partial<Pick<PosState, 'branches' | 'activeBranchId' | 'categories' | 'products' | 'sales' | 'expenses' | 'heldItems' | 'customers' | 'suppliers' | 'customerPayments' | 'purchases' | 'supplierPayments' | 'purchaseReturns' | 'stockBatches' | 'stockReceipts' | 'stockTransfers' | 'cashShifts' | 'cashMovements' | 'activityLogs' | 'ownerProfile' | 'settings'>>) => void;
+  importData: (data: Partial<Pick<PosState, 'branches' | 'activeBranchId' | 'categories' | 'products' | 'sales' | 'expenses' | 'heldItems' | 'customers' | 'suppliers' | 'customerPayments' | 'purchases' | 'supplierPayments' | 'purchaseReturns' | 'stockBatches' | 'stockReceipts' | 'stockTransfers' | 'stockShipments' | 'cashShifts' | 'cashMovements' | 'activityLogs' | 'ownerProfile' | 'settings'>>) => void;
   clearAllData: () => void;
 };
 
@@ -396,6 +468,7 @@ export function normalizeOwnerProfile(value: unknown): OwnerProfile {
   };
 }
 const newId = () => crypto.randomUUID();
+const epsilonForQuantity = () => 0.000001;
 const makeDefaultBranch = (settings: StoreSettings = defaultSettings): Branch => ({ id: DEFAULT_BRANCH_ID, name: settings.storeName || 'Main Store', code: 'MAIN', address: '', phone: '', bannerUrl: '', status: 'active', isDefault: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), settings: { storeName: settings.storeName || 'Main Store', currency: settings.currency || 'MMK', receiptFooter: settings.receiptFooter || defaultSettings.receiptFooter, receiptHeader: '' } });
 const makeDefaultCategories = (branchId: string, names: string[] = DEFAULT_CATEGORY_NAMES): Category[] => names.map((name, index) => ({ id: `${branchId}-cat-${index + 1}`, branchId, name, color: ['#0f766e', '#2563eb', '#d97706', '#7c3aed', '#db2777', '#64748b'][index % 6], isActive: true, createdAt: new Date().toISOString() }));
 const normalizedName = (value: string) => (value || '').trim().toLocaleLowerCase();
@@ -519,6 +592,7 @@ function migrateState(persisted: unknown, version: number): Partial<PosState> {
     stockBatches,
     stockReceipts: withBranch<StockReceipt>(old.stockReceipts),
     stockTransfers: Array.isArray(old.stockTransfers) ? old.stockTransfers as StockTransfer[] : [],
+    stockShipments: Array.isArray(old.stockShipments) ? old.stockShipments as BranchStockShipment[] : [],
     cashShifts: withBranch<CashShift>(old.cashShifts),
     cashMovements: withBranch<CashMovement>(old.cashMovements),
     activityLogs: withBranch<ActivityLog>(old.activityLogs),
@@ -532,7 +606,7 @@ export const usePosStore = create<PosState>()(
     (set, get) => ({
       branches: [makeDefaultBranch()], activeBranchId: DEFAULT_BRANCH_ID, categories: makeDefaultCategories(DEFAULT_BRANCH_ID),
       products: [], sales: [], expenses: [], heldItems: [], customers: [], suppliers: [],
-      customerPayments: [], purchases: [], supplierPayments: [], purchaseReturns: [], stockBatches: [], stockReceipts: [], stockTransfers: [], cashShifts: [], cashMovements: [], activityLogs: [], ownerProfile: defaultOwnerProfile, settings: defaultSettings,
+      customerPayments: [], purchases: [], supplierPayments: [], purchaseReturns: [], stockBatches: [], stockReceipts: [], stockTransfers: [], stockShipments: [], cashShifts: [], cashMovements: [], activityLogs: [], ownerProfile: defaultOwnerProfile, settings: defaultSettings,
       addBranch: (input) => {
         const name = input.name.trim();
         if (!name) return null;
@@ -1061,6 +1135,309 @@ export const usePosStore = create<PosState>()(
         }));
         return receiptId;
       },
+      dispatchBranchStockShipment: (input) => {
+        const state = get();
+        const requestId = (input.requestId || '').trim();
+        if (requestId) {
+          const existing = state.stockShipments.find((entry) => entry.requestId === requestId);
+          if (existing) return existing;
+        }
+        const defaultSourceBranch = state.branches.find((branch) => branch.isDefault && branch.status === 'active') || state.branches.find((branch) => branch.status === 'active');
+        const sourceBranch = state.branches.find((branch) => branch.id === (input.fromBranchId || defaultSourceBranch?.id) && branch.status === 'active');
+        const destinationBranch = state.branches.find((branch) => branch.id === input.toBranchId && branch.status === 'active');
+        if (!sourceBranch || !destinationBranch || sourceBranch.id === destinationBranch.id || !Array.isArray(input.items) || input.items.length === 0 || input.items.length > 50) return null;
+
+        const now = new Date();
+        const receivedAt = now.toISOString();
+        const currentDay = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+        const epsilon = 0.000001;
+        const products = state.products.map((product) => ({ ...product }));
+        const batches = state.stockBatches.map((batch) => ({ ...batch }));
+        const shipmentItems: BranchShipmentItem[] = [];
+        const seenProducts = new Set<string>();
+        const stockBeforeByProduct = new Map<string, number>();
+        const batchBeforeById = new Map<string, number>();
+
+        for (const draft of input.items) {
+          const sourceIndex = products.findIndex((product) => product.id === draft.sourceProductId && product.branchId === sourceBranch.id);
+          if (sourceIndex < 0 || seenProducts.has(draft.sourceProductId)) return null;
+          seenProducts.add(draft.sourceProductId);
+          const source = products[sourceIndex];
+          const quantity = Number(draft.quantity);
+          const mode = quantityModeForProduct(source);
+          if (!isValidQuantity(quantity, mode) || quantity <= 0 || quantity > source.stock + epsilon) return null;
+          stockBeforeByProduct.set(source.id, source.stock);
+
+          const tracked = batches.filter((batch) => batch.branchId === sourceBranch.id && batch.productId === source.id && Number(batch.quantity) > 0);
+          const trackedTotal = tracked.reduce((sum, batch) => sum + Math.max(0, Number(batch.quantity) || 0), 0);
+          if (trackedTotal > source.stock + epsilon) return null;
+          const untracked = Math.max(0, source.stock - trackedTotal);
+          if (untracked > epsilon) {
+            batches.push({
+              id: newId(), branchId: sourceBranch.id, productId: source.id, purchaseId: '', supplierId: '',
+              quantity: cleanQuantity(untracked, mode), receivedAt: source.createdAt || receivedAt, expiryDate: '', unitCost: source.costPrice,
+            });
+          }
+          const candidates = batches
+            .filter((batch) => batch.branchId === sourceBranch.id && batch.productId === source.id && batch.quantity > 0 && (!batch.expiryDate || batch.expiryDate >= currentDay))
+            .sort((a, b) => (a.expiryDate || '9999-12-31').localeCompare(b.expiryDate || '9999-12-31'));
+          const available = candidates.reduce((sum, batch) => sum + Math.max(0, Number(batch.quantity) || 0), 0);
+          if (quantity > available + epsilon) return null;
+
+          let remaining = quantity;
+          let costTotal = 0;
+          const allocations: ShipmentBatchAllocation[] = [];
+          for (const candidate of candidates) {
+            if (remaining <= epsilon) break;
+            const batchIndex = batches.findIndex((batch) => batch.id === candidate.id && batch.branchId === sourceBranch.id && batch.productId === source.id);
+            if (batchIndex < 0) return null;
+            // Only compare batches that existed before this dispatch. Legacy opening
+            // batches created above are new records and should be committed with the shipment.
+            if (state.stockBatches.some((batch) => batch.id === candidate.id && batch.branchId === sourceBranch.id)) {
+              batchBeforeById.set(candidate.id, candidate.quantity);
+            }
+            const take = Math.min(batches[batchIndex].quantity, remaining);
+            if (take <= epsilon) continue;
+            batches[batchIndex] = { ...batches[batchIndex], quantity: Math.max(0, cleanQuantity(batches[batchIndex].quantity - take, mode)) };
+            allocations.push({
+              sourceBatchId: candidate.id, quantity: take, unitCost: Number(candidate.unitCost) || Number(source.costPrice) || 0,
+              expiryDate: candidate.expiryDate || '', receivedAt: candidate.receivedAt || source.createdAt || receivedAt,
+              purchaseId: candidate.purchaseId || '', supplierId: candidate.supplierId || '',
+            });
+            costTotal += take * (Number(candidate.unitCost) || Number(source.costPrice) || 0);
+            remaining = Math.max(0, remaining - take);
+          }
+          if (remaining > epsilon || Math.abs(allocations.reduce((sum, entry) => sum + entry.quantity, 0) - quantity) > epsilon) return null;
+          const sourceStockAfter = cleanQuantity(source.stock - quantity, mode);
+          if (sourceStockAfter < -epsilon) return null;
+          products[sourceIndex] = { ...source, stock: Math.max(0, sourceStockAfter) };
+          shipmentItems.push({
+            sourceProductId: source.id, productName: source.name, sku: source.sku || '', barcode: source.barcode || '',
+            category: source.category || 'အထွေထွေ', quantity, unit: source.unit || 'ခု', quantityMode: mode,
+            costPrice: quantity > 0 ? costTotal / quantity : Number(source.costPrice) || 0,
+            retailPrice: Number(source.retailPrice) || 0, wholesalePrice: Number(source.wholesalePrice) || 0,
+            lowStockAt: Number(source.lowStockAt) || 0,
+            sourceStockBefore: source.stock, sourceStockAfter, batchAllocations: allocations,
+          });
+        }
+
+        const shipmentId = newId();
+        const shipment: BranchStockShipment = {
+          id: shipmentId, branchId: destinationBranch.id,
+          shipmentNo: `SH-${now.toISOString().slice(0, 10).replace(/-/g, '')}-${shipmentId.slice(0, 6).toUpperCase()}`,
+          ...(requestId ? { requestId } : {}), date: receivedAt, fromBranchId: sourceBranch.id, toBranchId: destinationBranch.id,
+          fromBranchName: sourceBranch.name, toBranchName: destinationBranch.name,
+          dispatchedByUid: input.actor?.uid || '', dispatchedByEmail: input.actor?.email || '', dispatchedByName: input.actor?.name || 'Owner',
+          items: shipmentItems, totalQuantity: shipmentItems.reduce((sum, item) => sum + item.quantity, 0),
+          note: (input.note || '').trim(), status: 'dispatched',
+        };
+        let commitApplied = false;
+        set((current) => {
+          const stockStillMatches = [...stockBeforeByProduct.entries()].every(([productId, before]) => {
+            const currentProduct = current.products.find((product) => product.id === productId && product.branchId === sourceBranch.id);
+            return !!currentProduct && Math.abs(currentProduct.stock - before) <= epsilon;
+          });
+          const batchesStillMatch = [...batchBeforeById.entries()].every(([batchId, before]) => {
+            const currentBatch = current.stockBatches.find((batch) => batch.id === batchId && batch.branchId === sourceBranch.id);
+            return !!currentBatch && Math.abs(currentBatch.quantity - before) <= epsilon;
+          });
+          if (!stockStillMatches || !batchesStillMatch || current.stockShipments.some((entry) => entry.id === shipmentId || (requestId && entry.requestId === requestId))) return current;
+          commitApplied = true;
+          return {
+            products: products.map((product) => ({ ...product })),
+            stockBatches: batches.map((batch) => ({ ...batch })),
+            stockShipments: [shipment, ...current.stockShipments],
+            activityLogs: prependAudit(current.activityLogs, {
+              ...makeAudit('STOCK_SHIPMENT_DISPATCHED', 'Branch Stock Shipment', `${shipment.shipmentNo} · ${sourceBranch.name} မှ ${destinationBranch.name} သို့ ${shipment.items.length} မျိုး ပို့ဆောင်သည်`, shipmentId, sourceBranch.id),
+              actor: input.actor?.name || input.actor?.email || 'Owner', actorUid: input.actor?.uid || '', actorEmail: input.actor?.email || '',
+            }),
+          };
+        });
+        return commitApplied ? shipment : null;
+      },
+      confirmBranchStockShipmentReceipt: (input) => {
+        const state = get();
+        const shipment = state.stockShipments.find((entry) => entry.id === input.shipmentId);
+        if (!shipment || shipment.status !== 'dispatched' || shipment.toBranchId !== state.stockShipments.find((entry) => entry.id === input.shipmentId)?.branchId) return false;
+        if (input.receivedItems.length !== shipment.items.length) return false;
+        const normalized = shipment.items.map((item) => {
+          const received = input.receivedItems.find((entry) => entry.sourceProductId === item.sourceProductId);
+          if (!received) return null;
+          const mode = item.quantityMode || inferQuantityMode(item.unit);
+          if (!isValidQuantity(received.receivedQuantity, mode, true) || !isValidQuantity(received.damagedQuantity, mode, true)
+            || received.receivedQuantity < 0 || received.damagedQuantity < 0
+            || received.damagedQuantity > received.receivedQuantity || received.receivedQuantity > item.quantity + epsilonForQuantity()) return null;
+          return { sourceProductId: item.sourceProductId, receivedQuantity: received.receivedQuantity, damagedQuantity: received.damagedQuantity, note: (received.note || '').trim() };
+        });
+        if (normalized.some((entry) => !entry)) return false;
+        const now = new Date().toISOString();
+        set((current) => ({
+          stockShipments: current.stockShipments.map((entry) => entry.id === input.shipmentId && entry.status === 'dispatched' ? {
+            ...entry, status: 'received', receivedItems: normalized as NonNullable<(typeof normalized)[number]>[], receivedAt: now,
+            receivedByUid: input.actor?.uid || '', receivedByEmail: input.actor?.email || '', receivedByName: input.actor?.name || 'Branch Receiver', receiverNote: (input.note || '').trim(),
+          } : entry),
+          activityLogs: prependAudit(current.activityLogs, {
+            ...makeAudit('STOCK_SHIPMENT_RECEIVED', 'Branch Stock Shipment', `${shipment.shipmentNo} · ${shipment.toBranchName} မှ ပစ္စည်းရောက်ရှိကြောင်း အတည်ပြုသည်`, shipment.id, shipment.toBranchId),
+            actor: input.actor?.name || input.actor?.email || 'Branch Receiver', actorUid: input.actor?.uid || '', actorEmail: input.actor?.email || '',
+          }),
+        }));
+        return get().stockShipments.some((entry) => entry.id === input.shipmentId && entry.status === 'received');
+      },
+      approveBranchStockShipment: (input) => {
+        const state = get();
+        const shipment = state.stockShipments.find((entry) => entry.id === input.shipmentId);
+        if (!shipment || shipment.status !== 'received' || !Array.isArray(shipment.receivedItems) || shipment.receivedItems.length !== shipment.items.length) return false;
+        const destinationBranch = state.branches.find((branch) => branch.id === shipment.toBranchId && branch.status === 'active');
+        if (!destinationBranch) return false;
+        const products = state.products.map((product) => ({ ...product }));
+        const batches = state.stockBatches.map((batch) => ({ ...batch }));
+        const categories = state.categories.map((category) => ({ ...category }));
+        const approvedLines: BranchShipmentItem[] = [];
+        const now = new Date().toISOString();
+        const epsilon = 0.000001;
+
+        for (const item of shipment.items) {
+          const received = shipment.receivedItems.find((entry) => entry.sourceProductId === item.sourceProductId);
+          if (!received) return false;
+          const quantityMode = item.quantityMode || inferQuantityMode(item.unit);
+          if (!isValidQuantity(received.receivedQuantity, quantityMode, true)
+            || !isValidQuantity(received.damagedQuantity, quantityMode, true)
+            || received.receivedQuantity < 0 || received.receivedQuantity > item.quantity + epsilon
+            || received.damagedQuantity < 0 || received.damagedQuantity > received.receivedQuantity) return false;
+          const acceptedQuantity = cleanQuantity(Math.max(0, received.receivedQuantity - received.damagedQuantity), quantityMode);
+          if (acceptedQuantity <= epsilon) {
+            approvedLines.push({ ...item, acceptedQuantity: 0 });
+            continue;
+          }
+          let destinationMatches = products.filter((product) => product.branchId === destinationBranch.id && (
+            (item.barcode && normalizeBarcode(product.barcode) === normalizeBarcode(item.barcode))
+            || (item.sku && normalizedName(product.sku) === normalizedName(item.sku))
+            || (normalizedName(product.name) === normalizedName(item.productName) && normalizedName(product.unit || 'ခု') === normalizedName(item.unit || 'ခု'))
+          ));
+          if (destinationMatches.length > 1) return false;
+          let destination = destinationMatches[0];
+          if (destination && quantityModeForProduct(destination) !== quantityMode) return false;
+          if (!destination) {
+            let targetCategory = categories.find((category) => category.branchId === destinationBranch.id && category.isActive && normalizedName(category.name) === normalizedName(item.category))
+              || categories.find((category) => category.branchId === destinationBranch.id && category.isActive && normalizedName(category.name) === normalizedName('အထွေထွေ'))
+              || categories.find((category) => category.branchId === destinationBranch.id && category.isActive);
+            if (!targetCategory) {
+              targetCategory = { id: newId(), branchId: destinationBranch.id, name: item.category || 'အထွေထွေ', color: '#64748b', isActive: true, createdAt: now };
+              categories.push(targetCategory);
+            }
+            destination = {
+              id: newId(), branchId: destinationBranch.id, name: item.productName, sku: item.sku || '', barcode: item.barcode || '',
+              category: targetCategory.name, costPrice: item.costPrice, retailPrice: item.retailPrice, wholesalePrice: item.wholesalePrice,
+              stock: 0, lowStockAt: item.lowStockAt, unit: item.unit, quantityMode, createdAt: now,
+            };
+            products.push(destination);
+          }
+
+          const previousStock = Math.max(0, Number(destination.stock) || 0);
+          const destinationTracked = batches.filter((batch) => batch.branchId === destinationBranch.id && batch.productId === destination!.id && Number(batch.quantity) > 0);
+          const destinationTrackedTotal = destinationTracked.reduce((sum, batch) => sum + Math.max(0, Number(batch.quantity) || 0), 0);
+          if (destinationTrackedTotal > previousStock + epsilon) return false;
+          const destinationUntracked = Math.max(0, previousStock - destinationTrackedTotal);
+          if (destinationUntracked > epsilon) {
+            batches.push({
+              id: newId(), branchId: destinationBranch.id, productId: destination.id, purchaseId: '', supplierId: '',
+              quantity: cleanQuantity(destinationUntracked, quantityMode), receivedAt: destination.createdAt || now, expiryDate: '', unitCost: Number(destination.costPrice) || 0,
+            });
+          }
+          const newStock = cleanQuantity(previousStock + acceptedQuantity, quantityMode);
+          const weightedCost = newStock > 0
+            ? ((previousStock * (Number(destination.costPrice) || 0)) + (acceptedQuantity * item.costPrice)) / newStock
+            : item.costPrice;
+          const updatedDestination: Product = {
+            ...destination, name: item.productName, sku: item.sku || destination.sku || '', barcode: item.barcode || destination.barcode || '',
+            category: item.category || destination.category, costPrice: weightedCost,
+            retailPrice: item.retailPrice, wholesalePrice: item.wholesalePrice, lowStockAt: item.lowStockAt,
+            stock: newStock, unit: item.unit, quantityMode,
+          };
+          const productIndex = products.findIndex((product) => product.id === destination!.id && product.branchId === destinationBranch.id);
+          if (productIndex >= 0) products[productIndex] = updatedDestination;
+
+          let batchRemaining = acceptedQuantity;
+          for (const allocation of item.batchAllocations) {
+            if (batchRemaining <= epsilon) break;
+            const take = Math.min(allocation.quantity, batchRemaining);
+            if (take <= epsilon) continue;
+            batches.push({
+              id: newId(), branchId: destinationBranch.id, productId: updatedDestination.id,
+              purchaseId: allocation.purchaseId || '', supplierId: allocation.supplierId || '', stockReceiptId: shipment.id,
+              quantity: cleanQuantity(take, quantityMode), receivedAt: allocation.receivedAt || now,
+              expiryDate: allocation.expiryDate || '', unitCost: allocation.unitCost,
+            });
+            batchRemaining = Math.max(0, batchRemaining - take);
+          }
+          if (batchRemaining > epsilon) return false;
+          approvedLines.push({ ...item, acceptedQuantity });
+        }
+
+        let committed = false;
+        set((current) => {
+          const latest = current.stockShipments.find((entry) => entry.id === input.shipmentId);
+          if (!latest || latest.status !== 'received' || current.stockShipments.some((entry) => entry.id !== input.shipmentId && entry.shipmentNo === shipment.shipmentNo)) return current;
+          committed = true;
+          const approved: BranchStockShipment = {
+            ...latest, items: approvedLines, status: 'approved', approvedAt: now,
+            approvedByUid: input.actor?.uid || '', approvedByEmail: input.actor?.email || '', approvedByName: input.actor?.name || 'Owner', approvalNote: (input.note || '').trim(),
+          };
+          return {
+            products: products.map((product) => ({ ...product })), stockBatches: batches.map((batch) => ({ ...batch })), categories,
+            stockShipments: current.stockShipments.map((entry) => entry.id === input.shipmentId ? approved : entry),
+            activityLogs: prependAudit(current.activityLogs, {
+              ...makeAudit('STOCK_SHIPMENT_APPROVED', 'Branch Stock Shipment', `${shipment.shipmentNo} · ${shipment.toBranchName} သို့ ${approvedLines.length} မျိုး၊ အတည်ပြုလက်ခံအရေအတွက် ${summarizeQuantities(approvedLines.map((line) => ({ quantity: line.acceptedQuantity || 0, unit: line.unit })))} ဖြင့် Stock ဝင်သည်`, shipment.id, shipment.toBranchId),
+              actor: input.actor?.name || input.actor?.email || 'Owner', actorUid: input.actor?.uid || '', actorEmail: input.actor?.email || '',
+            }),
+          };
+        });
+        return committed;
+      },
+      cancelBranchStockShipment: (input) => {
+        const state = get();
+        const shipment = state.stockShipments.find((entry) => entry.id === input.shipmentId);
+        if (!shipment || shipment.status !== 'dispatched' || !input.note.trim()) return false;
+        const products = state.products.map((product) => ({ ...product }));
+        const batches = state.stockBatches.map((batch) => ({ ...batch }));
+        const now = new Date().toISOString();
+        for (const item of shipment.items) {
+          const productIndex = products.findIndex((product) => product.id === item.sourceProductId && product.branchId === shipment.fromBranchId);
+          if (productIndex < 0) return false;
+          const mode = item.quantityMode || inferQuantityMode(item.unit);
+          products[productIndex] = { ...products[productIndex], stock: cleanQuantity(products[productIndex].stock + item.quantity, mode) };
+          for (const allocation of item.batchAllocations) {
+            const batchIndex = batches.findIndex((batch) => batch.id === allocation.sourceBatchId && batch.branchId === shipment.fromBranchId && batch.productId === item.sourceProductId);
+            if (batchIndex >= 0) {
+              batches[batchIndex] = { ...batches[batchIndex], quantity: cleanQuantity(batches[batchIndex].quantity + allocation.quantity, mode) };
+            } else {
+              batches.push({
+                id: allocation.sourceBatchId, branchId: shipment.fromBranchId, productId: item.sourceProductId,
+                purchaseId: allocation.purchaseId || '', supplierId: allocation.supplierId || '', quantity: allocation.quantity,
+                receivedAt: allocation.receivedAt || shipment.date, expiryDate: allocation.expiryDate || '', unitCost: allocation.unitCost,
+              });
+            }
+          }
+        }
+        let cancelled = false;
+        set((current) => {
+          const latest = current.stockShipments.find((entry) => entry.id === input.shipmentId);
+          if (!latest || latest.status !== 'dispatched') return current;
+          cancelled = true;
+          return {
+            products: products.map((product) => ({ ...product })), stockBatches: batches.map((batch) => ({ ...batch })),
+            stockShipments: current.stockShipments.map((entry) => entry.id === input.shipmentId ? {
+              ...entry, status: 'cancelled', cancelledAt: now, cancelledByUid: input.actor?.uid || '',
+              cancelledByEmail: input.actor?.email || '', cancelledByName: input.actor?.name || 'Owner', cancellationNote: input.note.trim(),
+            } : entry),
+            activityLogs: prependAudit(current.activityLogs, {
+              ...makeAudit('STOCK_SHIPMENT_CANCELLED', 'Branch Stock Shipment', `${shipment.shipmentNo} ကို မလက်ခံရသေးခင် ပယ်ဖျက်ပြီး Source Stock ပြန်တိုးသည် · ${input.note.trim()}`, shipment.id, shipment.fromBranchId),
+              actor: input.actor?.name || input.actor?.email || 'Owner', actorUid: input.actor?.uid || '', actorEmail: input.actor?.email || '',
+            }),
+          };
+        });
+        return cancelled;
+      },
       transferStock: (input) => {
         const state = get();
         const requestId = (input.requestId || '').trim();
@@ -1512,6 +1889,7 @@ export const usePosStore = create<PosState>()(
         const nextStockBatches = ensureStockBatchCoverage(nextProducts, normalizeBranchRecords<StockBatch>(data.stockBatches, state.stockBatches));
         const nextStockReceipts = normalizeBranchRecords<StockReceipt>(data.stockReceipts, state.stockReceipts);
         const nextStockTransfers = Array.isArray(data.stockTransfers) ? data.stockTransfers as StockTransfer[] : state.stockTransfers;
+        const nextStockShipments = Array.isArray(data.stockShipments) ? data.stockShipments as BranchStockShipment[] : state.stockShipments;
         const nextCashShifts = normalizeBranchRecords<CashShift>(data.cashShifts, state.cashShifts);
         const nextCashMovements = normalizeBranchRecords<CashMovement>(data.cashMovements, state.cashMovements);
         const nextActivityLogs = normalizeBranchRecords<ActivityLog>(data.activityLogs, state.activityLogs);
@@ -1537,16 +1915,16 @@ export const usePosStore = create<PosState>()(
           customers: Array.isArray(data.customers) ? data.customers : state.customers,
           suppliers: Array.isArray(data.suppliers) ? data.suppliers : state.suppliers,
           customerPayments: nextCustomerPayments, purchases: nextPurchases, supplierPayments: nextSupplierPayments,
-          purchaseReturns: nextPurchaseReturns, stockBatches: nextStockBatches, stockReceipts: nextStockReceipts, stockTransfers: nextStockTransfers, cashShifts: nextCashShifts,
+          purchaseReturns: nextPurchaseReturns, stockBatches: nextStockBatches, stockReceipts: nextStockReceipts, stockTransfers: nextStockTransfers, stockShipments: nextStockShipments, cashShifts: nextCashShifts,
           cashMovements: nextCashMovements, activityLogs: nextActivityLogs, ownerProfile: data.ownerProfile ? normalizeOwnerProfile({ ...normalizeOwnerProfile(state.ownerProfile), ...data.ownerProfile }) : normalizeOwnerProfile(state.ownerProfile), settings,
         };
       }),
-      clearAllData: () => set({ branches: [makeDefaultBranch()], activeBranchId: DEFAULT_BRANCH_ID, categories: makeDefaultCategories(DEFAULT_BRANCH_ID), products: [], sales: [], expenses: [], heldItems: [], customers: [], suppliers: [], customerPayments: [], purchases: [], supplierPayments: [], purchaseReturns: [], stockBatches: [], stockReceipts: [], stockTransfers: [], cashShifts: [], cashMovements: [], activityLogs: [], ownerProfile: defaultOwnerProfile, settings: defaultSettings }),
+      clearAllData: () => set({ branches: [makeDefaultBranch()], activeBranchId: DEFAULT_BRANCH_ID, categories: makeDefaultCategories(DEFAULT_BRANCH_ID), products: [], sales: [], expenses: [], heldItems: [], customers: [], suppliers: [], customerPayments: [], purchases: [], supplierPayments: [], purchaseReturns: [], stockBatches: [], stockReceipts: [], stockTransfers: [], stockShipments: [], cashShifts: [], cashMovements: [], activityLogs: [], ownerProfile: defaultOwnerProfile, settings: defaultSettings }),
     }),
     {
       name: 'minimart-pos-data-v1',
       storage: createJSONStorage(() => localStorage),
-      version: 11,
+      version: 12,
       migrate: migrateState,
       // Also normalize same-version or partially-written legacy snapshots on every hydration.
       merge: (persistedState, currentState) => {
@@ -1564,7 +1942,7 @@ export const usePosStore = create<PosState>()(
         branches: state.branches, activeBranchId: state.activeBranchId, categories: state.categories,
         products: state.products, sales: state.sales, expenses: state.expenses, heldItems: state.heldItems,
         customers: state.customers, suppliers: state.suppliers, customerPayments: state.customerPayments,
-        purchases: state.purchases, supplierPayments: state.supplierPayments, purchaseReturns: state.purchaseReturns, stockBatches: state.stockBatches, stockReceipts: state.stockReceipts, stockTransfers: state.stockTransfers, cashShifts: state.cashShifts,
+        purchases: state.purchases, supplierPayments: state.supplierPayments, purchaseReturns: state.purchaseReturns, stockBatches: state.stockBatches, stockReceipts: state.stockReceipts, stockTransfers: state.stockTransfers, stockShipments: state.stockShipments, cashShifts: state.cashShifts,
         cashMovements: state.cashMovements, activityLogs: state.activityLogs, ownerProfile: state.ownerProfile, settings: state.settings,
       }) as PosState,
     },

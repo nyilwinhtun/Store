@@ -96,7 +96,7 @@ export function AccessBootstrap() {
 
       setAccess({
         status: 'loading', uid: user.uid, email: user.email || '',
-        displayName: user.displayName || '', role: null, branchIds: [],
+        displayName: user.displayName || '', role: null, branchIds: [], canReceiveStock: false,
         message: 'Firebase Server သို့မဟုတ် ယခင်သိမ်းထားသော Offline Cache မှ Owner / Member Access ကို စစ်ဆေးနေပါတယ်။',
       });
 
@@ -120,7 +120,7 @@ export function AccessBootstrap() {
               if (business.active === false) {
                 setAccess({
                   status: 'disabled', uid: user.uid, email: user.email || '',
-                  displayName: user.displayName || '', role: 'owner', branchIds: [],
+                  displayName: user.displayName || '', role: 'owner', branchIds: [], canReceiveStock: false,
                   message: 'Business ကို ပိတ်ထားပါတယ်။ Owner က Firebase Console မှ active=true ပြန်ဖွင့်ပါ။',
                 });
                 return;
@@ -128,7 +128,7 @@ export function AccessBootstrap() {
               setAccess({
                 status: 'active', uid: user.uid, email: user.email || '',
                 displayName: user.displayName || (typeof business.ownerName === 'string' ? business.ownerName : ''),
-                role: 'owner', branchIds: [],
+                role: 'owner', branchIds: [], canReceiveStock: false,
                 message: businessSnapshot.metadata.fromCache
                   ? 'Internet မရှိပါ။ ဒီ Device မှာ ယခင်က အတည်ပြုထားတဲ့ Owner Access Cache ကို အသုံးပြုပြီး POS ကို ဖွင့်ထားပါတယ်။ Internet ပြန်ရချိန် Server မှ ပြန်စစ်ပါမယ်။'
                   : 'Business ownerUid နဲ့ Firebase Login UID ကိုက်ညီပါတယ်။ Owner Access အတည်ပြုပြီးပါပြီ။',
@@ -175,7 +175,7 @@ export function AccessBootstrap() {
             }
             setAccess({
               status: 'unassigned', uid: user.uid, email: user.email || '',
-              displayName: user.displayName || '', role: null, branchIds: [],
+              displayName: user.displayName || '', role: null, branchIds: [], canReceiveStock: false,
               message: businessExists
                 ? `ဒီ Account သည် Business ownerUid မဟုတ်သလို Member Document လည်း မရှိပါ: ${membershipPath}`
                 : `Business Document မတွေ့ပါ: ${businessPath}။ Firestore Path နဲ့ Business ID ကို စစ်ပါ။`,
@@ -192,7 +192,7 @@ export function AccessBootstrap() {
           if (data.uid !== user.uid) {
             setAccess({
               status: 'error', uid: user.uid, email: user.email || '',
-              displayName: user.displayName || '', role: null, branchIds: [],
+              displayName: user.displayName || '', role: null, branchIds: [], canReceiveStock: false,
               message: 'Member Document ရဲ့ uid Field က လက်ရှိ Firebase Login UID နဲ့ မကိုက်ညီပါ။',
             });
             return;
@@ -200,7 +200,7 @@ export function AccessBootstrap() {
           if (typeof data.email === 'string' && user.email && data.email.toLowerCase() !== user.email.toLowerCase()) {
             setAccess({
               status: 'error', uid: user.uid, email: user.email || '',
-              displayName: user.displayName || '', role: null, branchIds: [],
+              displayName: user.displayName || '', role: null, branchIds: [], canReceiveStock: false,
               message: 'Member Document ရဲ့ email Field က လက်ရှိ Login Email နဲ့ မကိုက်ညီပါ။',
             });
             return;
@@ -208,7 +208,7 @@ export function AccessBootstrap() {
           if (data.status !== 'active') {
             setAccess({
               status: 'disabled', uid: user.uid, email: user.email || '',
-              displayName: user.displayName || '', role, branchIds,
+              displayName: user.displayName || '', role, branchIds, canReceiveStock: false,
               message: 'ဒီ Account ကို Owner က ပိတ်ထားပါတယ်။',
             });
             return;
@@ -216,7 +216,7 @@ export function AccessBootstrap() {
           if (!role || (role === 'cashier' && branchIds.length !== 1)) {
             setAccess({
               status: 'error', uid: user.uid, email: user.email || '',
-              displayName: user.displayName || '', role: null, branchIds,
+              displayName: user.displayName || '', role: null, branchIds, canReceiveStock: false,
               message: role === 'cashier'
                 ? `Limited Cashier အတွက် Branch တစ်ခုတည်း သတ်မှတ်ထားရပါမယ်။ လက်ရှိ ${branchIds.length} ခု ရှိနေပါတယ်။ Owner ကို ဆက်သွယ်ပြီး Team Access မှာ Branch တစ်ခုတည်း ပြန်ရွေးပါ။`
                 : 'Member Role မမှန်ကန်ပါ။ Owner ကို ဆက်သွယ်ပါ။',
@@ -228,7 +228,7 @@ export function AccessBootstrap() {
             status: 'active', uid: user.uid, email: user.email || '',
             displayName: typeof data.displayName === 'string' && data.displayName
               ? data.displayName : user.displayName || '',
-            role, branchIds, message: memberSnapshot.metadata.fromCache
+            role, branchIds, canReceiveStock: data.canReceiveStock === true, message: memberSnapshot.metadata.fromCache
               ? 'Internet မရှိပါ။ ဒီ Device မှာ ယခင်က အတည်ပြုထားတဲ့ Membership Cache ကို အသုံးပြုပြီး POS ကို ဖွင့်ထားပါတယ်။ Internet ပြန်ရချိန် Server မှ ပြန်စစ်ပါမယ်.'
               : 'Business Membership အတည်ပြုပြီးပါပြီ။',
           });
@@ -247,7 +247,7 @@ export function AccessBootstrap() {
           const networkProblem = isNetworkError(error) || isNetworkError(businessReadError);
           setAccess({
             status: 'error', uid: user.uid, email: user.email || '',
-            displayName: user.displayName || '', role: null, branchIds: [],
+            displayName: user.displayName || '', role: null, branchIds: [], canReceiveStock: false,
             message: networkProblem
               ? 'Firebase Server ကို မချိတ်ဆက်နိုင်ပါ။ Internet ပြန်ချိတ်ပြီး “ပြန်စမ်းရန်” ကို နှိပ်ပါ။ 15 စက္ကန့်အတွင်း တုံ့ပြန်မှုမရပါက Network ကို စစ်ဆေးပါ။'
               : code === 'permission-denied'

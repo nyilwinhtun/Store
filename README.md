@@ -1,3 +1,20 @@
+# Minimart POS v3.0.0
+
+## Central Inventory & Branch Receiving
+
+- Owner can dispatch up to 50 product lines in one shipment, with product and price snapshots.
+- Assigned branch receiver records actual received/damaged quantities; destination stock stays unchanged until Owner approval.
+- Owner approval adds accepted quantity to destination products and stock batches; missing destination products are created from the shipment snapshot.
+- Cancel is available only before receiver acknowledgement and restores source stock/batches.
+- Cashier remains limited to POS and own sales; Owner can separately grant `Stock Receiver` permission to one assigned Cashier.
+- JSON Backup/Restore now includes branch shipments.
+
+Read `V3.0.0-START-HERE-MY.md` before updating. Publish the included `firestore.rules` only after checking the pinned Owner UID and preserving any custom rules.
+
+**Verification note:** Source syntax/static checks are complete. Full dependency install, TypeScript semantic typecheck, production build, Firebase Emulator/live testing, and device testing must still be run on the developer machine before production use.
+
+---
+
 # Minimart POS — v2.9.8
 
 Firebase Project: `minimart-production` · Firestore Region: Singapore (`asia-southeast1`) · Business ID: `store-mini-main`.
