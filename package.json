@@ -1,13 +1,14 @@
 {
   "name": "minimart-pos-rebuilt",
   "private": true,
-  "version": "3.2.0-preview.5",
+  "version": "3.2.0-preview.6",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit --pretty"
+    "typecheck": "tsc --noEmit --pretty",
+    "release:check": "node scripts/release-check.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.1",

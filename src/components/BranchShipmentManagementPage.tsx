@@ -185,7 +185,7 @@ export function BranchShipmentManagementPage({ authorize, notify }: { authorize:
     // A Firebase transaction below writes Source Stock, Batch changes, and the
     // Destination Shipment atomically before the UI reports dispatch success.
     if (!isFirebaseOwner || !firebaseAuth?.currentUser || firebaseAuth.currentUser.uid !== access.uid) {
-      notify('ပစ္စည်းမပို့ရသေးပါ။ Profile → Firebase Business Account မှ Owner Account နဲ့ Login ဝင်ပါ။ Local mode မှာ ပို့လို့မရပါ။');
+      notify('ပစ္စည်းမပို့ရသေးပါ။ Website ရဲ့ သီးခြား Login Page မှ Owner Account နဲ့ ဝင်ရောက်ပါ။ Local mode မှာ ပို့လို့မရပါ။');
       return;
     }
     if (!navigator.onLine) {
@@ -335,7 +335,7 @@ export function BranchShipmentManagementPage({ authorize, notify }: { authorize:
       <div className={`shipment-cloud-gate ${cloudReady ? 'shipment-cloud-ready' : 'shipment-cloud-blocked'}`} role="status">
         {shipmentCommitUncertain
           ? <><strong>ယခင် Shipment Cloud အတည်ပြုချက် မသေချာသေးပါ။</strong><p>Duplicate ကုန်ပို့မှု မဖြစ်စေရန် ပို့ခလုတ်ကို ခေတ္တပိတ်ထားပါတယ်။ Shipment History ကို စစ်ဆေးပြီး Page ကို Refresh လုပ်ပါ။</p></>
-          : !isFirebaseOwner ? <><strong>Firebase Owner Session ကို အတည်မပြုနိုင်သေးပါ။</strong><p>Profile → Firebase Business Account မှ Owner Account နဲ့ ပြန်ဝင်ပါ။ Owner Business Access UID နဲ့ Firebase Authentication UID တူညီရပါမယ်။ ပို့ရန်ခလုတ်ကိုနှိပ်လျှင် လိုအပ်တဲ့အချက်ကို ပြသပေးပါမယ်။</p></>
+          : !isFirebaseOwner ? <><strong>Firebase Owner Session ကို အတည်မပြုနိုင်သေးပါ။</strong><p>Website ရဲ့ သီးခြား Login Page မှ Owner Account နဲ့ ပြန်ဝင်ပါ။ Owner Business Access UID နဲ့ Firebase Authentication UID တူညီရပါမယ်။</p></>
             : !isOnline ? <><strong>Internet ချိတ်ဆက်မှု မရှိပါ။</strong><p>Offline အခြေအနေမှာ Shipment Dispatch မလုပ်နိုင်ပါ။ Internet ပြန်ချိတ်ပါ။</p></>
               : <><strong>Firebase Owner Account ချိတ်ဆက်ထားပါတယ်။</strong><p>ပို့မည့် Product၊ Source Stock၊ Batch နဲ့ Shipment ကို Firebase Server Transaction ဖြင့် တစ်ပြိုင်နက် အတည်ပြုပြီးမှ ပို့မှုအောင်မြင်ကြောင်း ပြပါမယ်။ App-wide Auto Sync ({cloudStatus.state}) က ပို့ခလုတ်ကို မပိတ်တော့ပါ။</p></>}
       </div>

@@ -1,6 +1,6 @@
-# Minimart POS — v3.2.0 Preview 5
+# Minimart POS — v3.2.0 Preview 6
 
-ဒီ Project သည် Minimart POS v3.2.0 အတွက် သီးခြား Preview Working Copy ဖြစ်သည်။ Production Release အဖြစ် မသတ်မှတ်ရသေးပါ။
+ဒီ Project သည် Minimart POS v3.2.0 အတွက် သီးခြား Release-Readiness Preview 6 Working Copy ဖြစ်သည်။ Production Release အဖြစ် မသတ်မှတ်ရသေးပါ။
 
 ## စတင်အသုံးပြုရန်
 
@@ -35,6 +35,13 @@ npm run dev
 - Owner Account ကို လိုအပ်ပါက ခွင့်ပြုထားသော Admin/Firebase Console provisioning နည်းလမ်းဖြင့်သာ စီမံရမည်။
 - Owner သည် Team Access ထဲမှ Cashier Account ကိုသာ ဖန်တီးနိုင်ပြီး Login Page မှ Owner Sign Up မရှိပါ။
 - Firebase Authentication API, Firebase Config နှင့် Business Access Resolution Logic များကို မူရင်းအတိုင်း ထိန်းသိမ်းထားရန် ရည်ရွယ်ထားသည်။
+
+## Release QA Notes
+
+- `package-lock.json` သည် ဒီ Preview ZIP ထဲတွင် မပါဝင်သေးပါ။ `npm ci` မလုပ်နိုင်သေးပါ။ Developer Mac တွင် Registry ချိတ်ဆက်နိုင်ချိန် `npm install` ဖြင့် Lockfile ထုတ်ပြီး Commit လုပ်ရန်လိုသည်။
+- `npm install` ကို ဒီစစ်ဆေးမှု ပတ်ဝန်းကျင်တွင် Timeout ဖြစ်ခဲ့သဖြင့် Full TypeScript/Vite Build ကို အတည်မပြုနိုင်သေးပါ။
+- `npm run release:check` သည် Source-level Release Gate များကိုသာ စစ်ဆေးသည်။ Full Build၊ Firebase Emulator၊ Browser UI သို့မဟုတ် Live Login စမ်းသပ်မှုကို အစားမထိုးပါ။
+- Owner နှင့် Cashier များက Browser/Device တစ်ခုတည်းကို မျှဝေသုံးမည်ဆိုပါက Local persistence နှင့် Firestore IndexedDB cache ကို အရင်စမ်းသပ်ရမည်။ Sign Out လုပ်ရုံဖြင့် Firestore IndexedDB cache မရှင်းကြောင်း Cloud Sync UI တွင် သတိပေးထားသည်။
 
 ## Release Safety
 

@@ -747,7 +747,7 @@ function App() {
           <p className="nav-caption">WORKSPACE</p>
           {navItems.map((item) => <button key={item.id} className={`nav-item ${page === item.id ? 'active' : ''}`} onClick={() => navTo(item.id)}>{item.icon}<span>{item.label}</span>{item.id === 'pos' && cart.length > 0 && <b className="nav-count">{cart.length}</b>}</button>)}
         </nav>
-        <div className="sidebar-bottom"><div className="offline-card"><div className="offline-icon"><Activity size={17} /></div><div><strong>Local Cache</strong><small>Cloud Sync အခြေအနေကို သီးခြားစစ်ဆေးပါ</small></div><span className="live-dot" /></div><small className="version">MINIMART POS · v3.2.0 MULTI-BRANCH PREVIEW 5</small></div>
+        <div className="sidebar-bottom"><div className="offline-card"><div className="offline-icon"><Activity size={17} /></div><div><strong>Local Cache</strong><small>Cloud Sync အခြေအနေကို သီးခြားစစ်ဆေးပါ</small></div><span className="live-dot" /></div><small className="version">MINIMART POS · v3.2.0 MULTI-BRANCH PREVIEW 6</small></div>
       </aside>
       {mobileMenu && <button className="sidebar-backdrop" onClick={() => setMobileMenu(false)} aria-label="Close navigation" />}
 

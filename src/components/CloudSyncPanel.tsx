@@ -427,9 +427,8 @@ export function CloudSyncPanel({ onOpenProfile }: { onOpenProfile?: () => void }
         </div>
       </>}
     </> : <>
-      <div className="cloud-help"><strong>Firebase Business Account Login</strong><br />Owner နဲ့ Cashier နှစ်မျိုးလုံး အကောင့်ဝင်ရန် Profile → Firebase Business Account တစ်နေရာတည်းကို အသုံးပြုပါ။ ဒီ Cloud Sync အပိုင်းမှာ Login Form သီးခြားမရှိတော့ပါ။ Login ပြီးသည့် Role အလိုက် Owner Dashboard သို့မဟုတ် Limited Cashier POS ကို ဖွင့်ပေးပါမယ်။</div>
-      <div className="cloud-actions"><button className="button button-primary" type="button" onClick={onOpenProfile} disabled={!onOpenProfile}><UserRound size={15} /> Profile Login ကို ဖွင့်ရန်</button></div>
-      <small className="field-hint">Cashier Account ကို Owner က Firebase Authentication ထဲမှာ ဖန်တီးပြီး Team Access မှာ Firebase UID အတိအကျနဲ့ Member ချိတ်ထားရပါမယ်။</small>
+      <div className="cloud-help"><strong>Login Session မရှိသေးပါ</strong><br />Website ကို Logout အခြေအနေဖြင့် ဖွင့်လိုက်ပါက သီးခြား Login Page ကို အရင်ပြသပါမယ်။ Login အောင်မြင်ပြီး Owner / Cashier Access အတည်ပြုပြီးမှ Workspace ကို ဖွင့်ပေးပါမယ်။ Login Form ကို Profile သို့မဟုတ် Main Menu ထဲမှာ မထားပါ။</div>
+      <small className="field-hint">Cashier Account ကို Owner က Team Access မှာ Firebase UID အတိအကျနဲ့ Member ချိတ်ထားရပါမယ်။</small>
     </>}
     {message && <div className="cloud-help">{message}</div>}{error && <div className="cloud-error">{error}</div>}
   </div>;
