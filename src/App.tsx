@@ -15,6 +15,9 @@ import { StockTransferPage } from './components/StockTransferPage';
 import { BranchShipmentManagementPage } from './components/BranchShipmentManagementPage';
 import { BranchStockReceivingPage } from './components/BranchStockReceivingPage';
 import { ActivityLogPage, CashManagementPage } from './components/OperationsPages';
+import { ExpenseManagementPage } from './components/ExpenseManagementPage';
+import { CashierSettlementManagementPage } from './components/CashierSettlementManagementPage';
+import type { CashierSettlementCreateInput, CashierSettlementRecord } from './types/finance';
 import { CloudSyncPanel } from './components/CloudSyncPanel';
 import { useBusinessAccess, canAccessBranch, canUsePage } from './lib/businessAccess';
 import { firebaseApp, firebaseAuth, FIREBASE_BUSINESS_ID } from './lib/firebase';
@@ -25,11 +28,12 @@ import { BarcodeCameraScanner } from './components/BarcodeCameraScanner';
 import { CashierSalesQueueStatus } from './components/CashierSalesQueueStatus';
 import { normalizeBarcode } from './lib/barcode';
 import { submitCashierSale } from './lib/cashierSalesSync';
+import { flushPendingCashierExpenses, submitCashierExpenseToCloud } from './lib/cashierExpenseSync';
 import { voidCloudSaleWithAudit } from './lib/salesAudit';
 import { exportLocalImages, importLocalImages, migrateDataUrlImage, useLocalImageSource } from './lib/localImages';
 import { formatQuantity, hasLegacyFractionalQuantity, inferQuantityMode, isValidQuantity, quantityModeForProduct, quantityStep, type QuantityMode } from './lib/quantity';
 
-type Page = 'profile' | 'branches' | 'dashboard' | 'pos' | 'inventory' | 'receiving' | 'transfers' | 'shipments' | 'branchReceiving' | 'sales' | 'customers' | 'purchasing' | 'expiry' | 'cash' | 'activity' | 'expenses' | 'analytics' | 'settings';
+type Page = 'profile' | 'branches' | 'dashboard' | 'pos' | 'inventory' | 'receiving' | 'transfers' | 'shipments' | 'branchReceiving' | 'sales' | 'customers' | 'purchasing' | 'expiry' | 'cash' | 'activity' | 'expenses' | 'settlements' | 'analytics' | 'settings';
 type ProductDraft = {
   name: string; sku: string; barcode: string; category: string; costPrice: string; retailPrice: string;
   wholesalePrice: string; stock: string; lowStockAt: string; unit: string; quantityMode: QuantityMode;
@@ -65,6 +69,7 @@ function App() {
   });
   const [mobileMenu, setMobileMenu] = useState(false);
   const [toast, setToast] = useState('');
+  const [toastActionPage, setToastActionPage] = useState<Page | null>(null);
   const [installPrompt, setInstallPrompt] = useState<(() => Promise<void>) | null>(null);
   const [showProductModal, setShowProductModal] = useState(false);
   const [cameraScannerTarget, setCameraScannerTarget] = useState<'product' | 'pos' | null>(null);
@@ -77,10 +82,6 @@ function App() {
   const [paymentMethod, setPaymentMethod] = useState<'Cash' | 'Credit'>('Cash');
   const [discount, setDiscount] = useState('0');
   const [saleSearch, setSaleSearch] = useState('');
-  const [expenseTitle, setExpenseTitle] = useState('');
-  const [expenseCategory, setExpenseCategory] = useState('ဆိုင်အသုံးစရိတ်');
-  const [expenseAmount, setExpenseAmount] = useState('');
-  const [expenseNote, setExpenseNote] = useState('');
   const [lastSale, setLastSale] = useState<Sale | null>(null);
   const [checkoutResultSale, setCheckoutResultSale] = useState<Sale | null>(null);
   const [showCheckoutResult, setShowCheckoutResult] = useState(false);
@@ -99,6 +100,7 @@ function App() {
   const allProducts = usePosStore((s) => s.products);
   const allSales = usePosStore((s) => s.sales);
   const allExpenses = usePosStore((s) => s.expenses);
+  const allCashierSettlements = usePosStore((s) => s.cashierSettlements);
   const allHeldItems = usePosStore((s) => s.heldItems);
   const customers = usePosStore((s) => s.customers);
   const allStockBatches = usePosStore((s) => s.stockBatches);
@@ -110,6 +112,11 @@ function App() {
   const products = useMemo(() => allProducts.filter((record) => record.branchId === activeBranchId), [allProducts, activeBranchId]);
   const sales = useMemo(() => allSales.filter((record) => record.branchId === activeBranchId), [allSales, activeBranchId]);
   const expenses = useMemo(() => allExpenses.filter((record) => record.branchId === activeBranchId), [allExpenses, activeBranchId]);
+  const visibleExpenses = useMemo(() => cashierMode ? expenses.filter((record) => record.createdByUid === access.uid) : expenses, [expenses, cashierMode, access.uid]);
+  const branchCashierSettlements = useMemo(() => allCashierSettlements.filter((record) => record.branchId === activeBranchId), [allCashierSettlements, activeBranchId]);
+  const visibleCashierSettlements = useMemo(() => cashierMode ? branchCashierSettlements.filter((record) => record.cashierUid === access.uid) : branchCashierSettlements, [branchCashierSettlements, cashierMode, access.uid]);
+  // Cashier expenses are reports of spending already made; include them in expense totals immediately.
+  const confirmedExpenses = expenses;
   const heldItems = useMemo(() => allHeldItems.filter((record) => record.branchId === activeBranchId), [allHeldItems, activeBranchId]);
   const stockBatches = useMemo(() => allStockBatches.filter((record) => record.branchId === activeBranchId), [allStockBatches, activeBranchId]);
   const categories = useMemo(() => allCategories.filter((category) => category.branchId === activeBranchId && category.isActive).map((category) => category.name), [allCategories, activeBranchId]);
@@ -127,7 +134,9 @@ function App() {
   const addSale = usePosStore((s) => s.addSale);
   const voidSale = usePosStore((s) => s.voidSale);
   const addExpense = usePosStore((s) => s.addExpense);
+  const updateExpense = usePosStore((s) => s.updateExpense);
   const deleteExpense = usePosStore((s) => s.deleteExpense);
+  const addCashierSettlement = usePosStore((s) => s.addCashierSettlement);
   const holdItem = usePosStore((s) => s.holdItem);
   const restoreHeldItem = usePosStore((s) => s.restoreHeldItem);
   const updateSettings = usePosStore((s) => s.updateSettings);
@@ -173,9 +182,26 @@ function App() {
   }, []);
 
   const notify = (message: string) => {
+    setToastActionPage(null);
     setToast(message);
     window.setTimeout(() => setToast(''), 2800);
   };
+
+  useEffect(() => {
+    const onShipmentNotification = (event: Event) => {
+      const detail = (event as CustomEvent<{ count?: number; shipmentNos?: string[]; fromBranchName?: string }>).detail || {};
+      const count = Math.max(1, Number(detail.count) || 1);
+      const firstShipment = Array.isArray(detail.shipmentNos) ? detail.shipmentNos[0] : '';
+      const summary = count === 1 && firstShipment
+        ? `ကုန်ပို့စာရင်း ${firstShipment} ရောက်ရှိနေပါပြီ။ ရောက်လာသောကုန် စစ်ဆေးရန်ကို ဖွင့်ပါ။`
+        : `${detail.fromBranchName || 'အခြားဆိုင်ခွဲ'} မှ ကုန်ပို့စာရင်း ${count} ခု ရောက်ရှိနေပါပြီ။ ရောက်လာသောကုန် စစ်ဆေးရန်ကို ဖွင့်ပါ။`;
+      setToastActionPage('branchReceiving');
+      setToast(summary);
+      window.setTimeout(() => { setToast(''); setToastActionPage(null); }, 4500);
+    };
+    window.addEventListener('minimart-branch-shipment-notification', onShipmentNotification);
+    return () => window.removeEventListener('minimart-branch-shipment-notification', onShipmentNotification);
+  }, []);
   const authorize = (action: string) => {
     if (cashierMode) { notify('ဒီလုပ်ဆောင်ချက်အတွက် Owner ခွင့်ပြုချက် လိုအပ်ပါတယ်။'); return false; }
     const pin = window.prompt(`${action}\nAdmin PIN ထည့်ပါ။`);
@@ -520,18 +546,65 @@ function App() {
       ...visibleSales.map((sale) => [sale.receiptNo, sale.date, sale.customer, sale.paymentMethod, sale.items.length, sale.subtotal, sale.discount, sale.total, sale.profit, sale.paidAmount ?? (sale.paymentMethod === 'Cash' ? sale.total : 0), sale.cashReceivedAmount ?? (sale.paymentMethod === 'Cash' ? sale.total : 0), sale.changeAmount ?? 0, sale.dueAmount ?? (sale.paymentMethod === 'Credit' ? sale.total : 0), sale.status]),
     ]);
   const exportExpensesCsv = () => downloadCsv(`minimart-expenses-${today()}.csv`, [
-    ['Date', 'Title', 'Category', 'Amount', 'Note'],
-    ...expenses.map((expense) => [expense.date, expense.title, expense.category, expense.amount, expense.note]),
+    ['Date', 'Branch', 'Cashier', 'Title', 'Category', 'Amount', 'Funding Source', 'Payment Method', 'Report Status', 'Note'],
+    ...visibleExpenses.map((expense) => [expense.date, activeBranch?.name || activeBranchId, expense.createdByName || 'Legacy / Owner', expense.title, expense.category, expense.amount, expense.fundedBy || '', expense.paymentMethod || '', expense.reviewStatus || (expense.cloudSyncStatus === 'pending' ? 'cloud-pending' : expense.createdByRole === 'owner' ? 'owner-recorded' : 'submitted'), expense.note]),
   ]);
 
-  const addExpenseSubmit = (event: FormEvent) => {
-    event.preventDefault();
-    const amount = Number(expenseAmount);
-    if (!expenseTitle.trim() || !(amount > 0)) { notify('အသုံးစရိတ်အမည်နှင့် ပမာဏ မှန်ကန်စွာ ဖြည့်ပါ။'); return; }
-    addExpense({ title: expenseTitle.trim(), category: expenseCategory, amount, date: new Date().toISOString(), note: expenseNote.trim() });
-    setExpenseTitle(''); setExpenseAmount(''); setExpenseNote('');
+  const handleExpenseSubmit = async (draft: Omit<Expense, 'id' | 'branchId'>) => {
+    const uid = access.uid || firebaseAuth?.currentUser?.uid || '';
+    if (cashierMode && !uid) { notify('Cashier Firebase UID မရသေးပါ။ Account ကို ပြန်ဝင်ပြီး စမ်းပါ။'); return; }
+    const actorName = access.displayName || firebaseAuth?.currentUser?.displayName || access.email || 'Owner';
+    const now = new Date().toISOString();
+    const saved = addExpense({
+      ...draft,
+      id: crypto.randomUUID(),
+      createdByUid: uid || undefined,
+      createdByEmail: access.email || firebaseAuth?.currentUser?.email || '',
+      createdByName: actorName,
+      createdByRole: cashierMode ? 'cashier' : 'owner',
+      // New expenses are submitted reports, never approval-gated spending.
+      approvalStatus: 'not-required',
+      ...(cashierMode ? { reviewStatus: 'submitted' as const, submittedAt: now } : {}),
+      updatedAt: now,
+      updatedByUid: uid || undefined,
+      ...(cashierMode ? { cloudSyncStatus: 'pending' as const } : {}),
+    });
+    if (cashierMode) {
+      try {
+        const syncResult = await submitCashierExpenseToCloud(saved, uid, activeBranchId);
+        updateExpense(saved.id, {
+          approvalStatus: 'not-required',
+          reviewStatus: syncResult.reviewStatus,
+          ...(syncResult.reviewedAt ? { reviewedAt: syncResult.reviewedAt } : {}),
+          ...(syncResult.reviewedByUid ? { reviewedByUid: syncResult.reviewedByUid } : {}),
+          ...(syncResult.reviewedByName ? { reviewedByName: syncResult.reviewedByName } : {}),
+          cloudSyncStatus: 'synced', cloudSyncError: undefined,
+        });
+        notify('အသုံးစရိတ်ကို Owner ထံ တင်ပြပြီးပါပြီ။ Owner ကြည့်ရှုရန်သာဖြစ်ပြီး Approval စောင့်ရန် မလိုပါ။');
+      } catch (error) {
+        updateExpense(saved.id, { cloudSyncStatus: 'pending', cloudSyncError: error instanceof Error ? error.message : 'Cloud Sync မအောင်မြင်ပါ။' });
+        notify('အသုံးစရိတ်ကို ဒီ Device မှာ သိမ်းထားပါတယ်။ Cloud ပြန်ချိတ်သည့်အခါ Owner ထံ အလိုအလျောက် တင်ပြပါမယ်။');
+      }
+      return;
+    }
     notify('အသုံးစရိတ် မှတ်တမ်းသိမ်းပြီးပါပြီ။');
   };
+
+  const handleRetryCashierExpenses = async () => {
+    const uid = access.uid || firebaseAuth?.currentUser?.uid || '';
+    if (!cashierMode || !uid) return;
+    const result = await flushPendingCashierExpenses(uid, activeBranchId);
+    notify(result.synced > 0 ? `Expense ${result.synced} ခု Cloud ထဲ Sync ပြီးပါပြီ။` : result.failed > 0 ? 'Cloud Sync မအောင်မြင်သေးပါ။ Firebase Rules / Internet ကို စစ်ဆေးပါ။' : 'ပို့ရန် Pending Expense မရှိပါ။');
+  };
+  const handleCreateCashierSettlement = async (input: CashierSettlementCreateInput) => {
+    if (cashierMode || access.status !== 'active' || access.role !== 'owner') throw new Error('Cashier ငွေရှင်းမှတ်တမ်း ဖန်တီးရန် Firebase Owner Access လိုအပ်ပါတယ်။');
+    const uid = access.uid || firebaseAuth?.currentUser?.uid || '';
+    if (!uid) throw new Error('Owner Firebase UID မရရှိပါ။');
+    const saved = addCashierSettlement({ ...input, branchId: activeBranchId, createdByUid: uid, paidByUid: uid, paidByName: access.displayName || access.email || 'Owner' });
+    if (!saved) throw new Error('ငွေရှင်းမှတ်တမ်း မသိမ်းနိုင်ပါ။ Cashier၊ ပမာဏ၊ သို့မဟုတ် ပြန်အမ်းမည့် Expense ရှိပြီးသားဖြစ်မဖြစ် စစ်ဆေးပါ။');
+    notify(input.paymentMethod === 'kpay' ? 'KPay ငွေလွှဲမှတ်တမ်း သိမ်းပြီးပါပြီ။ Cloud Sync ပြီးလျှင် Cashier မြင်နိုင်ပါမယ်။' : 'Cash ငွေရှင်းမှတ်တမ်း သိမ်းပြီးပါပြီ။ Cloud Sync ပြီးလျှင် Cashier မြင်နိုင်ပါမယ်။');
+  };
+
   const exportBackup = async () => {
     try {
       const state = usePosStore.getState();
@@ -539,7 +612,7 @@ function App() {
         ...state.branches.flatMap((branch) => [branch.logoUrl, branch.bannerUrl]),
         state.ownerProfile?.photoUrl,
       ]);
-      const data = { app: 'minimart-pos', schemaVersion: 12, exportedAt: new Date().toISOString(), branches: state.branches, activeBranchId: state.activeBranchId, categories: state.categories, products: state.products, sales: state.sales, expenses: state.expenses, heldItems: state.heldItems, customers: state.customers, suppliers: state.suppliers, customerPayments: state.customerPayments, purchases: state.purchases, supplierPayments: state.supplierPayments, purchaseReturns: state.purchaseReturns, stockBatches: state.stockBatches, stockReceipts: state.stockReceipts, stockTransfers: state.stockTransfers, stockShipments: state.stockShipments, cashShifts: state.cashShifts, cashMovements: state.cashMovements, activityLogs: state.activityLogs, ownerProfile: state.ownerProfile, settings: state.settings, localImages };
+      const data = { app: 'minimart-pos', schemaVersion: 14, exportedAt: new Date().toISOString(), branches: state.branches, activeBranchId: state.activeBranchId, categories: state.categories, products: state.products, sales: state.sales, expenses: state.expenses, cashierSettlements: state.cashierSettlements, heldItems: state.heldItems, customers: state.customers, suppliers: state.suppliers, customerPayments: state.customerPayments, purchases: state.purchases, supplierPayments: state.supplierPayments, purchaseReturns: state.purchaseReturns, stockBatches: state.stockBatches, stockReceipts: state.stockReceipts, stockTransfers: state.stockTransfers, stockShipments: state.stockShipments, stockUnitRegistries: state.stockUnitRegistries, cashShifts: state.cashShifts, cashMovements: state.cashMovements, activityLogs: state.activityLogs, ownerProfile: state.ownerProfile, settings: state.settings, localImages };
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a'); anchor.href = url; anchor.download = `minimart-backup-${today()}.json`; anchor.click();
@@ -589,7 +662,7 @@ function App() {
           sale.dueAmount ??= Math.max(0, sale.total - (sale.paidAmount ?? 0));
         }
       }
-      importData({ branches: importedBranches as never[] | undefined, activeBranchId: typeof data.activeBranchId === 'string' ? data.activeBranchId : undefined, categories: Array.isArray(data.categories) ? data.categories as never[] : undefined, products: data.products as Product[], sales: importedSales, expenses: data.expenses as Expense[], heldItems: Array.isArray(data.heldItems) ? data.heldItems as never[] : [], customers: importedCustomers, suppliers: Array.isArray(data.suppliers) ? data.suppliers as never[] : [], customerPayments: Array.isArray(data.customerPayments) ? data.customerPayments as never[] : [], purchases: Array.isArray(data.purchases) ? data.purchases as never[] : [], supplierPayments: Array.isArray(data.supplierPayments) ? data.supplierPayments as never[] : [], purchaseReturns: Array.isArray(data.purchaseReturns) ? data.purchaseReturns as never[] : [], stockBatches: Array.isArray(data.stockBatches) ? data.stockBatches as never[] : [], stockReceipts: Array.isArray(data.stockReceipts) ? data.stockReceipts as never[] : [], stockTransfers: Array.isArray(data.stockTransfers) ? data.stockTransfers as never[] : [], stockShipments: Array.isArray(data.stockShipments) ? data.stockShipments as never[] : [], cashShifts: Array.isArray(data.cashShifts) ? data.cashShifts as never[] : [], cashMovements: Array.isArray(data.cashMovements) ? data.cashMovements as never[] : [], activityLogs: Array.isArray(data.activityLogs) ? data.activityLogs as never[] : [], ownerProfile: importedOwnerProfile as never, settings: data.settings as never });
+      importData({ branches: importedBranches as never[] | undefined, activeBranchId: typeof data.activeBranchId === 'string' ? data.activeBranchId : undefined, categories: Array.isArray(data.categories) ? data.categories as never[] : undefined, products: data.products as Product[], sales: importedSales, expenses: data.expenses as Expense[], cashierSettlements: Array.isArray(data.cashierSettlements) ? data.cashierSettlements as CashierSettlementRecord[] : [], heldItems: Array.isArray(data.heldItems) ? data.heldItems as never[] : [], customers: importedCustomers, suppliers: Array.isArray(data.suppliers) ? data.suppliers as never[] : [], customerPayments: Array.isArray(data.customerPayments) ? data.customerPayments as never[] : [], purchases: Array.isArray(data.purchases) ? data.purchases as never[] : [], supplierPayments: Array.isArray(data.supplierPayments) ? data.supplierPayments as never[] : [], purchaseReturns: Array.isArray(data.purchaseReturns) ? data.purchaseReturns as never[] : [], stockBatches: Array.isArray(data.stockBatches) ? data.stockBatches as never[] : [], stockReceipts: Array.isArray(data.stockReceipts) ? data.stockReceipts as never[] : [], stockTransfers: Array.isArray(data.stockTransfers) ? data.stockTransfers as never[] : [], stockShipments: Array.isArray(data.stockShipments) ? data.stockShipments as never[] : [], stockUnitRegistries: Array.isArray(data.stockUnitRegistries) ? data.stockUnitRegistries as never[] : [], cashShifts: Array.isArray(data.cashShifts) ? data.cashShifts as never[] : [], cashMovements: Array.isArray(data.cashMovements) ? data.cashMovements as never[] : [], activityLogs: Array.isArray(data.activityLogs) ? data.activityLogs as never[] : [], ownerProfile: importedOwnerProfile as never, settings: data.settings as never });
       notify('Backup Restore အောင်မြင်ပါပြီ။');
     } catch { notify('Backup ဖိုင် မမှန်ကန်ပါ။ JSON Backup ကို ရွေးပါ။'); }
     finally { if (importRef.current) importRef.current.value = ''; }
@@ -609,7 +682,8 @@ function App() {
     { id: 'expiry', label: 'Expiry Tracking', icon: <CalendarClock size={18} /> },
     { id: 'cash', label: 'Cash Register / Shift', icon: <Wallet size={18} /> },
     { id: 'activity', label: 'Activity Log', icon: <ClipboardList size={18} /> },
-    { id: 'expenses', label: 'အသုံးစရိတ်', icon: <Wallet size={18} /> },
+    { id: 'expenses', label: cashierMode ? 'မိမိအသုံးစရိတ်' : 'အသုံးစရိတ်', icon: <Wallet size={18} /> },
+    { id: 'settlements', label: cashierMode ? 'မိမိငွေလက်ခံမှတ်တမ်း' : 'Cashier ငွေရှင်း', icon: <CreditCard size={18} /> },
     { id: 'analytics', label: 'စာရင်းခွဲခြမ်းစိတ်ဖြာ', icon: <BarChart3 size={18} /> },
     { id: 'profile', label: 'ဆိုင် / Owner Profile', icon: <UserRound size={18} /> },
     { id: 'settings', label: 'Settings', icon: <Settings size={18} /> },
@@ -647,14 +721,14 @@ function App() {
           <p className="nav-caption">WORKSPACE</p>
           {navItems.map((item) => <button key={item.id} className={`nav-item ${page === item.id ? 'active' : ''}`} onClick={() => navTo(item.id)}>{item.icon}<span>{item.label}</span>{item.id === 'pos' && cart.length > 0 && <b className="nav-count">{cart.length}</b>}</button>)}
         </nav>
-        <div className="sidebar-bottom"><div className="offline-card"><div className="offline-icon"><Activity size={17} /></div><div><strong>Offline Ready</strong><small>Local data storage active</small></div><span className="live-dot" /></div><small className="version">MINIMART POS · v3.0.1</small></div>
+        <div className="sidebar-bottom"><div className="offline-card"><div className="offline-icon"><Activity size={17} /></div><div><strong>Local Cache</strong><small>Cloud Sync အခြေအနေကို သီးခြားစစ်ဆေးပါ</small></div><span className="live-dot" /></div><small className="version">MINIMART POS · v3.1.0 CASHIER EXPENSE PREVIEW</small></div>
       </aside>
       {mobileMenu && <button className="sidebar-backdrop" onClick={() => setMobileMenu(false)} aria-label="Close navigation" />}
 
       <main className="main-area">
         <header className="topbar">
           <div className="topbar-left"><button className="icon-btn menu-toggle" onClick={() => setMobileMenu(true)} aria-label="Open menu"><Menu size={21} /></button><div><div className="eyebrow">STORE MANAGEMENT / {page.toUpperCase()}</div><h1>{pageTitle}</h1></div></div>
-          <div className="topbar-actions"><button className="theme-toggle" type="button" onClick={() => setThemeMode((current) => current === 'light' ? 'dark' : 'light')} aria-label={themeMode === 'light' ? 'Dark Mode ပြောင်းရန်' : 'Light Mode ပြောင်းရန်'} aria-pressed={themeMode === 'dark'} title={themeMode === 'light' ? 'Dark Mode' : 'Light Mode'}>{themeMode === 'light' ? <Moon size={17} /> : <Sun size={17} />}<span>{themeMode === 'light' ? 'Dark' : 'Light'}</span></button>{!cashierMode && activeBranches.length > 1 ? <label className="branch-switcher"><Store size={15} /><select aria-label="Active branch" value={activeBranchId} onChange={(event) => switchBranch(event.target.value)}>{activeBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label> : <div className="branch-single-pill"><Store size={14} /><span>{activeBranch?.name || 'Single Store'}</span><small>{cashierMode ? 'Assigned Branch' : 'Single Store'}</small></div>}<div className="connection-pill"><span className="live-dot" /> {cashierMode ? 'Cashier · Branch Access' : access.status === 'active' ? 'Owner · Business Access' : 'Local mode'}</div>{cashierMode && firebaseAuth && <button className="button button-outline" type="button" onClick={() => void signOut(firebaseAuth)}><LogOut size={14}/> Sign Out</button>}{installPrompt && <button className="button button-outline install-btn" onClick={() => void installPrompt()}><Smartphone size={16} /> Install App</button>}{!cashierMode && <button className="avatar avatar-button" type="button" onClick={() => navTo('profile')} title="Profile ဖွင့်ရန်" aria-label="Profile ဖွင့်ရန်">{ownerPhotoSource ? <img src={ownerPhotoSource} alt="Owner profile" /> : (typeof ownerProfile?.displayName === 'string' ? ownerProfile.displayName.trim().charAt(0) || 'M' : 'M')}</button>}</div>
+          <div className="topbar-actions"><button className="theme-toggle" type="button" onClick={() => setThemeMode((current) => current === 'light' ? 'dark' : 'light')} aria-label={themeMode === 'light' ? 'Dark Mode ပြောင်းရန်' : 'Light Mode ပြောင်းရန်'} aria-pressed={themeMode === 'dark'} title={themeMode === 'light' ? 'Dark Mode' : 'Light Mode'}>{themeMode === 'light' ? <Moon size={17} /> : <Sun size={17} />}<span>{themeMode === 'light' ? 'Dark' : 'Light'}</span></button>{!cashierMode && activeBranches.length > 1 ? <label className="branch-switcher"><Store size={15} /><select aria-label="Active branch" value={activeBranchId} onChange={(event) => switchBranch(event.target.value)}>{activeBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label> : <div className="branch-single-pill"><Store size={14} /><span>{activeBranch?.name || 'Single Store'}</span><small>{cashierMode ? 'Assigned Branch' : 'Single Store'}</small></div>}<div className="connection-pill" title={access.status === 'active' ? 'Firebase Business Access အတည်ပြုပြီးပါပြီ။' : 'Firebase Business Account Login မဝင်ထားပါ။ Cloud Shipment ပို့ရန် Profile မှ Login ဝင်ပါ။'}><span className="live-dot" /> {cashierMode ? 'Cashier · Branch Access' : access.status === 'active' ? 'Owner · Business Access' : 'Local mode'}</div>{cashierMode && firebaseAuth && <button className="button button-outline" type="button" onClick={() => void signOut(firebaseAuth)}><LogOut size={14}/> Sign Out</button>}{installPrompt && <button className="button button-outline install-btn" onClick={() => void installPrompt()}><Smartphone size={16} /> Install App</button>}{!cashierMode && <button className="avatar avatar-button" type="button" onClick={() => navTo('profile')} title="Profile ဖွင့်ရန်" aria-label="Profile ဖွင့်ရန်">{ownerPhotoSource ? <img src={ownerPhotoSource} alt="Owner profile" /> : (typeof ownerProfile?.displayName === 'string' ? ownerProfile.displayName.trim().charAt(0) || 'M' : 'M')}</button>}</div>
         </header>
 
         <div className="content-area">
@@ -703,9 +777,31 @@ function App() {
 
           {page === 'activity' && <ActivityLogPage />}
 
-          {page === 'expenses' && <section className="page-stack"><div className="section-heading"><div><h2>Expense Management</h2><p>ဆိုင်အသုံးစရိတ်များကို နေ့စွဲနှင့် အမျိုးအစားအလိုက် သိမ်းဆည်းပါ။</p></div><div className="heading-actions"><button className="button button-outline" onClick={exportExpensesCsv}><Download size={15} /> CSV</button><div className="sales-summary-chip"><Wallet size={17} /> {money(expenses.reduce((sum, item) => sum + item.amount, 0), settings.currency)} total</div></div></div><div className="two-column-layout"><form className="panel form-panel" onSubmit={addExpenseSubmit}><div className="panel-heading"><div className="panel-icon"><CircleDollarSign size={18} /></div><div><h3>အသုံးစရိတ်အသစ်</h3><p>ဖြည့်ပြီး မှတ်တမ်းတင်ပါ။</p></div></div><label>အသုံးစရိတ်အမည်<input value={expenseTitle} onChange={(e) => setExpenseTitle(e.target.value)} placeholder="ဥပမာ - မီးဖိုး၊ သယ်ယူစရိတ်" /></label><label>အမျိုးအစား<select value={expenseCategory} onChange={(e) => setExpenseCategory(e.target.value)}><option>ဆိုင်အသုံးစရိတ်</option><option>သယ်ယူပို့ဆောင်ရေး</option><option>လစာ</option><option>မီး/ရေ</option><option>ပြုပြင်ထိန်းသိမ်းရေး</option><option>အခြား</option></select></label><label>ပမာဏ (MMK)<input type="number" min="1" value={expenseAmount} onChange={(e) => setExpenseAmount(e.target.value)} placeholder="0" /></label><label>မှတ်ချက် (မဖြစ်မနေမဟုတ်)<textarea value={expenseNote} onChange={(e) => setExpenseNote(e.target.value)} rows={3} placeholder="အသေးစိတ်..." /></label><button className="button button-primary" type="submit"><Plus size={16} /> သိမ်းဆည်းရန်</button></form><div className="panel"><div className="panel-heading"><div className="panel-icon"><ClipboardList size={18} /></div><div><h3>Expense Records</h3><p>နောက်ဆုံး မှတ်တမ်းများ</p></div></div>{expenses.length === 0 ? <EmptyState icon={<Wallet size={24} />} title="အသုံးစရိတ် မရှိသေးပါ" text="အသုံးစရိတ်ကို ဘယ်ဘက် Form မှာ ထည့်နိုင်ပါတယ်။" /> : <div className="expense-list">{expenses.map((expense) => <div className="expense-row" key={expense.id}><div className="expense-badge"><Truck size={17} /></div><div className="expense-details"><strong>{expense.title}</strong><small>{expense.category} · {dateLabel(expense.date)}</small>{expense.note && <small>{expense.note}</small>}</div><div className="expense-amount">-{money(expense.amount, settings.currency)}<button className="icon-btn danger-icon" onClick={() => { if (authorize('အသုံးစရိတ်ဖျက်ရန်') && window.confirm('ဒီအသုံးစရိတ်ကို ဖျက်မလား။')) { deleteExpense(expense.id); notify('အသုံးစရိတ် ဖျက်ပြီးပါပြီ။'); } }}><Trash2 size={15} /></button></div></div>)}</div>}</div></div></section>}
+          {page === 'expenses' && <ExpenseManagementPage
+            expenses={visibleExpenses}
+            isCashier={cashierMode}
+            cashierUid={access.uid}
+            cashierName={access.displayName || access.email || 'Cashier'}
+            branchName={activeBranch?.name || settings.storeName}
+            currency={settings.currency}
+            onSubmit={handleExpenseSubmit}
+            onDelete={(expense) => { if (authorize('အသုံးစရိတ်ဖျက်ရန်') && window.confirm(`"${expense.title}" ကို ဖျက်မလား။`)) { deleteExpense(expense.id); notify('အသုံးစရိတ် ဖျက်ပြီးပါပြီ။'); } }}
+            onRetryPending={handleRetryCashierExpenses}
+            onExport={exportExpensesCsv}
+          />}
+          {page === 'settlements' && <CashierSettlementManagementPage
+            settlements={visibleCashierSettlements}
+            expenses={expenses}
+            branchId={activeBranchId}
+            branchName={activeBranch?.name || settings.storeName}
+            currency={settings.currency}
+            isCashier={cashierMode}
+            cashierUid={access.uid}
+            cashierName={access.displayName || access.email || 'Cashier'}
+            onCreate={handleCreateCashierSettlement}
+          />}
 
-          {page === 'analytics' && <section className="page-stack"><div className="section-heading"><div><h2>Business Analytics</h2><p>ရောင်းအား၊ အမြတ်နှင့် အမျိုးအစားအလိုက် အချက်အလက်များ။</p></div><div className="period-switch"><button className={chartPeriod === '7' ? 'active' : ''} onClick={() => setChartPeriod('7')}>7 Days</button><button className={chartPeriod === '30' ? 'active' : ''} onClick={() => setChartPeriod('30')}>30 Days</button><button className={chartPeriod === '365' ? 'active' : ''} onClick={() => setChartPeriod('365')}>12 Months</button></div></div><div className="mini-stats analytics-stats"><MiniStat icon={<TrendingUp size={17} />} label="စုစုပေါင်း အရောင်း" value={money(validSales.reduce((sum, sale) => sum + sale.total, 0), settings.currency)} /><MiniStat icon={<CircleDollarSign size={17} />} label="Gross Profit" value={money(validSales.reduce((sum, sale) => sum + sale.profit, 0), settings.currency)} /><MiniStat icon={<Wallet size={17} />} label="အသုံးစရိတ်" value={money(expenses.reduce((sum, item) => sum + item.amount, 0), settings.currency)} /><MiniStat icon={<Coins size={17} />} label="ခန့်မှန်း Net Profit" value={money(validSales.reduce((sum, sale) => sum + sale.profit, 0) - expenses.reduce((sum, item) => sum + item.amount, 0), settings.currency)} /></div><div className="analytics-grid"><div className="panel chart-panel"><div className="panel-heading"><div><h3>Sales Trend</h3><p>နေ့စဉ် ရောင်းအား</p></div><span className="chart-legend"><i /> Revenue</span></div><div className="bar-chart">{trend.map((item) => <div className="bar-column" key={item.key}><div className="bar-track"><div className="bar-fill" style={{ height: `${Math.max(item.value ? 4 : 0, item.value / trendMax * 100)}%` }} title={money(item.value, settings.currency)} /></div><small>{item.label}</small></div>)}</div></div><div className="panel chart-panel"><div className="panel-heading"><div><h3>Category Revenue</h3><p>အမျိုးအစားအလိုက် ဝင်ငွေ</p></div><span className="subtle-count">{categoryStats.length} categories</span></div>{categoryStats.length === 0 ? <EmptyState icon={<BarChart3 size={23} />} title="Data မရှိသေးပါ" text="အရောင်းမှတ်တမ်း ရှိလာသည့်အခါ Chart ပြပါမယ်။" /> : <div className="category-bars">{categoryStats.map(([name, value], index) => <div className="category-bar-row" key={name}><div><span>{name}</span><b>{money(value, settings.currency)}</b></div><div className="category-track"><div style={{ width: `${categoryTotal ? value / categoryTotal * 100 : 0}%` }} className={`category-fill fill-${index % 5}`} /></div></div>)}</div>}</div></div><div className="panel analytics-note"><Activity size={18} /><div><strong>အချက်အလက်မှတ်ချက်</strong><p>Gross Profit ကို ရောင်းဈေး − သိမ်းထားသော ကုန်ကျစရိတ်ဖြင့်တွက်ပြီး Discount ကို နုတ်ထားပါတယ်။ ခန့်မှန်း Net Profit = Gross Profit − မှတ်တမ်းတင်ထားသော အသုံးစရိတ် ဖြစ်ပါတယ်။ အခွန်၊ ပစ္စည်းပျက်စီးဆုံးရှုံးမှုနှင့် မမှတ်တမ်းတင်ရသေးသော ကုန်ကျစရိတ်များ မပါဝင်နိုင်ပါ။</p></div></div></section>}
+          {page === 'analytics' && <section className="page-stack"><div className="section-heading"><div><h2>Business Analytics</h2><p>ရောင်းအား၊ အမြတ်နှင့် အမျိုးအစားအလိုက် အချက်အလက်များ။</p></div><div className="period-switch"><button className={chartPeriod === '7' ? 'active' : ''} onClick={() => setChartPeriod('7')}>7 Days</button><button className={chartPeriod === '30' ? 'active' : ''} onClick={() => setChartPeriod('30')}>30 Days</button><button className={chartPeriod === '365' ? 'active' : ''} onClick={() => setChartPeriod('365')}>12 Months</button></div></div><div className="mini-stats analytics-stats"><MiniStat icon={<TrendingUp size={17} />} label="စုစုပေါင်း အရောင်း" value={money(validSales.reduce((sum, sale) => sum + sale.total, 0), settings.currency)} /><MiniStat icon={<CircleDollarSign size={17} />} label="Gross Profit" value={money(validSales.reduce((sum, sale) => sum + sale.profit, 0), settings.currency)} /><MiniStat icon={<Wallet size={17} />} label="အသုံးစရိတ်" value={money(confirmedExpenses.reduce((sum, item) => sum + item.amount, 0), settings.currency)} /><MiniStat icon={<Coins size={17} />} label="ခန့်မှန်း Net Profit" value={money(validSales.reduce((sum, sale) => sum + sale.profit, 0) - confirmedExpenses.reduce((sum, item) => sum + item.amount, 0), settings.currency)} /></div><div className="analytics-grid"><div className="panel chart-panel"><div className="panel-heading"><div><h3>Sales Trend</h3><p>နေ့စဉ် ရောင်းအား</p></div><span className="chart-legend"><i /> Revenue</span></div><div className="bar-chart">{trend.map((item) => <div className="bar-column" key={item.key}><div className="bar-track"><div className="bar-fill" style={{ height: `${Math.max(item.value ? 4 : 0, item.value / trendMax * 100)}%` }} title={money(item.value, settings.currency)} /></div><small>{item.label}</small></div>)}</div></div><div className="panel chart-panel"><div className="panel-heading"><div><h3>Category Revenue</h3><p>အမျိုးအစားအလိုက် ဝင်ငွေ</p></div><span className="subtle-count">{categoryStats.length} categories</span></div>{categoryStats.length === 0 ? <EmptyState icon={<BarChart3 size={23} />} title="Data မရှိသေးပါ" text="အရောင်းမှတ်တမ်း ရှိလာသည့်အခါ Chart ပြပါမယ်။" /> : <div className="category-bars">{categoryStats.map(([name, value], index) => <div className="category-bar-row" key={name}><div><span>{name}</span><b>{money(value, settings.currency)}</b></div><div className="category-track"><div style={{ width: `${categoryTotal ? value / categoryTotal * 100 : 0}%` }} className={`category-fill fill-${index % 5}`} /></div></div>)}</div>}</div></div><div className="panel analytics-note"><Activity size={18} /><div><strong>အချက်အလက်မှတ်ချက်</strong><p>Gross Profit ကို ရောင်းဈေး − သိမ်းထားသော ကုန်ကျစရိတ်ဖြင့်တွက်ပြီး Discount ကို နုတ်ထားပါတယ်။ ခန့်မှန်း Net Profit = Gross Profit − မှတ်တမ်းတင်ထားသော အသုံးစရိတ် ဖြစ်ပါတယ်။ အခွန်၊ ပစ္စည်းပျက်စီးဆုံးရှုံးမှုနှင့် မမှတ်တမ်းတင်ရသေးသော ကုန်ကျစရိတ်များ မပါဝင်နိုင်ပါ။</p></div></div></section>}
 
           {page === 'settings' && <section className="page-stack"><div className="section-heading"><div><h2>Settings & Data</h2><p>ဆိုင်အချက်အလက်၊ Admin PIN နှင့် Backup ကို စီမံပါ။</p></div></div><div className="settings-grid"><div className="panel form-panel"><div className="panel-heading"><div className="panel-icon"><Settings size={18} /></div><div><h3>Store Preferences</h3><p>Receipt နဲ့ POS မှာ အသုံးပြုမည့် အချက်အလက်များ</p></div></div><label>ဆိုင်အမည်<input value={settings.storeName} onChange={(e) => updateSettings({ storeName: e.target.value })} /></label><label>ငွေကြေးအတိုကောက်<input value={settings.currency} onChange={(e) => updateSettings({ currency: e.target.value.toUpperCase() || 'MMK' })} /></label><label>Receipt အောက်ခြေစာသား<input value={settings.receiptFooter} onChange={(e) => updateSettings({ receiptFooter: e.target.value })} /></label><div className="printer-settings-card"><div><strong>Receipt Printer စမ်းသပ်ခြင်း</strong><small>ဒီ Device အတွက် စက္ကူအကျယ်ရွေးပြီး Test Print ထုတ်ကြည့်နိုင်ပါတယ်။</small></div><label>Paper Width<select value={paperWidth} onChange={(event) => setPaperWidth(event.target.value === '58' ? '58' : '80')}><option value="58">58 mm</option><option value="80">80 mm</option></select></label><button className="button button-outline" type="button" onClick={printTestReceipt}><Printer size={15} /> Test Print</button><p>Print ခလုတ်နှိပ်လျှင် Browser/System Print Dialog ပွင့်ပါမယ်။ Bluetooth Printer ကို ဖုန်း/ကွန်ပျူတာရဲ့ Print Service က ပြသမှ ရွေးထုတ်နိုင်ပါတယ်။ App ထဲမှာ Direct Bluetooth Pairing ကို ဒီ Version မှာ မထည့်ရသေးပါ။</p></div><label>Admin PIN အသစ်<input type="password" inputMode="numeric" value={settings.adminPin} onChange={(e) => updateSettings({ adminPin: e.target.value.replace(/\D/g, '').slice(0, 12) })} /><small className="field-hint">Default PIN: 1234။ စတင်အသုံးပြုပြီးသည်နှင့် ပြောင်းလဲပါ။</small></label></div><div className="panel form-panel"><div className="panel-heading"><div className="panel-icon"><FileJson size={18} /></div><div><h3>Backup & Restore</h3><p>Data ကို JSON ဖိုင်အဖြစ် သိမ်းပြီး ပြန်တင်နိုင်ပါတယ်။</p></div></div><div className="backup-card"><div><strong>Export Backup</strong><small>Products, Sales, Customer Credit, Payments, Suppliers, Purchases, Expiry Batches, Expenses, Cash Shifts နှင့် Activity Logs ပါဝင်မည်။</small></div><button className="button button-primary" onClick={exportBackup}><Download size={16} /> Export JSON</button></div><div className="backup-card"><div><strong>Import / Restore</strong><small>အရင် Export လုပ်ထားသော JSON ဖိုင်ကို ပြန်တင်ပါ။ လက်ရှိ Data ကို အစားထိုးပါမယ်။</small></div><button className="button button-outline" onClick={() => importRef.current?.click()}><ArrowDownToLine size={16} /> Choose File</button><input ref={importRef} type="file" accept="application/json,.json" hidden onChange={(e) => void importBackup(e.target.files?.[0])} /></div><div className="csv-export-row"><strong>CSV Report Export</strong><div><button className="button button-outline" onClick={exportProductsCsv}>Products CSV</button><button className="button button-outline" onClick={exportSalesCsv}>Sales CSV</button><button className="button button-outline" onClick={exportExpensesCsv}>Expenses CSV</button></div></div><div className="backup-warning"><AlertTriangle size={17} /><span>Backup ဖိုင်ကို ဖုန်းထဲတင်မကဘဲ အခြားလုံခြုံသောနေရာတွင်လည်း သိမ်းထားပါ။ Browser Data ရှင်းလိုက်လျှင် Local Data ပျောက်နိုင်ပါတယ်။</span></div><div className="danger-zone"><div><strong>Reset Local Data</strong><small>Products, Sales, Credit Ledger, Supplier, Purchase, Expiry Batch, Expenses, Cash Shifts နှင့် Activity Logs အားလုံးကို ဒီ Device မှ ဖယ်ရှားပါမယ်။</small></div><button className="button button-danger" onClick={() => { if (authorize('Data အားလုံး Reset လုပ်ရန်') && window.confirm('ဒီ Browser ထဲရှိ POS Data အားလုံးကို အပြီးဖျက်မလား။ Backup မရှိလျှင် ပြန်မရနိုင်ပါ။')) { clearAllData(); setCart([]); notify('Local Data အားလုံး Reset လုပ်ပြီးပါပြီ။'); } }}><Trash2 size={16} /> Reset</button></div></div></div><CloudSyncPanel onOpenProfile={() => navTo('profile')} /><div className="panel security-note"><LockKeyhole size={19} /><div><strong>လုံခြုံရေးနှင့် သိမ်းဆည်းမှုအကြောင်း</strong><p>ဒီဗားရှင်းမှာ PIN ကို Browser Local Storage ထဲမှာသာ စစ်ဆေးပါတယ်။ Shared device သို့မဟုတ် အင်တာနက်ကနေ Admin Access ကို လုံခြုံစွာကာကွယ်ပေးနိုင်တဲ့ Server-side Authentication မဟုတ်ပါ။ Firebase Cloud Sync ကို Settings မှာ Firebase Config ထည့်ပြီး Owner Account Login လုပ်မှ အသုံးပြုနိုင်ပါတယ်။ ဒီ PIN သည် UI Guard သာဖြစ်ပြီး Server-side Admin Permission မဟုတ်ပါ။</p></div></div></section>}
         </div>
@@ -727,7 +823,9 @@ function App() {
       {(lastSale || printTestMode) && <div className="receipt-print-area"><div className={`receipt-paper receipt-paper-${paperWidth}`}>
         {printTestMode ? <><h2>{activeBranch?.name || settings.storeName}</h2><p className="receipt-test-title">*** PRINTER TEST ***</p><p>{new Date().toLocaleString()}</p><hr /><div className="receipt-item"><span>စမ်းသပ်ပစ္စည်း × 1</span><b>1,000 {settings.currency}</b></div><hr /><div className="receipt-total receipt-grand"><span>TEST TOTAL</span><b>1,000 {settings.currency}</b></div><p className="receipt-footer">မြန်မာစာ စမ်းသပ်ခြင်း · {settings.receiptFooter}</p></> : lastSale && <>{activeBranchLogoSource && <img className="receipt-shop-logo" src={activeBranchLogoSource} alt="Shop logo" />}<h2>{activeBranch?.name || settings.storeName}</h2>{activeBranch?.settings.receiptHeader && <p className="receipt-shop-extra">{activeBranch.settings.receiptHeader}</p>}{activeBranch?.address && <p>{activeBranch.address}</p>}{activeBranch?.phone && <p>ဖုန်း: {activeBranch.phone}</p>}<p>Voucher: {lastSale.receiptNo}</p><p>{dateLabel(lastSale.date)}</p><p>Customer: {lastSale.customer}</p><hr />{lastSale.items.map((item, index) => { const product = productMap.get(item.productId); const quantityMode = item.quantityMode || (product ? quantityModeForProduct(product) : 'whole'); const quantityText = `${formatQuantity(item.quantity, quantityMode)} ${item.unit || product?.unit || ''}`.trim(); return <div className="receipt-item receipt-item-detailed" key={`${item.productId}-${index}`}><div className="receipt-item-info"><strong>{item.name}</strong><small>{quantityText} × {money(item.unitPrice, settings.currency)} · {item.mode === 'wholesale' ? 'လက်ကား' : 'လက်လီ'}</small></div><b>{money(item.unitPrice * item.quantity, settings.currency)}</b></div>; })}<hr /><div className="receipt-total"><span>Subtotal</span><b>{money(lastSale.subtotal, settings.currency)}</b></div><div className="receipt-total"><span>Discount</span><b>{money(lastSale.discount, settings.currency)}</b></div><div className="receipt-total receipt-grand"><span>Total</span><b>{money(lastSale.total, settings.currency)}</b></div><p>Payment: {lastSale.paymentMethod}</p><p>Paid: {money(lastSale.paidAmount ?? (lastSale.paymentMethod === 'Cash' ? lastSale.total : 0), settings.currency)}</p>{lastSale.paymentMethod === 'Cash' && <><p>Cash Received: {money(lastSale.cashReceivedAmount ?? lastSale.total, settings.currency)}</p><p>Change: {money(lastSale.changeAmount ?? 0, settings.currency)}</p></>}<p>Due: {money(lastSale.dueAmount ?? (lastSale.paymentMethod === 'Credit' ? lastSale.total : 0), settings.currency)}</p><p className="receipt-footer">{settings.receiptFooter}</p></>}</div></div>}
       <BarcodeCameraScanner open={cameraScannerTarget !== null} onClose={() => setCameraScannerTarget(null)} onDetected={handleCameraBarcodeDetected} title={cameraScannerTarget === 'product' ? 'ပစ္စည်း Barcode ထည့်ရန်' : 'POS Barcode ဖတ်ရန်'} />
-      {toast && <div className="toast"><Check size={17} /> {toast}</div>}
+      {toast && (toastActionPage
+        ? <button className="toast toast-action" type="button" onClick={() => { setPage(toastActionPage); setMobileMenu(false); setToast(''); setToastActionPage(null); }}><PackageCheck size={17} /> {toast}</button>
+        : <div className="toast"><Check size={17} /> {toast}</div>)}
     </div>
   );
 }

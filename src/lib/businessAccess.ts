@@ -44,7 +44,7 @@ export function canUsePage(role: BusinessRole | null, page: string, canReceiveSt
   if (role !== 'cashier') return true;
   // Limited Cashier: POS and own sales history. A separately assigned receiver
   // can also access the receiving-only workflow for their one assigned branch.
-  return ['pos', 'sales'].includes(page) || (page === 'branchReceiving' && canReceiveStock);
+  return ['pos', 'sales', 'expenses', 'settlements'].includes(page) || (page === 'branchReceiving' && canReceiveStock);
 }
 
 export function canAccessBranch(role: BusinessRole | null, branchIds: string[], branchId: string): boolean {

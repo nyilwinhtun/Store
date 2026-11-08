@@ -727,6 +727,8 @@
 .shipment-draft-row select,.shipment-draft-row input{width:100%;min-width:0;min-height:36px;border:1px solid var(--line);border-radius:8px;padding:7px 9px;background:var(--panel);color:var(--ink);font:inherit;font-size:10px}
 .shipment-draft-row .small-action{width:32px;height:32px;align-self:center}
 .shipment-price-snapshot{grid-column:2/5;display:flex;flex-wrap:wrap;gap:6px 12px;color:var(--muted);font-size:8px;line-height:1.45}
+.shipment-price-snapshot strong{color:var(--teal);font-size:10px;font-weight:800}
+.shipment-batch-warning{grid-column:2/5;color:var(--danger);font-size:8px;line-height:1.45;font-weight:600}
 .shipment-form-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:5px}
 .shipment-form-footer small{color:var(--muted);font-size:8px;line-height:1.5;max-width:420px}
 .shipment-form-footer .button{white-space:nowrap}
@@ -770,6 +772,7 @@
   .shipment-qty-select{grid-column:2/3}
   .shipment-draft-row .small-action{grid-column:3;grid-row:1/3}
   .shipment-price-snapshot{grid-column:2/4;font-size:7px}
+  .shipment-batch-warning{grid-column:2/4}
   .shipment-draft-header .button{padding:8px 9px;font-size:8px}
   .shipment-form-footer,.shipment-receipt-review{align-items:stretch;flex-direction:column}
   .shipment-form-footer .button,.shipment-receipt-review .button{width:100%;justify-content:center}
@@ -1025,3 +1028,124 @@
 }
 .payment-exact-button { display: inline-flex; align-self: flex-start; min-height: 34px; margin-top: 7px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-soft); color: var(--teal); font-size: 10px; font-weight: 800; touch-action: manipulation; }
 .payment-exact-button:hover { border-color: var(--teal); }
+
+/* v3.0.2 — shipment batch availability and mismatch warnings */
+
+
+/* v3.1.0 Preview — Stock Unit Registration */
+.stock-unit-page{gap:16px}.stock-unit-note{align-items:flex-start}.stock-unit-stats{grid-template-columns:repeat(3,minmax(0,1fr))}.stock-unit-panel,.stock-unit-registered-panel{padding:20px}.stock-unit-product-select{display:grid;grid-template-columns:minmax(220px,.8fr) minmax(280px,1.2fr);gap:12px}.stock-unit-product-select select{width:100%;min-width:0;border:1px solid var(--line);border-radius:9px;background:#fff;padding:11px 12px;color:var(--ink);font-size:11px}.stock-unit-selected-product{margin-top:15px;padding:13px;border:1px solid var(--line);border-radius:10px;background:#fbfdfc;display:flex;justify-content:space-between;align-items:center;gap:12px}.stock-unit-selected-product>div{display:flex;flex-direction:column;gap:4px;min-width:0}.stock-unit-selected-product strong{font-size:12px}.stock-unit-selected-product small{font-size:9px;color:var(--muted);overflow-wrap:anywhere}.stock-unit-progress{margin-top:16px}.stock-unit-progress>div:first-child{display:flex;justify-content:space-between;align-items:center;font-size:10px;color:var(--muted);margin-bottom:7px}.stock-unit-progress strong{color:var(--ink)}.stock-unit-progress-track{height:8px;border-radius:99px;background:#eaf1ef;overflow:hidden}.stock-unit-progress-track span{display:block;height:100%;border-radius:99px;background:var(--teal);transition:width .2s}.stock-unit-mode-switch{display:flex;gap:8px;margin-top:18px;border-bottom:1px solid var(--line);padding-bottom:10px}.stock-unit-mode-switch button{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:9px;background:#fff;color:#62747a;padding:10px 13px;font-size:10px;font-weight:800}.stock-unit-mode-switch button.active{background:#e4f8f0;border-color:#a8e6cb;color:#087b69}.stock-unit-method-card{padding-top:17px}.stock-unit-method-card h3{font-size:12px;margin:0 0 5px}.stock-unit-method-card>p{font-size:9px;line-height:1.7;color:var(--muted);margin:0 0 13px}.stock-unit-scan-row{display:grid;grid-template-columns:minmax(160px,1fr) auto auto;gap:8px}.stock-unit-scan-row input,.stock-unit-generate-row input{width:100%;min-width:0;border:1px solid var(--line);border-radius:9px;padding:11px 12px;font-size:11px;color:var(--ink);background:#fff}.stock-unit-pending-heading{display:flex;justify-content:space-between;align-items:center;margin-top:17px;font-size:10px}.stock-unit-pending-heading span{color:var(--teal);font-weight:800}.stock-unit-pending-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-top:9px}.stock-unit-pending-list>div{display:flex;align-items:center;justify-content:space-between;gap:8px;border:1px solid var(--line);border-radius:8px;padding:5px 8px;min-width:0}.stock-unit-pending-list code{font-size:9px;overflow-wrap:anywhere}.stock-unit-empty-hint{padding:16px;border:1px dashed #d8e4e0;border-radius:9px;background:#fbfdfc;color:#84949a;font-size:10px;text-align:center;margin-top:10px}.stock-unit-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:18px;padding-top:14px;border-top:1px solid var(--line)}.stock-unit-actions>span{font-size:9px;color:var(--muted)}.stock-unit-generate-row{display:grid;grid-template-columns:minmax(130px,.6fr) minmax(130px,.8fr) auto;gap:10px;align-items:end}.stock-unit-generate-row label{display:flex;flex-direction:column;gap:6px;font-size:10px;font-weight:700;color:#52676e}.stock-unit-generate-summary{border:1px solid var(--line);border-radius:9px;padding:9px 12px;display:flex;flex-direction:column;gap:4px;min-height:39px}.stock-unit-generate-summary span{font-size:8px;color:var(--muted)}.stock-unit-generate-summary strong{font-size:12px}.stock-unit-generated-result{margin-top:18px;border-top:1px solid var(--line);padding-top:16px}.stock-unit-label-preview{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}.stock-unit-label-preview>div{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;border:1px dashed #d5dfdc;border-radius:8px;padding:10px 5px;min-width:0;overflow:hidden;background:#fff}.unit-barcode-svg{display:block;max-width:100%;overflow:hidden}.unit-barcode-svg svg{display:block;max-width:100%;height:auto}.stock-unit-label-preview code{font-size:8px;overflow-wrap:anywhere;text-align:center}.stock-unit-registered-panel .table-wrap{max-height:360px;overflow:auto}.stock-unit-registered-panel table{font-size:10px}.stock-unit-registered-panel td,.stock-unit-registered-panel th{padding:9px 10px}
+@media(max-width:760px){.stock-unit-stats{grid-template-columns:repeat(3,minmax(0,1fr))}.stock-unit-product-select{grid-template-columns:1fr}.stock-unit-scan-row{grid-template-columns:minmax(0,1fr) auto}.stock-unit-scan-row .button-primary{grid-column:1/-1}.stock-unit-generate-row{grid-template-columns:1fr 1fr}.stock-unit-generate-row .button{grid-column:1/-1}.stock-unit-actions{align-items:stretch;flex-direction:column}.stock-unit-actions .button{width:100%}.stock-unit-label-preview{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+.stock-unit-heading-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap;justify-content:flex-end}.stock-unit-barcode-warning{display:flex;align-items:flex-start;gap:9px;margin-top:12px;padding:11px 12px;border:1px solid #f1dfb4;border-radius:9px;background:#fffaf0;color:#84652b;font-size:9px;line-height:1.7}.stock-unit-barcode-warning svg{flex:0 0 auto;margin-top:1px}
+@media(max-width:600px){.stock-unit-heading-actions{align-items:stretch;flex-direction:column}.stock-unit-heading-actions .button{justify-content:center}.stock-unit-barcode-warning{font-size:9px}}
+
+
+/* v3.1.0 shipment Cloud readiness gate */
+.shipment-cloud-gate { border: 1px solid var(--border, #dbe5e2); border-radius: 13px; padding: 12px 14px; margin: 0 0 16px; background: #f8fbfa; color: #25423e; }
+.shipment-cloud-gate strong { display: block; font-size: 13px; margin-bottom: 4px; }
+.shipment-cloud-gate p { margin: 0; color: #647b76; font-size: 12px; line-height: 1.65; }
+.shipment-cloud-ready { border-color: #a7e5c8; background: #ecfdf5; }
+.shipment-cloud-blocked { border-color: #f2d39a; background: #fffbeb; }
+[data-theme='dark'] .shipment-cloud-gate { background: #172521; border-color: #36534c; color: #d9eee7; }
+[data-theme='dark'] .shipment-cloud-gate p { color: #a6c1b8; }
+[data-theme='dark'] .shipment-cloud-ready { background: #123329; border-color: #27684c; }
+[data-theme='dark'] .shipment-cloud-blocked { background: #382d18; border-color: #79602c; }
+
+/* v3.1.0 — clickable in-app shipment notification */
+.toast-action{border:0;cursor:pointer;text-align:left;font:inherit;line-height:1.5}
+.toast-action:hover{background:#0f3033}
+.toast-action:focus-visible{outline:2px solid #7dd5b2;outline-offset:3px}
+
+
+/* v3.1.0 Cashier Expense Management */
+.expense-workspace{display:grid;grid-template-columns:minmax(270px,.72fr) minmax(0,1.28fr);gap:15px;align-items:start}
+.expense-policy-panel{display:flex;flex-direction:column;gap:12px}
+.expense-policy-controls{display:flex;align-items:flex-end;gap:12px;max-width:720px}
+.expense-policy-controls label{flex:1;display:flex;flex-direction:column;gap:7px;font-size:10px;font-weight:700;color:#61767b}
+.expense-policy-controls input{width:100%;border:1px solid var(--line);border-radius:9px;padding:10px 11px;background:#fff;color:var(--ink);font-size:12px}
+.expense-policy-panel .field-hint{font-size:9px;line-height:1.6}
+.expense-submit-hint{border:1px solid #dcece8;background:#f1f8f6;color:#4f8179;border-radius:9px;padding:10px;font-size:9px;line-height:1.55}
+.expense-record-panel{min-width:0}
+.expense-list-toolbar{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}
+.expense-list-toolbar select{min-width:170px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:#fff;color:var(--ink);font-size:10px}
+.expense-record-card{border:1px solid #e8eeee;border-radius:10px;padding:12px;margin-bottom:9px;background:#fff}
+.expense-record-card:last-child{margin-bottom:0}
+.expense-record-main{display:flex;align-items:flex-start;gap:10px}
+.expense-record-amount{display:flex;align-items:flex-end;flex-direction:column;gap:7px;white-space:nowrap}
+.expense-record-amount strong{font-size:12px;color:#b96a58}
+.expense-record-amount .tag{font-size:8px}
+.expense-review-actions{display:flex;gap:7px;justify-content:flex-end;padding-top:10px;margin-top:10px;border-top:1px solid #eff3f3}
+.expense-review-actions .button{padding:7px 10px;font-size:9px}
+.expense-record-footer{display:flex;align-items:center;justify-content:space-between;border-top:1px solid #eff3f3;margin-top:7px;padding-top:6px}
+.expense-record-footer small{font-size:8px;color:#9aa6aa;overflow:hidden;text-overflow:ellipsis}
+.expense-rejection-note{color:#b65c55!important}
+@media(max-width:920px){.expense-workspace{grid-template-columns:1fr}.expense-policy-controls{align-items:stretch;flex-direction:column}}
+@media(max-width:600px){.expense-list-toolbar{align-items:stretch;flex-direction:column}.expense-list-toolbar select{width:100%}.expense-record-card{padding:10px}.expense-record-amount strong{font-size:10px}.expense-record-amount .tag{white-space:normal;text-align:right;max-width:110px}}
+
+/* v3.1.1 Cashier KPay & Cash Settlement */
+.settlement-workspace {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.92fr) minmax(0, 1.08fr);
+  gap: 16px;
+  align-items: start;
+}
+.settlement-kpay-fields {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border, #dbe3e8);
+  border-radius: 14px;
+  background: var(--surface-muted, rgba(148, 163, 184, 0.07));
+}
+.settlement-kpay-fields > strong { font-size: 0.92rem; }
+.settlement-kpay-fields label { margin: 0; }
+.settlement-hint {
+  padding: 11px 12px;
+  border: 1px solid var(--border, #dbe3e8);
+  border-radius: 11px;
+  color: var(--muted, #64748b);
+  font-size: 0.82rem;
+  line-height: 1.55;
+  background: var(--surface-muted, rgba(148, 163, 184, 0.07));
+}
+.settlement-list { display: grid; gap: 10px; }
+.settlement-card {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 13px;
+  border: 1px solid var(--border, #dbe3e8);
+  border-radius: 13px;
+  background: var(--surface, #fff);
+}
+.settlement-icon {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  color: var(--primary, #0f766e);
+  background: rgba(15, 118, 110, 0.09);
+}
+.settlement-main { min-width: 0; display: grid; gap: 4px; }
+.settlement-main strong { font-size: 0.9rem; line-height: 1.4; }
+.settlement-main small { color: var(--muted, #64748b); font-size: 0.76rem; overflow-wrap: anywhere; }
+.settlement-amount { display: grid; gap: 6px; justify-items: end; white-space: nowrap; }
+.settlement-amount strong { font-size: 0.95rem; }
+.inline-error, .inline-success {
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+.inline-error { color: #b42318; background: rgba(220, 38, 38, 0.08); border: 1px solid rgba(220, 38, 38, 0.2); }
+.inline-success { color: #15803d; background: rgba(22, 163, 74, 0.08); border: 1px solid rgba(22, 163, 74, 0.2); }
+@media (max-width: 900px) {
+  .settlement-workspace { grid-template-columns: 1fr; }
+}
+@media (max-width: 560px) {
+  .settlement-card { grid-template-columns: 36px minmax(0, 1fr); }
+  .settlement-icon { width: 36px; height: 36px; }
+  .settlement-amount { grid-column: 2; display: flex; align-items: center; justify-content: space-between; justify-items: unset; white-space: normal; }
+}

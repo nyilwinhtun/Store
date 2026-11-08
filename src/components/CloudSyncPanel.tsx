@@ -8,7 +8,7 @@ import { usePosStore, type Branch } from '../store/usePosStore';
 import { OwnerAutoSyncStatus } from './OwnerAutoSyncStatus';
 import { clearFirestoreDiagnostics, FIRESTORE_DIAGNOSTICS_EVENT, readFirestoreDiagnostics, type FirestoreDiagnosticsSummary, recordFirestoreActivity } from '../lib/firestoreDiagnostics';
 
-export type BranchRecordKind = 'categories' | 'products' | 'sales' | 'expenses' | 'heldItems' | 'customerPayments' | 'purchases' | 'supplierPayments' | 'purchaseReturns' | 'stockBatches' | 'stockReceipts' | 'stockTransfers' | 'stockShipments' | 'cashShifts' | 'cashMovements' | 'activityLogs';
+export type BranchRecordKind = 'categories' | 'products' | 'sales' | 'expenses' | 'cashierSettlements' | 'heldItems' | 'customerPayments' | 'purchases' | 'supplierPayments' | 'purchaseReturns' | 'stockBatches' | 'stockReceipts' | 'stockTransfers' | 'stockShipments' | 'stockUnitRegistries' | 'cashShifts' | 'cashMovements' | 'activityLogs';
 export type SharedRecordKind = 'customers' | 'suppliers';
 export type SyncScope = 'branch' | 'branchRecord' | 'shared' | 'meta';
 export type SyncKind = BranchRecordKind | SharedRecordKind | 'branches' | 'settings';
@@ -17,7 +17,7 @@ export type ManifestEntry = { scope: SyncScope; kind: SyncKind; id: string; bran
 export type SyncManifest = { version: 2; businessId: string; savedAt: string; records: Record<string, ManifestEntry> };
 export type CloudRead = { items: Map<string, SyncItem>; unavailableSharedKinds: SharedRecordKind[] };
 
-export const branchRecordKinds: BranchRecordKind[] = ['categories', 'products', 'sales', 'expenses', 'heldItems', 'customerPayments', 'purchases', 'supplierPayments', 'purchaseReturns', 'stockBatches', 'stockReceipts', 'stockTransfers', 'stockShipments', 'cashShifts', 'cashMovements', 'activityLogs'];
+export const branchRecordKinds: BranchRecordKind[] = ['categories', 'products', 'sales', 'expenses', 'cashierSettlements', 'heldItems', 'customerPayments', 'purchases', 'supplierPayments', 'purchaseReturns', 'stockBatches', 'stockReceipts', 'stockTransfers', 'stockShipments', 'stockUnitRegistries', 'cashShifts', 'cashMovements', 'activityLogs'];
 export const sharedRecordKinds: SharedRecordKind[] = ['customers', 'suppliers'];
 const DELETED_HASH = '__MINIMART_DELETED__';
 const MISSING_HASH = '__MINIMART_MISSING__';
@@ -59,10 +59,10 @@ export function buildLocalItems(state: ReturnType<typeof usePosStore.getState>):
   }
 
   const data: Record<BranchRecordKind, unknown[]> = {
-    categories: state.categories, products: state.products, sales: state.sales, expenses: state.expenses, heldItems: state.heldItems,
+    categories: state.categories, products: state.products, sales: state.sales, expenses: state.expenses, cashierSettlements: state.cashierSettlements, heldItems: state.heldItems,
     customerPayments: state.customerPayments, purchases: state.purchases, supplierPayments: state.supplierPayments,
     purchaseReturns: state.purchaseReturns, stockBatches: state.stockBatches, stockReceipts: state.stockReceipts,
-    stockTransfers: state.stockTransfers, stockShipments: state.stockShipments, cashShifts: state.cashShifts, cashMovements: state.cashMovements, activityLogs: state.activityLogs,
+    stockTransfers: state.stockTransfers, stockShipments: state.stockShipments, stockUnitRegistries: state.stockUnitRegistries, cashShifts: state.cashShifts, cashMovements: state.cashMovements, activityLogs: state.activityLogs,
   };
   const validBranches = new Set(state.branches.map((branch) => branch.id));
   const fallbackBranch = state.branches.find((branch) => branch.isDefault)?.id || state.activeBranchId;
@@ -75,7 +75,11 @@ export function buildLocalItems(state: ReturnType<typeof usePosStore.getState>):
       const requestedBranch = kind === 'stockTransfers' ? record.fromBranchId : record.branchId;
       const resolvedBranch = kind === 'stockShipments' ? record.toBranchId : requestedBranch;
       const branchId = typeof resolvedBranch === 'string' && validBranches.has(resolvedBranch) ? resolvedBranch : fallbackBranch;
-      const payload = stripDeviceImages(kind === 'stockTransfers' ? record : { ...record, branchId });
+      const sourceRecord = { ...record };
+      // Device-local queue indicators must never become shared Firestore fields.
+      delete sourceRecord.cloudSyncStatus;
+      delete sourceRecord.cloudSyncError;
+      const payload = stripDeviceImages(kind === 'stockTransfers' ? sourceRecord : { ...sourceRecord, branchId });
       const item: SyncItem = { key: keyOf('branchRecord', kind, id, branchId), scope: 'branchRecord', kind, id, branchId, payload };
       result.set(item.key, item);
     }
@@ -314,7 +318,7 @@ export function importCloudItems(items: Map<string, SyncItem>, options: { unavai
     return { ...branch, logoUrl: local?.logoUrl || branch.logoUrl || '', bannerUrl: local?.bannerUrl || branch.bannerUrl || '' };
   });
   const grouped: Record<BranchRecordKind, unknown[]> = {
-    categories: [], products: [], sales: [], expenses: [], heldItems: [], customerPayments: [], purchases: [], supplierPayments: [], purchaseReturns: [], stockBatches: [], stockReceipts: [], stockTransfers: [], stockShipments: [], cashShifts: [], cashMovements: [], activityLogs: [],
+    categories: [], products: [], sales: [], expenses: [], cashierSettlements: [], heldItems: [], customerPayments: [], purchases: [], supplierPayments: [], purchaseReturns: [], stockBatches: [], stockReceipts: [], stockTransfers: [], stockShipments: [], stockUnitRegistries: [], cashShifts: [], cashMovements: [], activityLogs: [],
   };
   const customers: unknown[] = [];
   const suppliers: unknown[] = [];
@@ -343,10 +347,10 @@ export function importCloudItems(items: Map<string, SyncItem>, options: { unavai
   const ownerProfile = { ...current.ownerProfile, ...cloudOwner, photoUrl: current.ownerProfile.photoUrl || (typeof cloudOwner.photoUrl === 'string' ? cloudOwner.photoUrl : '') };
   usePosStore.getState().importData({
     branches: branches as never[], activeBranchId, categories: grouped.categories as never[], products: grouped.products as never[],
-    sales: grouped.sales as never[], expenses: grouped.expenses as never[], heldItems: grouped.heldItems as never[],
+    sales: grouped.sales as never[], expenses: grouped.expenses as never[], cashierSettlements: grouped.cashierSettlements as never[], heldItems: grouped.heldItems as never[],
     customers: unavailableShared.has('customers') ? undefined : customers as never[], suppliers: unavailableShared.has('suppliers') ? undefined : suppliers as never[], customerPayments: grouped.customerPayments as never[],
     purchases: grouped.purchases as never[], supplierPayments: grouped.supplierPayments as never[], purchaseReturns: grouped.purchaseReturns as never[],
-    stockBatches: grouped.stockBatches as never[], stockReceipts: grouped.stockReceipts as never[], stockTransfers: grouped.stockTransfers as never[], stockShipments: grouped.stockShipments as never[],
+    stockBatches: grouped.stockBatches as never[], stockReceipts: grouped.stockReceipts as never[], stockTransfers: grouped.stockTransfers as never[], stockShipments: grouped.stockShipments as never[], stockUnitRegistries: grouped.stockUnitRegistries as never[],
     cashShifts: grouped.cashShifts as never[], cashMovements: grouped.cashMovements as never[], activityLogs: grouped.activityLogs as never[],
     ownerProfile: ownerProfile as never, settings: settings as never,
   });

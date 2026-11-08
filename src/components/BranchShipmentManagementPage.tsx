@@ -2,12 +2,34 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { CheckCircle2, ClipboardList, PackagePlus, Plus, Send, Trash2, XCircle } from 'lucide-react';
 import { useBusinessAccess } from '../lib/businessAccess';
 import { firebaseAuth } from '../lib/firebase';
+import { BRANCH_SHIPMENT_CLOUD_COMMIT_CANCELLED, BRANCH_SHIPMENT_CLOUD_COMMIT_STARTED, commitBranchShipmentToCloud, BranchShipmentCloudCommitUnknownError } from '../lib/branchShipmentCloudCommit';
+import { AUTO_SYNC_STATUS_EVENT, readAutoSyncStatus, type AutoSyncStatus } from '../lib/autoSyncStatus';
 import { formatQuantity, isValidQuantity, quantityMin, quantityModeForProduct, summarizeQuantities } from '../lib/quantity';
-import { usePosStore, type BranchShipmentDraftItem, type BranchStockShipment, type Product } from '../store/usePosStore';
+import { usePosStore, type BranchShipmentDraftItem, type BranchStockShipment, type Product, type StockBatch } from '../store/usePosStore';
 
 const dateLabel = (value: string) => new Date(value).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 type DraftLine = { key: string; productId: string; quantity: string };
 const newKey = () => typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `line-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+function rollbackLocalShipment(beforeProducts: Product[], beforeBatches: StockBatch[], shipment: BranchStockShipment) {
+  const productIds = new Set(shipment.items.map((item) => item.sourceProductId));
+  const beforeProductById = new Map(beforeProducts.filter((item) => item.branchId === shipment.fromBranchId && productIds.has(item.id)).map((item) => [item.id, item]));
+  const current = usePosStore.getState();
+  const affectedBatchIds = new Set([
+    ...beforeBatches.filter((item) => item.branchId === shipment.fromBranchId && productIds.has(item.productId)).map((item) => item.id),
+    ...current.stockBatches.filter((item) => item.branchId === shipment.fromBranchId && productIds.has(item.productId)).map((item) => item.id),
+  ]);
+  const beforeBatchById = new Map(beforeBatches.filter((item) => affectedBatchIds.has(item.id)).map((item) => [item.id, item]));
+  usePosStore.setState((state) => ({
+    products: state.products.map((item) => item.branchId === shipment.fromBranchId && beforeProductById.has(item.id) ? beforeProductById.get(item.id)! : item),
+    stockBatches: [
+      ...state.stockBatches.filter((item) => !affectedBatchIds.has(item.id)),
+      ...beforeBatchById.values(),
+    ],
+    stockShipments: state.stockShipments.filter((item) => item.id !== shipment.id),
+    activityLogs: state.activityLogs.filter((item) => item.entityId !== shipment.id),
+  }));
+}
 
 function ShipmentStatus({ status }: { status: BranchStockShipment['status'] }) {
   const config = {
@@ -54,6 +76,7 @@ export function BranchShipmentManagementPage({ authorize, notify }: { authorize:
   const access = useBusinessAccess();
   const branches = usePosStore((state) => state.branches);
   const products = usePosStore((state) => state.products);
+  const stockBatches = usePosStore((state) => state.stockBatches);
   const shipments = usePosStore((state) => state.stockShipments);
   const dispatchShipment = usePosStore((state) => state.dispatchBranchStockShipment);
   const approveShipment = usePosStore((state) => state.approveBranchStockShipment);
@@ -65,7 +88,47 @@ export function BranchShipmentManagementPage({ authorize, notify }: { authorize:
   const [lines, setLines] = useState<DraftLine[]>([{ key: newKey(), productId: '', quantity: '1' }]);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
+  const [shipmentCommitUncertain, setShipmentCommitUncertain] = useState(false);
+  const [isOnline, setIsOnline] = useState(() => typeof navigator !== 'undefined' ? navigator.onLine : false);
   const requestId = useRef(newKey());
+  const [cloudStatus, setCloudStatus] = useState<AutoSyncStatus>(() => access.uid ? readAutoSyncStatus(access.uid) : { state: 'idle', message: 'Firebase Owner Account Login လိုအပ်ပါတယ်။' });
+  const isFirebaseOwner = access.status === 'active' && access.role === 'owner' && !!access.uid && firebaseAuth?.currentUser?.uid === access.uid;
+  // The shipment is committed by a dedicated Firestore transaction. Do not gate
+  // dispatch on the app-wide Auto Sync badge; that badge may still be bootstrapping.
+  const cloudReady = isFirebaseOwner && isOnline && !shipmentCommitUncertain;
+
+  useEffect(() => {
+    const onOnline = () => setIsOnline(true);
+    const onOffline = () => setIsOnline(false);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!access.uid) {
+      setCloudStatus({ state: 'idle', message: 'Firebase Owner Account Login လိုအပ်ပါတယ်။' });
+      return;
+    }
+    const refresh = (event?: Event) => {
+      if (event) {
+        const detail = (event as CustomEvent<{ uid?: string; status?: AutoSyncStatus }>).detail;
+        if (detail?.uid && detail.uid !== access.uid) return;
+      }
+      setCloudStatus(readAutoSyncStatus(access.uid));
+    };
+    refresh();
+    window.addEventListener(AUTO_SYNC_STATUS_EVENT, refresh);
+    const onStorage = (event: StorageEvent) => { if (event.key?.includes(access.uid)) refresh(); };
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener(AUTO_SYNC_STATUS_EVENT, refresh);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, [access.uid]);
 
   useEffect(() => {
     if (!activeBranches.some((branch) => branch.id === sourceBranchId)) {
@@ -80,15 +143,49 @@ export function BranchShipmentManagementPage({ authorize, notify }: { authorize:
   }, [sourceBranchId, branches]);
   const destinationBranch = destinationOptions.find((branch) => branch.id === destinationBranchId);
   const sourceProducts = useMemo(() => products.filter((product) => product.branchId === sourceBranchId && product.stock > 0).sort((a, b) => a.name.localeCompare(b.name)), [products, sourceBranchId]);
+  const currentDate = new Date();
+  const currentDay = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}-${String(currentDate.getDate()).padStart(2, '0')}`;
+  const batchAvailabilityByProduct = useMemo(() => {
+    const result = new Map<string, { tracked: number; valid: number; expired: number; untracked: number; available: number; mismatch: boolean }>();
+    for (const product of sourceProducts) {
+      const productBatches: StockBatch[] = stockBatches.filter((batch) => batch.branchId === sourceBranchId && batch.productId === product.id && Number(batch.quantity) > 0);
+      const tracked = productBatches.reduce((sum, batch) => sum + Math.max(0, Number(batch.quantity) || 0), 0);
+      const valid = productBatches.filter((batch) => {
+        const expiry = String(batch.expiryDate || '').trim().slice(0, 10);
+        return !expiry || expiry >= currentDay;
+      }).reduce((sum, batch) => sum + Math.max(0, Number(batch.quantity) || 0), 0);
+      const expired = Math.max(0, tracked - valid);
+      const untracked = Math.max(0, Number(product.stock) - tracked);
+      const available = Math.max(0, Math.min(Number(product.stock) || 0, valid + untracked));
+      result.set(product.id, { tracked, valid, expired, untracked, available, mismatch: tracked > Number(product.stock) + 0.000001 });
+    }
+    return result;
+  }, [sourceProducts, stockBatches, sourceBranchId, currentDay]);
   const chosenIds = new Set(lines.map((line) => line.productId).filter(Boolean));
 
   const updateLine = (key: string, changes: Partial<Pick<DraftLine, 'productId' | 'quantity'>>) => setLines((current) => current.map((line) => line.key === key ? { ...line, ...changes } : line));
   const addLine = () => setLines((current) => current.length >= 50 ? current : [...current, { key: newKey(), productId: '', quantity: '1' }]);
   const removeLine = (key: string) => setLines((current) => current.length <= 1 ? [{ key: newKey(), productId: '', quantity: '1' }] : current.filter((line) => line.key !== key));
 
-  const dispatch = () => {
-    if (busy || !sourceBranch || !destinationBranch || !authorize('ဆိုင်ခွဲသို့ ပစ္စည်းအများအပြား ပို့ရန်')) return;
+  const dispatch = async () => {
+    if (busy || !sourceBranch || !destinationBranch) return;
+    // A Firebase transaction below writes Source Stock, Batch changes, and the
+    // Destination Shipment atomically before the UI reports dispatch success.
+    if (!isFirebaseOwner || !firebaseAuth?.currentUser || firebaseAuth.currentUser.uid !== access.uid) {
+      notify('ပစ္စည်းမပို့ရသေးပါ။ Profile → Firebase Business Account မှ Owner Account နဲ့ Login ဝင်ပါ။ Local mode မှာ ပို့လို့မရပါ။');
+      return;
+    }
+    if (!navigator.onLine) {
+      notify('Internet မရှိပါ။ Offline အခြေအနေမှာ Branch Shipment ပို့လို့မရပါ။ Internet ပြန်ချိတ်ပြီး ထပ်စမ်းပါ။');
+      return;
+    }
+    if (shipmentCommitUncertain) {
+      notify('ယခင် Shipment ရဲ့ Cloud အတည်ပြုချက် မသေချာသေးပါ။ Shipment History ကို အရင်စစ်ပြီး Page ကို Refresh လုပ်ပါ။ ထပ်မပို့ပါနှင့်။');
+      return;
+    }
+    if (!authorize('ဆိုင်ခွဲသို့ ပစ္စည်းအများအပြား ပို့ရန်')) return;
     const inputItems: BranchShipmentDraftItem[] = [];
+    const batchMismatchWarnings: string[] = [];
     const used = new Set<string>();
     for (const line of lines) {
       if (!line.productId) continue;
@@ -96,16 +193,25 @@ export function BranchShipmentManagementPage({ authorize, notify }: { authorize:
       used.add(line.productId);
       const product = sourceProducts.find((entry) => entry.id === line.productId);
       const quantity = Number(line.quantity);
-      if (!product || !isValidQuantity(quantity, quantityModeForProduct(product)) || quantity > product.stock) {
-        notify(`${product?.name || 'ပစ္စည်း'} ရဲ့ လွှဲမည့်အရေအတွက်/လက်ကျန်ကို ပြန်စစ်ပါ။`);
+      if (!product || !isValidQuantity(quantity, quantityModeForProduct(product)) || quantity <= 0 || quantity > product.stock) {
+        notify(`${product?.name || 'ပစ္စည်း'} ရဲ့ ပို့မည့်အရေအတွက်ကို ပြန်စစ်ပါ။ လက်ရှိ Stock ထက် ပိုပို့လို့မရပါ။`);
         return;
       }
+      const availability = batchAvailabilityByProduct.get(product.id) || { tracked: 0, valid: 0, expired: 0, untracked: product.stock, available: product.stock, mismatch: false };
+      if (quantity > availability.available + 0.000001) {
+        notify(`${product.name}: Batch သို့မဟုတ် သက်တမ်းစာရင်းကြောင့် ဒီပစ္စည်းကို ယခု ပို့မရသေးပါ။ Stock Batch ကို စစ်ဆေးပါ။`);
+        return;
+      }
+      if (availability.mismatch) batchMismatchWarnings.push(product.name);
       inputItems.push({ sourceProductId: product.id, quantity });
     }
     if (inputItems.length === 0) { notify('ပို့မည့်ပစ္စည်း အနည်းဆုံးတစ်မျိုး ရွေးပါ။'); return; }
+    if (batchMismatchWarnings.length && !window.confirm(`အောက်ပါပစ္စည်းများ၏ Batch စာရင်းကို Product Stock နဲ့ တိုက်စစ်ရန် လိုအပ်ပါတယ်။\n${batchMismatchWarnings.join('\n')}\n\nမပိုပို့နိုင်အောင် System က ကန့်သတ်ထားပါတယ်။ Audit မှတ်တမ်းတင်ပြီး ဆက်လုပ်မလား?`)) return;
     if (!window.confirm(`${sourceBranch.name} မှ ${destinationBranch.name} သို့ ပစ္စည်း ${inputItems.length} မျိုး ပို့မလား?\n\nပို့ပြီးတာနဲ့ Source Stock လျှော့ပါမယ်။ Destination Stock က Receiver လက်ခံပြီး Owner Approval လုပ်မှသာ တိုးပါမယ်။`)) return;
 
     setBusy(true);
+    const beforeState = usePosStore.getState();
+    window.dispatchEvent(new CustomEvent(BRANCH_SHIPMENT_CLOUD_COMMIT_STARTED, { detail: { uid: access.uid } }));
     try {
       const user = firebaseAuth?.currentUser;
       const shipment = dispatchShipment({
@@ -116,14 +222,45 @@ export function BranchShipmentManagementPage({ authorize, notify }: { authorize:
         requestId: requestId.current,
         actor: { uid: access.uid || user?.uid || '', email: access.email || user?.email || '', name: access.displayName || user?.displayName || user?.email || 'Owner' },
       });
-      if (!shipment) {
-        notify('ပစ္စည်းပို့မရပါ။ Source Stock၊ Expiry Batch၊ အရေအတွက်နဲ့ Branch ရွေးချယ်မှုကို စစ်ပါ။');
+      if (!shipment.ok) {
+        window.dispatchEvent(new CustomEvent(BRANCH_SHIPMENT_CLOUD_COMMIT_CANCELLED, { detail: { uid: access.uid } }));
+        notify(shipment.reason);
         return;
       }
-      requestId.current = newKey();
-      setLines([{ key: newKey(), productId: '', quantity: '1' }]);
-      setNote('');
-      notify(`${shipment.shipmentNo} ပို့ဆောင်စာရင်း ဖန်တီးပြီးပါပြီ။ ${destinationBranch.name} မှ လက်ခံပြီး Owner Approval လုပ်ရပါမယ်။`);
+      const savedShipment = shipment.shipment;
+      const afterState = usePosStore.getState();
+      try {
+        const result = await commitBranchShipmentToCloud({
+          uid: access.uid || '',
+          shipment: savedShipment,
+          beforeProducts: beforeState.products,
+          afterProducts: afterState.products,
+          beforeBatches: beforeState.stockBatches,
+          afterBatches: afterState.stockBatches,
+          activityLogs: afterState.activityLogs.filter((entry) => entry.entityId === savedShipment.id),
+        });
+        requestId.current = newKey();
+        setLines([{ key: newKey(), productId: '', quantity: '1' }]);
+        setNote('');
+        notify(result.alreadyCommitted
+          ? `${savedShipment.shipmentNo} ကို Firebase မှာ ရှိပြီးသားဖြစ်ကြောင်း အတည်ပြုပြီးပါပြီ။ ${destinationBranch.name} Cashier က လက်ခံနိုင်ပါပြီ။`
+          : `${savedShipment.shipmentNo} ကို Firebase Cloud မှာ အတည်ပြုသိမ်းပြီးပါပြီ။ ${destinationBranch.name} Cashier က လက်ခံနိုင်ပါပြီ။`);
+      } catch (cloudError) {
+        if (cloudError instanceof BranchShipmentCloudCommitUnknownError) {
+          // Do not leave an unverified local dispatch in the persistent store.
+          // If the server did commit, the Owner listener will pull the committed
+          // Source Stock + Shipment; if it did not, local data stays unchanged.
+          rollbackLocalShipment(beforeState.products, beforeState.stockBatches, savedShipment);
+          window.dispatchEvent(new CustomEvent(BRANCH_SHIPMENT_CLOUD_COMMIT_CANCELLED, { detail: { uid: access.uid } }));
+          setShipmentCommitUncertain(true);
+          notify(cloudError.message);
+          return;
+        }
+        rollbackLocalShipment(beforeState.products, beforeState.stockBatches, savedShipment);
+        window.dispatchEvent(new CustomEvent(BRANCH_SHIPMENT_CLOUD_COMMIT_CANCELLED, { detail: { uid: access.uid } }));
+        const message = cloudError instanceof Error ? cloudError.message : 'Firebase Cloud သိမ်းဆည်းမှု မအောင်မြင်ပါ။';
+        notify(`ပစ္စည်း မပို့ရသေးပါ။ Local Stock ကို မူလအတိုင်း ပြန်ထားပါတယ်။ ${message}`);
+      }
     } finally {
       setBusy(false);
     }
@@ -173,6 +310,13 @@ export function BranchShipmentManagementPage({ authorize, notify }: { authorize:
 
     <div className="panel form-panel shipment-form">
       <div className="panel-heading"><div className="panel-icon"><Send size={18} /></div><div><h3>ပစ္စည်းအများအပြား ပို့ရန်</h3><p>Shipment တစ်ခုထဲမှာ ပစ္စည်း ၅၀ မျိုးအထိ ထည့်နိုင်ပါတယ်။ Product/Barcode/ဈေးနှုန်းကို Source Branch ကနေ Snapshot ယူပါမယ်။</p></div></div>
+      <div className={`shipment-cloud-gate ${cloudReady ? 'shipment-cloud-ready' : 'shipment-cloud-blocked'}`} role="status">
+        {shipmentCommitUncertain
+          ? <><strong>ယခင် Shipment Cloud အတည်ပြုချက် မသေချာသေးပါ။</strong><p>Duplicate ကုန်ပို့မှု မဖြစ်စေရန် ပို့ခလုတ်ကို ခေတ္တပိတ်ထားပါတယ်။ Shipment History ကို စစ်ဆေးပြီး Page ကို Refresh လုပ်ပါ။</p></>
+          : !isFirebaseOwner ? <><strong>Firebase Owner Session ကို အတည်မပြုနိုင်သေးပါ။</strong><p>Profile → Firebase Business Account မှ Owner Account နဲ့ ပြန်ဝင်ပါ။ Owner Business Access UID နဲ့ Firebase Authentication UID တူညီရပါမယ်။ ပို့ရန်ခလုတ်ကိုနှိပ်လျှင် လိုအပ်တဲ့အချက်ကို ပြသပေးပါမယ်။</p></>
+            : !isOnline ? <><strong>Internet ချိတ်ဆက်မှု မရှိပါ။</strong><p>Offline အခြေအနေမှာ Shipment Dispatch မလုပ်နိုင်ပါ။ Internet ပြန်ချိတ်ပါ။</p></>
+              : <><strong>Firebase Owner Account ချိတ်ဆက်ထားပါတယ်။</strong><p>ပို့မည့် Product၊ Source Stock၊ Batch နဲ့ Shipment ကို Firebase Server Transaction ဖြင့် တစ်ပြိုင်နက် အတည်ပြုပြီးမှ ပို့မှုအောင်မြင်ကြောင်း ပြပါမယ်။ App-wide Auto Sync ({cloudStatus.state}) က ပို့ခလုတ်ကို မပိတ်တော့ပါ။</p></>}
+      </div>
       <div className="form-grid shipment-branch-grid">
         <label>ပို့မည့်ဆိုင်ခွဲ<select value={sourceBranchId} onChange={(event) => setSourceBranchId(event.target.value)}><option value="">ရွေးပါ</option>{activeBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>
         <label>လက်ခံမည့်ဆိုင်ခွဲ<select value={destinationBranchId} onChange={(event) => setDestinationBranchId(event.target.value)}><option value="">ရွေးပါ</option>{destinationOptions.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>
@@ -183,15 +327,15 @@ export function BranchShipmentManagementPage({ authorize, notify }: { authorize:
           const product = sourceProducts.find((entry) => entry.id === line.productId);
           return <div className="shipment-draft-row" key={line.key}>
             <span className="shipment-row-number">{index + 1}</span>
-            <label className="shipment-product-select">ပစ္စည်း<select value={line.productId} onChange={(event) => updateLine(line.key, { productId: event.target.value })}><option value="">ပစ္စည်းရွေးပါ</option>{sourceProducts.filter((entry) => !chosenIds.has(entry.id) || entry.id === line.productId).map((entry: Product) => <option key={entry.id} value={entry.id}>{entry.name} · လက်ကျန် {formatQuantity(entry.stock, quantityModeForProduct(entry))} {entry.unit}</option>)}</select></label>
+            <label className="shipment-product-select">ပစ္စည်း<select value={line.productId} onChange={(event) => updateLine(line.key, { productId: event.target.value })}><option value="">ပစ္စည်းရွေးပါ</option>{sourceProducts.filter((entry) => !chosenIds.has(entry.id) || entry.id === line.productId).map((entry: Product) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</select></label>
             <label className="shipment-qty-select">ပို့မည့်အရေအတွက်<input type="number" min={product ? quantityMin(quantityModeForProduct(product)) : '1'} step={product ? quantityMin(quantityModeForProduct(product)) : '1'} value={line.quantity} onChange={(event) => updateLine(line.key, { quantity: event.target.value })} /></label>
             <button className="small-action small-action-danger" type="button" title="ဒီစာကြောင်းဖယ်ရန်" onClick={() => removeLine(line.key)} disabled={busy}><Trash2 size={14} /></button>
-            {product && <div className="shipment-price-snapshot"><span>SKU: {product.sku || '—'}</span><span>Barcode: {product.barcode || '—'}</span><span>အရင်း {product.costPrice.toLocaleString('en-US')}</span><span>လက်လီ {product.retailPrice.toLocaleString('en-US')}</span><span>လက်ကား {product.wholesalePrice.toLocaleString('en-US')}</span></div>}
+            {product && <div className="shipment-price-snapshot"><strong>လက်ရှိ Stock: {formatQuantity(product.stock, quantityModeForProduct(product))} {product.unit || 'ခု'}</strong><span>SKU: {product.sku || '—'}</span><span>Barcode: {product.barcode || '—'}</span><span>အရင်း {product.costPrice.toLocaleString('en-US')}</span><span>လက်လီ {product.retailPrice.toLocaleString('en-US')}</span><span>လက်ကား {product.wholesalePrice.toLocaleString('en-US')}</span></div>}
           </div>;
         })}
       </div>
       <label>ပို့ဆောင်မှတ်ချက်<textarea rows={2} value={note} onChange={(event) => setNote(event.target.value)} placeholder="ကားနံပါတ်၊ ပို့ဆောင်သူ၊ အခြားမှတ်ချက်..." /></label>
-      <div className="shipment-form-footer"><small>အတည်ပြု ပို့ပြီးနောက် Source Stock မှ လျှော့မည်။ Destination မှာတော့ လက်ခံပြီး Owner Approve လုပ်မှသာ Stock ဝင်မည်။</small><button className="button button-primary" type="button" onClick={dispatch} disabled={busy || !sourceBranch || !destinationBranch || lines.every((line) => !line.productId)}><Send size={16} /> {busy ? 'လုပ်ဆောင်နေသည်...' : 'ပစ္စည်းစာရင်း ပို့မယ်'}</button></div>
+      <div className="shipment-form-footer"><small>လက်ရှိ Stock အရေအတွက်ကိုသာ ပြထားပါတယ်။ ပို့နိုင်သည့်အရေအတွက်နဲ့ ပို့ပြီးနောက် လက်ကျန်ကို Form မှာ မပြပါ။ အတွင်းပိုင်းမှာ Stock/Batch ကို စစ်ဆေးပြီး Firebase Transaction အောင်မြင်မှ Source Stock လျှော့မည်။ Destination Stock က Cashier လက်ခံပြီး Owner Approve လုပ်မှသာ တိုးမည်။</small><button className="button button-primary" type="button" onClick={dispatch} disabled={busy || !sourceBranch || !destinationBranch || lines.every((line) => !line.productId)}><Send size={16} /> {busy ? 'Cloud မှာ သိမ်းနေသည်...' : 'ပစ္စည်းစာရင်း ပို့မယ်'}</button></div>
     </div>
 
     <div className="section-heading shipment-history-heading"><div><h2>ပို့ဆောင်မှု / လက်ခံမှု မှတ်တမ်း</h2><p>{sortedShipments.length} shipments · Owner က လက်ခံမှုကို စစ်ဆေးအတည်ပြုနိုင်ပါတယ်။</p></div></div>

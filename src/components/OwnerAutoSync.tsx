@@ -5,6 +5,7 @@ import { firebaseAuth, firestore, FIREBASE_BUSINESS_ID } from '../lib/firebase';
 import { useBusinessAccess } from '../lib/businessAccess';
 import { usePosStore } from '../store/usePosStore';
 import { publishAutoSyncStatus } from '../lib/autoSyncStatus';
+import { BRANCH_SHIPMENT_CLOUD_COMMIT_CANCELLED, BRANCH_SHIPMENT_CLOUD_COMMIT_COMPLETED, BRANCH_SHIPMENT_CLOUD_COMMIT_STARTED } from '../lib/branchShipmentCloudCommit';
 import { recordFirestoreActivity } from '../lib/firestoreDiagnostics';
 import {
   branchRecordKinds,
@@ -30,8 +31,8 @@ const listenOptions = { includeMetadataChanges: true } as const;
 // Historical collections are synchronized incrementally. Product/catalog/stock
 // collections stay realtime because the checkout flow needs them immediately.
 const incrementalBranchKinds = new Set<BranchRecordKind>([
-  'sales', 'expenses', 'heldItems', 'customerPayments', 'purchases', 'supplierPayments',
-  'purchaseReturns', 'stockReceipts', 'stockTransfers', 'cashShifts', 'cashMovements', 'activityLogs',
+  'sales', 'expenses', 'cashierSettlements', 'heldItems', 'customerPayments', 'purchases', 'supplierPayments',
+  'purchaseReturns', 'stockReceipts', 'stockTransfers', 'stockShipments', 'cashShifts', 'cashMovements', 'activityLogs',
 ]);
 
 const cursorStorageKey = (uid: string, scope: string, branchId: string, kind: string) =>
@@ -127,6 +128,7 @@ export function OwnerAutoSyncProvider() {
     const sharedUnsubscribers = new Map<SharedRecordKind, () => void>();
     let localTimer: number | undefined;
     let remoteTimer: number | undefined;
+    let shipmentCommitInProgress = false;
     let tryBootstrapFromSnapshots: () => void = () => undefined;
 
     const coreListenersReady = () => ready.has('branches') && ready.has('meta')
@@ -266,6 +268,43 @@ export function OwnerAutoSyncProvider() {
       if (kind === 'local') localTimer = timer;
       else remoteTimer = timer;
     };
+
+    const eventUidMatches = (event: Event) => {
+      const detail = (event as CustomEvent<{ uid?: string }>).detail;
+      return detail?.uid === uid;
+    };
+    const onShipmentCommitStarted = (event: Event) => {
+      if (eventUidMatches(event)) shipmentCommitInProgress = true;
+    };
+    const onShipmentCommitCancelled = (event: Event) => {
+      if (!eventUidMatches(event)) return;
+      shipmentCommitInProgress = false;
+      if (isReady()) scheduleReconcile('remote');
+    };
+    const onShipmentCommitCompleted = (event: Event) => {
+      const detail = (event as CustomEvent<{ uid?: string; records?: SyncItem[] }>).detail;
+      if (detail?.uid !== uid || !Array.isArray(detail.records)) return;
+      // The dedicated transaction has already committed these exact records to
+      // Firestore. Feed them into the live reconciler and advance only their
+      // local baseline so Auto Sync will not try to write the same shipment again.
+      detail.records.forEach((item) => remoteItems.set(item.key, item));
+      const baseline = readManifest(uid);
+      if (baseline) {
+        const nextRecords = { ...baseline.records };
+        detail.records.forEach((item) => {
+          nextRecords[item.key] = {
+            scope: item.scope, kind: item.kind, id: item.id, branchId: item.branchId,
+            hash: hashPayload(item.payload),
+          };
+        });
+        saveManifest(uid, nextRecords);
+      }
+      shipmentCommitInProgress = false;
+      if (isReady()) scheduleReconcile('remote');
+    };
+    window.addEventListener(BRANCH_SHIPMENT_CLOUD_COMMIT_STARTED, onShipmentCommitStarted);
+    window.addEventListener(BRANCH_SHIPMENT_CLOUD_COMMIT_CANCELLED, onShipmentCommitCancelled);
+    window.addEventListener(BRANCH_SHIPMENT_CLOUD_COMMIT_COMPLETED, onShipmentCommitCompleted);
 
     tryBootstrapFromSnapshots = () => {
       if (disposed || !bootstrapping || bootstrapAttempted || !isBootstrapReady()) return;
@@ -503,15 +542,18 @@ export function OwnerAutoSyncProvider() {
     // modal state). Only business records included in buildLocalItems can
     // trigger a Cloud reconciliation.
     const localSyncFields = [
-      'branches', 'categories', 'products', 'sales', 'expenses', 'heldItems',
+      'branches', 'categories', 'products', 'sales', 'expenses', 'cashierSettlements', 'heldItems',
       'customerPayments', 'purchases', 'supplierPayments', 'purchaseReturns',
-      'stockBatches', 'stockReceipts', 'stockTransfers', 'cashShifts',
+      'stockBatches', 'stockReceipts', 'stockTransfers', 'stockShipments', 'stockUnitRegistries', 'cashShifts',
       'cashMovements', 'activityLogs', 'customers', 'suppliers', 'settings', 'ownerProfile',
     ] as const;
     const unsubscribeStore = usePosStore.subscribe((state, previousState) => {
-      if (applyingRemote || !isReady()) return;
+      if (applyingRemote || shipmentCommitInProgress || !isReady()) return;
       const businessDataChanged = localSyncFields.some((field) => state[field] !== previousState[field]);
-      if (businessDataChanged) scheduleReconcile('local');
+      if (businessDataChanged) {
+        publishAutoSyncStatus(uid, { state: 'connecting', message: 'ပစ္စည်း/ကုန်ပို့ ပြောင်းလဲမှုကို Firebase Cloud သို့ Sync လုပ်နေပါတယ်။ Cashier က လက်ခံနိုင်ရန် Sync ပြီးဆုံးသည်အထိ စောင့်ပါ။' });
+        scheduleReconcile('local');
+      }
     });
     let lastIncrementalRefreshAt = 0;
     let hiddenSince: number | null = null;
@@ -605,6 +647,9 @@ export function OwnerAutoSyncProvider() {
       window.removeEventListener('offline', onOffline);
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('minimart-cloud-sync-requested', onManualSyncRequested);
+      window.removeEventListener(BRANCH_SHIPMENT_CLOUD_COMMIT_STARTED, onShipmentCommitStarted);
+      window.removeEventListener(BRANCH_SHIPMENT_CLOUD_COMMIT_CANCELLED, onShipmentCommitCancelled);
+      window.removeEventListener(BRANCH_SHIPMENT_CLOUD_COMMIT_COMPLETED, onShipmentCommitCompleted);
       if (localTimer !== undefined) window.clearTimeout(localTimer);
       if (remoteTimer !== undefined) window.clearTimeout(remoteTimer);
     };

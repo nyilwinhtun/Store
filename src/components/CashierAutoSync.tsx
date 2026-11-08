@@ -12,10 +12,12 @@ import {
 } from 'firebase/firestore';
 import { firebaseAuth, firestore, FIREBASE_BUSINESS_ID } from '../lib/firebase';
 import { useBusinessAccess } from '../lib/businessAccess';
-import { usePosStore, type Branch, type Category, type Product, type Sale, type StockBatch, type BranchStockShipment } from '../store/usePosStore';
+import { usePosStore, type Branch, type Category, type Product, type Sale, type StockBatch, type BranchStockShipment, type Expense } from '../store/usePosStore';
+import type { CashierSettlementRecord } from '../types/finance';
 import { publishAutoSyncStatus } from '../lib/autoSyncStatus';
 import { recordFirestoreActivity } from '../lib/firestoreDiagnostics';
 import { flushCashierSaleQueue, listenForCashierQueue } from '../lib/cashierSalesSync';
+import { flushPendingCashierExpenses } from '../lib/cashierExpenseSync';
 
 const listenOptions = { includeMetadataChanges: true } as const;
 
@@ -55,7 +57,11 @@ export function CashierAutoSyncProvider() {
     let products: Product[] = [];
     let stockBatches: StockBatch[] = [];
     let stockShipments: BranchStockShipment[] = [];
+    const shipmentStatusById = new Map<string, BranchStockShipment['status']>();
+    let shipmentServerBaselineReady = false;
     let sales: Sale[] = [];
+    let ownExpenses: Expense[] = [];
+    let ownSettlements: CashierSettlementRecord[] = [];
     const ready = new Set<string>();
     const firstServerSnapshot = new Set<string>();
     const unsubscribers: Array<() => void> = [];
@@ -70,11 +76,26 @@ export function CashierAutoSyncProvider() {
       const mergedSales = new Map<string, Sale>();
       current.sales.filter((entry) => entry.branchId === branchId && entry.createdByUid === uid).forEach((entry) => mergedSales.set(entry.id, entry));
       sales.forEach((entry) => mergedSales.set(entry.id, entry));
+      const mergedOwnExpenses = new Map<string, Expense>();
+      current.expenses
+        .filter((entry) => entry.branchId === branchId && entry.createdByUid === uid && entry.cloudSyncStatus === 'pending')
+        .forEach((entry) => mergedOwnExpenses.set(entry.id, entry));
+      ownExpenses.forEach((entry) => mergedOwnExpenses.set(entry.id, { ...entry, cloudSyncStatus: 'synced', cloudSyncError: undefined }));
+      const mergedOwnSettlements = new Map<string, CashierSettlementRecord>();
+      current.cashierSettlements
+        .filter((entry) => entry.cashierUid === uid && entry.branchId === branchId && entry.cloudSyncStatus === 'pending')
+        .forEach((entry) => mergedOwnSettlements.set(entry.id, entry));
+      ownSettlements.forEach((entry) => mergedOwnSettlements.set(entry.id, { ...entry, cloudSyncStatus: 'synced', cloudSyncError: undefined }));
+      // Never retain another Cashier's private expense or settlement records on this device.
+      const otherExpenses = current.expenses.filter((entry) => entry.createdByUid === uid && entry.branchId !== branchId);
+      const otherSettlements = current.cashierSettlements.filter((entry) => entry.cashierUid === uid && entry.branchId !== branchId);
       current.importData({
         ...(branch ? { branches, activeBranchId: branchId } : {}),
         categories: replaceBranchRecords(current.categories, branchId, categories),
         products: replaceBranchRecords(current.products, branchId, products),
         stockBatches: replaceBranchRecords(current.stockBatches, branchId, stockBatches),
+        expenses: [...otherExpenses, ...mergedOwnExpenses.values()],
+        cashierSettlements: [...otherSettlements, ...mergedOwnSettlements.values()],
         ...(access.canReceiveStock ? { stockShipments: replaceBranchRecords(current.stockShipments, branchId, stockShipments) } : {}),
         sales: [
           ...current.sales.filter((entry) => entry.branchId !== branchId || entry.createdByUid !== uid),
@@ -92,15 +113,19 @@ export function CashierAutoSyncProvider() {
         recordFirestoreActivity(uid, 'read', `cashier-listener-changes:${key}`, changes);
       }
       ready.add(key);
-      if (ready.size >= 5) {
+      const requiredReadyCount = access.canReceiveStock ? 8 : 7;
+      if (ready.size >= requiredReadyCount) {
         publishAutoSyncStatus(uid, {
           state: 'synced',
-          message: `Cashier Cloud Catalog ချိတ်ဆက်ပြီးပါပြီ။ ${branch?.name || branchId} ဆိုင်ခွဲ၏ Product / Stock နဲ့ မိမိရဲ့ Sales ကို Sync လုပ်နေပါတယ်။`,
+          message: access.canReceiveStock
+            ? `Cashier Cloud ချိတ်ဆက်ပြီးပါပြီ။ ${branch?.name || branchId} ၏ Product / Stock / မိမိ Sales / Expense / မိမိရရှိငွေစာရင်း နဲ့ ကုန်လက်ခံ Shipment ကို Sync လုပ်နေပါတယ်။`
+            : `Cashier Cloud ချိတ်ဆက်ပြီးပါပြီ။ ${branch?.name || branchId} ၏ Product / Stock / မိမိ Sales / Expense / မိမိရရှိငွေစာရင်း ကို Sync လုပ်နေပါတယ်။ Stock Receiver ခွင့် မဖွင့်ထားပါ။`,
           savedAt: new Date().toISOString(),
         });
         if (!queueFlushStarted) {
           queueFlushStarted = true;
           void flushCashierSaleQueue(uid, branchId);
+          void flushPendingCashierExpenses(uid, branchId);
         }
       }
     };
@@ -122,20 +147,21 @@ export function CashierAutoSyncProvider() {
     }));
     unsubscribers.push(unsubscribeBranch);
 
-    const attachCollection = <T extends { id: string; branchId?: string }>(kind: 'categories' | 'products' | 'stockBatches' | 'stockShipments', apply: (items: T[]) => void) => {
+    const attachCollection = <T extends { id: string; branchId?: string }>(kind: 'categories' | 'products' | 'stockBatches' | 'stockShipments', apply: (items: T[], serverConfirmed: boolean, changedIds: string[]) => void) => {
       const ref = collection(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, kind);
       recordFirestoreActivity(uid, 'listenerStart', `cashier-listener:${kind}`, 1);
       const unsubscribe = onSnapshot(ref, listenOptions, (snapshot) => {
         if (disposed) return;
-        apply(decodeRecords<T>(snapshot, branchId));
+        const changed = snapshot.docChanges();
+        apply(decodeRecords<T>(snapshot, branchId), !snapshot.metadata.fromCache, changed.map((change) => change.doc.id));
         if (!snapshot.metadata.fromCache) {
-          const changes = snapshot.docChanges().filter((change) => change.type === 'added' || change.type === 'modified').length;
+          const changes = changed.filter((change) => change.type === 'added' || change.type === 'modified').length;
           recordSnapshot(kind, snapshot.size, changes, false);
         }
         applyToStore();
       }, (error) => publishAutoSyncStatus(uid, {
         state: error.code === 'unavailable' ? 'offline' : 'error',
-        message: error.code === 'permission-denied' ? `Cashier ${kind} Read Permission မရပါ။ Firestore Rules မှာ Stock Receiver ခွင့်ပါဝင်သော v3.0.0 Rules ကို Publish လုပ်ပါ။` : error.message,
+        message: error.code === 'permission-denied' ? (kind === 'stockShipments' ? 'ကုန်ပို့စာရင်းဖတ်ခွင့် မရပါ။ Owner က Team Access မှာ ဒီ Cashier အတွက် Stock Receiver ခွင့် ဖွင့်ထားပြီး Firestore Rules ကို နောက်ဆုံး Version အဖြစ် Publish လုပ်ထားကြောင်း စစ်ဆေးပါ။' : `Cashier ${kind} Read Permission မရပါ။ Firestore Rules ကို စစ်ဆေးပါ။`) : error.message,
       }));
       unsubscribers.push(unsubscribe);
     };
@@ -144,10 +170,81 @@ export function CashierAutoSyncProvider() {
     attachCollection<Product>('products', (items) => { products = items; });
     attachCollection<StockBatch>('stockBatches', (items) => { stockBatches = items; });
     if (access.canReceiveStock) {
-      attachCollection<BranchStockShipment>('stockShipments', (items) => {
+      attachCollection<BranchStockShipment>('stockShipments', (items, serverConfirmed, changedIds) => {
         stockShipments = items.filter((shipment) => shipment.toBranchId === branchId);
+        if (!serverConfirmed) return;
+        // The first server snapshot is the baseline, not a new-arrival event.
+        // Notify only when a shipment becomes dispatched after that baseline.
+        const byId = new Map(stockShipments.map((shipment) => [shipment.id, shipment]));
+        let arriving: BranchStockShipment[] = [];
+        if (!shipmentServerBaselineReady) {
+          // Pending shipments already waiting when the cashier signs in must
+          // also surface as a notification; they are not silently skipped.
+          arriving = stockShipments.filter((shipment) => shipment.status === 'dispatched');
+          stockShipments.forEach((shipment) => shipmentStatusById.set(shipment.id, shipment.status));
+          shipmentServerBaselineReady = true;
+        } else {
+          arriving = changedIds
+            .map((id) => byId.get(id))
+            .filter((shipment): shipment is BranchStockShipment => {
+              if (!shipment || shipment.status !== 'dispatched') return false;
+              return shipmentStatusById.get(shipment.id) !== 'dispatched';
+            });
+          stockShipments.forEach((shipment) => shipmentStatusById.set(shipment.id, shipment.status));
+        }
+        if (arriving.length) {
+          window.dispatchEvent(new CustomEvent('minimart-branch-shipment-notification', {
+            detail: {
+              count: arriving.length,
+              shipmentNos: arriving.slice(0, 5).map((shipment) => shipment.shipmentNo),
+              fromBranchName: arriving[0]?.fromBranchName || '',
+            },
+          }));
+        }
       });
     }
+
+    const ownExpensesQuery = query(
+      collection(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, 'expenses'),
+      where('payload.createdByUid', '==', uid),
+      limit(100),
+    );
+    recordFirestoreActivity(uid, 'listenerStart', 'cashier-listener:own-expenses', 1);
+    const unsubscribeExpenses = onSnapshot(ownExpensesQuery, listenOptions, (snapshot) => {
+      if (disposed) return;
+      ownExpenses = decodeRecords<Expense>(snapshot, branchId).map((expense) => ({ ...expense, cloudSyncStatus: 'synced', cloudSyncError: undefined }));
+      if (!snapshot.metadata.fromCache) {
+        const changes = snapshot.docChanges().filter((change) => change.type === 'added' || change.type === 'modified').length;
+        recordSnapshot('own-expenses', snapshot.size, changes, false);
+      }
+      applyToStore();
+    }, (error) => publishAutoSyncStatus(uid, {
+      state: error.code === 'unavailable' ? 'offline' : 'error',
+      message: error.code === 'permission-denied' ? 'မိမိ၏ Expense ကို Cloud မှ ဖတ်ခွင့်မရပါ။ Firestore Rules အသစ်ကို Publish လုပ်ထားကြောင်း စစ်ဆေးပါ။' : error.message,
+    }));
+    unsubscribers.push(unsubscribeExpenses);
+
+    const ownSettlementsQuery = query(
+      collection(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, 'cashierSettlements'),
+      where('payload.cashierUid', '==', uid),
+      limit(100),
+    );
+    recordFirestoreActivity(uid, 'listenerStart', 'cashier-listener:own-settlements', 1);
+    const unsubscribeSettlements = onSnapshot(ownSettlementsQuery, listenOptions, (snapshot) => {
+      if (disposed) return;
+      ownSettlements = decodeRecords<CashierSettlementRecord>(snapshot, branchId);
+      if (!snapshot.metadata.fromCache) {
+        const changes = snapshot.docChanges().filter((change) => change.type === 'added' || change.type === 'modified').length;
+        recordSnapshot('own-settlements', snapshot.size, changes, false);
+      }
+      applyToStore();
+    }, (error) => publishAutoSyncStatus(uid, {
+      state: error.code === 'unavailable' ? 'offline' : 'error',
+      message: error.code === 'permission-denied'
+        ? 'မိမိရရှိငွေစာရင်း ဖတ်ခွင့်မရပါ။ Firestore Rules ထဲက cashierSettlements Read Rule ကို Publish လုပ်ထားကြောင်း စစ်ဆေးပါ။'
+        : error.message,
+    }));
+    unsubscribers.push(unsubscribeSettlements);
 
     const ownSalesQuery = query(
       collection(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, 'sales'),
@@ -169,11 +266,11 @@ export function CashierAutoSyncProvider() {
     }));
     unsubscribers.push(unsubscribeSales);
 
-    const onOnline = () => { void flushCashierSaleQueue(uid, branchId); };
+    const onOnline = () => { void flushCashierSaleQueue(uid, branchId); void flushPendingCashierExpenses(uid, branchId); };
     window.addEventListener('online', onOnline);
     const unlistenQueue = listenForCashierQueue(uid, branchId, () => { void flushCashierSaleQueue(uid, branchId); });
 
-    publishAutoSyncStatus(uid, { state: 'connecting', message: access.canReceiveStock ? 'Cashier Catalog / Stock / Sales နဲ့ Assigned Stock Receiving ကို Cloud မှ ချိတ်ဆက်နေပါတယ်။' : 'Cashier အတွက် Branch Catalog / Stock / မိမိ Sales ကို Cloud မှ ချိတ်ဆက်နေပါတယ်။' });
+    publishAutoSyncStatus(uid, { state: 'connecting', message: access.canReceiveStock ? 'Cashier Catalog / Stock / မိမိ Sales / Expense / ရရှိငွေစာရင်း / ကုန်ပို့လက်ခံစာရင်းကို Cloud မှ ချိတ်ဆက်နေပါတယ်။' : 'Cashier အတွက် Branch Catalog / Stock / မိမိ Sales / Expense / ရရှိငွေစာရင်းကို Cloud မှ ချိတ်ဆက်နေပါတယ်။ Stock Receiver ခွင့် မဖွင့်ထားပါ။' });
 
     return () => {
       disposed = true;
