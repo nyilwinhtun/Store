@@ -1667,11 +1667,29 @@ export const usePosStore = create<PosState>()(
         // Never merge a legacy quantity-only shipment into a branch product already
         // tracked by physical sticker units. That would create unbarcoded sellable stock.
         for (const item of shipment.items) {
-          const destinationMatches = state.products.filter((product) => product.branchId === shipment.toBranchId
-            && ((!!item.sku && normalizedName(product.sku) === normalizedName(item.sku))
-              || (!!item.barcode && normalizedName(product.barcode) === normalizedName(item.barcode))
-              || (normalizedName(product.name) === normalizedName(item.productName)
-                && normalizedName(product.unit || 'ခု') === normalizedName(item.unit || 'ခု'))));
+          const destinationMatches = state.products.filter((product) =>
+            product.branchId === shipment.toBranchId &&
+            (
+              (
+                typeof item.sku === 'string' &&
+                item.sku.trim() !== '' &&
+                typeof product.sku === 'string' &&
+                product.sku.trim() !== '' &&
+                normalizedName(product.sku) === normalizedName(item.sku)
+              ) ||
+              (
+                typeof item.barcode === 'string' &&
+                item.barcode.trim() !== '' &&
+                typeof product.barcode === 'string' &&
+                product.barcode.trim() !== '' &&
+                normalizedName(product.barcode) === normalizedName(item.barcode)
+              ) ||
+              (
+                normalizedName(product.name) === normalizedName(item.productName) &&
+                normalizedName(product.unit || 'ခု') === normalizedName(item.unit || 'ခု')
+              )
+            )
+          );
           if (destinationMatches.some((product) => state.stockUnitRegistries.some((registry) => registry.branchId === shipment.toBranchId && registry.productId === product.id && registry.units.length > 0))) return false;
         }
         const destinationBranch = state.branches.find((branch) => branch.id === shipment.toBranchId && branch.status === 'active');
