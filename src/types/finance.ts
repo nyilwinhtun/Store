@@ -1,46 +1,26 @@
-/**
- * v3.1.1 finance contracts for Cashier Expense Reporting and Cashier
- * Cash/KPay Settlement. Branch payment-account management remains a later phase.
- */
+/** Finance data contracts for Cashier Expense Reporting, Settlement, and Branch cashbook. */
 
 export type FinancePaymentMethod = 'cash' | 'kpay';
 
-export type CashierExpenseFundingSource =
-  | 'cashier-personal'
-  | 'branch-cash'
-  | 'branch-kpay';
+export type CashierExpenseFundingSource = 'cashier-personal' | 'branch-cash' | 'branch-kpay';
 
-/** Legacy approval values are retained only so older saved records remain readable.
- * New Cashier expenses are reports of spending already made and never wait for approval.
- */
-export type CashierExpenseApprovalStatus =
-  | 'not-required'
-  | 'pending'
-  | 'approved'
-  | 'rejected';
-
+/** Legacy values remain readable. New cashier expenses are reporting-only and never require approval. */
+export type CashierExpenseApprovalStatus = 'not-required' | 'pending' | 'approved' | 'rejected';
 export type CashierExpenseReviewStatus = 'submitted' | 'reviewed';
 
-/** Optional, backward-compatible fields for the existing branch-scoped Expense record. */
 export interface CashierExpenseFields {
-  /** Firebase Auth UID of the Cashier who submitted/owns this expense. */
   createdByUid?: string;
   createdByEmail?: string;
   createdByName?: string;
   createdByRole?: 'owner' | 'cashier';
-  /** Who funded the expense; separate from the method used to reimburse the Cashier. */
   fundedBy?: CashierExpenseFundingSource;
-  /** How the expense itself was paid. */
   paymentMethod?: FinancePaymentMethod;
-  /** Legacy field; new expense submissions always use not-required. */
   approvalStatus?: CashierExpenseApprovalStatus;
-  /** Owner acknowledgement only. It never blocks the Cashier from spending. */
   reviewStatus?: CashierExpenseReviewStatus;
   submittedAt?: string;
   reviewedAt?: string;
   reviewedByUid?: string;
   reviewedByName?: string;
-  /** Set when this personal expense has been reimbursed in full. */
   reimbursedBySettlementId?: string;
   approvedAt?: string;
   approvedByUid?: string;
@@ -54,13 +34,8 @@ export interface CashierExpenseFields {
 }
 
 export type CashierSettlementStatus = 'paid' | 'voided';
-
 export type CashierSettlementPurpose = 'expense_reimbursement' | 'cash_advance' | 'salary' | 'other';
 
-/**
- * Cash/KPay money paid by the Owner to a specific Cashier.
- * A settlement is recorded only after the Owner has actually paid the Cashier.
- */
 export interface CashierSettlementRecord {
   id: string;
   branchId: string;
@@ -78,7 +53,6 @@ export interface CashierSettlementRecord {
   transactionReference?: string;
   receiptImageRef?: string;
   note?: string;
-  /** Device-local sync diagnostics; stripped before writing to Firestore. */
   cloudSyncStatus?: 'pending' | 'synced';
   cloudSyncError?: string;
   createdAt: string;
@@ -97,7 +71,7 @@ export type CashierSettlementCreateInput = Pick<CashierSettlementRecord,
   | 'senderAccountNumber' | 'relatedExpenseId' | 'transactionReference' | 'note'
 >;
 
-/** Branch-owned KPay account for payments received by that branch. */
+/** Branch-owned KPay account is stored inside the Branch Settings document. */
 export interface BranchPaymentAccount {
   id: string;
   branchId: string;
@@ -111,25 +85,89 @@ export interface BranchPaymentAccount {
   updatedByUid: string;
 }
 
-/** Owner-managed per-Cashier expense policy. The threshold unit needs confirmation. */
-export interface CashierExpensePolicy {
+export type CashierExpenseReviewPolicy = {
   cashierUid: string;
   branchId: string;
   enabled: boolean;
-  /** Leave undefined until Owner selects per-transaction or period-based rules. */
   maxPerTransaction?: number;
   dailyLimit?: number;
   weeklyLimit?: number;
   monthlyLimit?: number;
   updatedAt: string;
   updatedByUid: string;
-}
+};
 
-/** FCM payload contract; shipment data remains the source of truth in Firestore. */
-export interface BranchShipmentPushPayload {
+export type BranchShipmentPushPayload = {
   type: 'branch-stock-shipment';
   event: 'dispatched' | 'received' | 'approved';
   businessId: string;
   branchId: string;
   shipmentId: string;
+};
+
+export type BranchFinanceChannel = 'cash' | 'kpay';
+export type BranchFinanceDirection = 'in' | 'out';
+export type BranchFinanceCategory = 'manual' | 'cashier-settlement' | 'expense' | 'sale' | 'credit-collection' | 'supplier-payment' | 'advance-return' | 'other';
+
+/** Owner-entered non-POS cashbook entry. Other activity is derived from source records to avoid double-counting. */
+export interface BranchFinanceLedgerEntry {
+  id: string;
+  branchId: string;
+  channel: BranchFinanceChannel;
+  direction: BranchFinanceDirection;
+  category: BranchFinanceCategory;
+  amount: number;
+  date: string;
+  note: string;
+  transactionReference?: string;
+  createdAt: string;
+  createdByUid: string;
+  createdByName: string;
 }
+
+export type CashierAdvanceReconciliationKind = 'expense-applied' | 'cash-returned';
+
+export interface CashierAdvanceReconciliationRecord {
+  id: string;
+  branchId: string;
+  advanceSettlementId: string;
+  cashierUid: string;
+  cashierName: string;
+  kind: CashierAdvanceReconciliationKind;
+  amount: number;
+  channel: BranchFinanceChannel;
+  relatedExpenseId?: string;
+  transactionReference?: string;
+  note: string;
+  createdAt: string;
+  createdByUid: string;
+  createdByName: string;
+}
+
+export type BranchFinanceLedgerEntryInput = Pick<BranchFinanceLedgerEntry,
+  'channel' | 'direction' | 'category' | 'amount' | 'note' | 'transactionReference'
+> & { createdByUid: string; createdByName: string };
+
+export type CashierAdvanceReconciliationInput = Pick<CashierAdvanceReconciliationRecord,
+  'advanceSettlementId' | 'kind' | 'amount' | 'channel' | 'relatedExpenseId' | 'transactionReference' | 'note'
+> & { createdByUid: string; createdByName: string };
+
+export interface BranchFinanceReconciliationRecord {
+  id: string;
+  branchId: string;
+  businessDate: string;
+  channel: BranchFinanceChannel;
+  expectedBalance: number;
+  actualBalance: number;
+  variance: number;
+  totalIn: number;
+  totalOut: number;
+  note: string;
+  createdAt: string;
+  createdByUid: string;
+  createdByName: string;
+}
+
+export type BranchFinanceReconciliationInput = Pick<BranchFinanceReconciliationRecord,
+  'businessDate' | 'channel' | 'expectedBalance' | 'actualBalance' | 'totalIn' | 'totalOut' | 'note'
+> & { createdByUid: string; createdByName: string };

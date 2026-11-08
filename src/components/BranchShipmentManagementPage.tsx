@@ -31,13 +31,26 @@ function rollbackLocalShipment(beforeProducts: Product[], beforeBatches: StockBa
   }));
 }
 
-function ShipmentStatus({ status }: { status: BranchStockShipment['status'] }) {
+function shipmentHasException(shipment: BranchStockShipment): boolean {
+  if (shipment.status !== 'received') return false;
+  return shipment.items.some((item) => {
+    const received = shipment.receivedItems?.find((entry) => entry.sourceProductId === item.sourceProductId);
+    return !received || received.receivedQuantity !== item.quantity || received.damagedQuantity > 0;
+  });
+}
+
+function ShipmentStatus({ shipment }: { shipment: BranchStockShipment }) {
+  const isException = shipmentHasException(shipment);
   const config = {
     dispatched: { label: 'ပို့ပြီး · လက်ခံရန်', className: 'tag-info' },
-    received: { label: 'လက်ခံပြီး · Owner Approval စောင့်နေ', className: 'tag-warn' },
-    approved: { label: 'အတည်ပြုပြီး · Stock ဝင်ပြီး', className: 'tag-success' },
+    received: isException
+      ? { label: 'ကွာခြားချက်ရှိ · Owner Review', className: 'tag-warn' }
+      : { label: 'အရေအတွက်ကိုက်ညီ · Stock Commit စောင့်နေ', className: 'tag-info' },
+    approved: shipment.completionMode === 'auto'
+      ? { label: 'ပုံမှန်လက်ခံ · Auto Complete', className: 'tag-success' }
+      : { label: 'Owner အတည်ပြုပြီး · Stock ဝင်ပြီး', className: 'tag-success' },
     cancelled: { label: 'ပယ်ဖျက်ပြီး', className: 'tag-warn' },
-  }[status];
+  }[shipment.status];
   return <span className={`tag ${config.className}`}>{config.label}</span>;
 }
 
@@ -51,7 +64,7 @@ function ShipmentHistoryCard({ shipment, onApprove, onCancel, busy }: {
   return <article className="shipment-card">
     <div className="shipment-card-head">
       <div><strong>{shipment.shipmentNo}</strong><small>{shipment.fromBranchName} → {shipment.toBranchName} · {dateLabel(shipment.date)}</small></div>
-      <ShipmentStatus status={shipment.status} />
+      <ShipmentStatus shipment={shipment} />
     </div>
     <div className="shipment-history-meta"><span>{shipment.items.length} မျိုး</span><span>{itemsSummary}</span><span>ပို့သူ: {shipment.dispatchedByName || shipment.dispatchedByEmail || 'Owner'}</span></div>
     {shipment.note && <p className="shipment-note">မှတ်ချက်: {shipment.note}</p>}
@@ -65,9 +78,9 @@ function ShipmentHistoryCard({ shipment, onApprove, onCancel, busy }: {
         </div>;
       })}
     </div>
-    {shipment.status === 'received' && <div className="shipment-receipt-review"><div><strong>လက်ခံသူ: {shipment.receivedByName || shipment.receivedByEmail || 'Receiver'}</strong><small>{shipment.receivedAt ? dateLabel(shipment.receivedAt) : ''} · {shipment.receiverNote || 'မှတ်ချက်မရှိ'}</small></div><button className="button button-primary" type="button" onClick={() => onApprove(shipment)} disabled={busy}><CheckCircle2 size={15} /> Owner Approval လုပ်မယ်</button></div>}
+    {shipment.status === 'received' && <div className="shipment-receipt-review"><div><strong>{shipmentHasException(shipment) ? 'Exception စစ်ဆေးရန်' : 'ပုံမှန်လက်ခံမှု · အရေအတွက်ကိုက်ညီ'}</strong><small>လက်ခံသူ: {shipment.receivedByName || shipment.receivedByEmail || 'Receiver'} · {shipment.receivedAt ? dateLabel(shipment.receivedAt) : ''} · {shipment.receiverNote || 'မှတ်ချက်မရှိ'}</small></div><button className="button button-primary" type="button" onClick={() => onApprove(shipment)} disabled={busy}><CheckCircle2 size={15} /> {shipmentHasException(shipment) ? 'Exception အတည်ပြုရန်' : 'Stock ထည့်သွင်းရန်'}</button></div>}
     {shipment.status === 'dispatched' && <div className="shipment-receipt-review"><small>ပစ္စည်းလက်ခံသူက မအတည်ပြုရသေးပါ။ ဒီအခြေအနေမှာ Destination Stock မတိုးသေးပါ။</small><button className="button button-outline" type="button" onClick={() => onCancel(shipment)} disabled={busy}><XCircle size={15} /> ပို့မှု ပယ်ဖျက်ရန်</button></div>}
-    {shipment.status === 'approved' && <div className="shipment-status-note shipment-success"><CheckCircle2 size={15} /> Owner အတည်ပြုပြီး {shipment.toBranchName} Branch Stock ထဲ ထည့်သွင်းပြီးပါပြီ။ Approved by {shipment.approvedByName || 'Owner'}.</div>}
+    {shipment.status === 'approved' && <div className="shipment-status-note shipment-success"><CheckCircle2 size={15} /> {shipment.completionMode === 'auto' ? `လက်ခံသူ ${shipment.approvedByName || shipment.receivedByName || 'Cashier'} က အရေအတွက်အပြည့် အတည်ပြုပြီး ${shipment.toBranchName} Stock ထဲ အလိုအလျောက်ဝင်သွားပါပြီ။` : `Owner အတည်ပြုပြီး ${shipment.toBranchName} Branch Stock ထဲ ထည့်သွင်းပြီးပါပြီ။ Approved by ${shipment.approvedByName || 'Owner'}.`}</div>}
     {shipment.status === 'cancelled' && <div className="shipment-status-note"><XCircle size={15} /> ပယ်ဖျက်ထားသည်။ {shipment.cancellationNote || ''}</div>}
   </article>;
 }
@@ -207,7 +220,7 @@ export function BranchShipmentManagementPage({ authorize, notify }: { authorize:
     }
     if (inputItems.length === 0) { notify('ပို့မည့်ပစ္စည်း အနည်းဆုံးတစ်မျိုး ရွေးပါ။'); return; }
     if (batchMismatchWarnings.length && !window.confirm(`အောက်ပါပစ္စည်းများ၏ Batch စာရင်းကို Product Stock နဲ့ တိုက်စစ်ရန် လိုအပ်ပါတယ်။\n${batchMismatchWarnings.join('\n')}\n\nမပိုပို့နိုင်အောင် System က ကန့်သတ်ထားပါတယ်။ Audit မှတ်တမ်းတင်ပြီး ဆက်လုပ်မလား?`)) return;
-    if (!window.confirm(`${sourceBranch.name} မှ ${destinationBranch.name} သို့ ပစ္စည်း ${inputItems.length} မျိုး ပို့မလား?\n\nပို့ပြီးတာနဲ့ Source Stock လျှော့ပါမယ်။ Destination Stock က Receiver လက်ခံပြီး Owner Approval လုပ်မှသာ တိုးပါမယ်။`)) return;
+    if (!window.confirm(`${sourceBranch.name} မှ ${destinationBranch.name} သို့ ပစ္စည်း ${inputItems.length} မျိုး ပို့မလား?\n\nပို့ပြီးတာနဲ့ Source Stock လျှော့ပါမယ်။ Destination Stock က Receiver လက်ခံမှု အပြည့်ဖြစ်မှ Auto Complete ဖြစ်မယ်။ ကွာခြားချက်ရှိမှ Owner Review လုပ်ပါမယ်။`)) return;
 
     setBusy(true);
     const beforeState = usePosStore.getState();
@@ -304,9 +317,18 @@ export function BranchShipmentManagementPage({ authorize, notify }: { authorize:
   };
 
   const sortedShipments = [...shipments].sort((a, b) => b.date.localeCompare(a.date));
+  const awaitingReceiptCount = sortedShipments.filter((shipment) => shipment.status === 'dispatched').length;
+  const matchedReceiptCount = sortedShipments.filter((shipment) => shipment.status === 'received' && !shipmentHasException(shipment)).length;
+  const exceptionCount = sortedShipments.filter((shipment) => shipment.status === 'received' && shipmentHasException(shipment)).length;
   return <section className="page-stack shipment-management">
     <div className="section-heading"><div><h2>Central Inventory · Branch Receiving</h2><p>Owner က ပစ္စည်းနဲ့ ဈေးနှုန်းသတ်မှတ်ပြီး ဆိုင်ခွဲသို့ စာရင်းလိုက် ပို့နိုင်ပါတယ်။</p></div><span className="tag tag-success">Owner Only</span></div>
-    <div className="shipment-info-banner"><PackagePlus size={19} /><div><strong>ပစ္စည်းပို့ခြင်းနှင့် လက်ခံခြင်း</strong><p>ပို့ပြီးချိန် Source Stock လျှော့မယ်။ Receiver က အမှန်တကယ်ရောက်ရှိမှုကို မှတ်တမ်းတင်မယ်။ Owner Approval ပြီးမှ Destination Stock တိုးမယ်။</p></div></div>
+    <div className="shipment-info-banner"><PackagePlus size={19} /><div><strong>ပစ္စည်းပို့ခြင်းနှင့် လက်ခံခြင်း</strong><p>ပို့ပြီးချိန် Source Stock လျှော့မယ်။ Receiver က အမှန်တကယ်ရောက်ရှိမှုကို မှတ်တမ်းတင်မယ်။ အရေအတွက်ကိုက်ညီမှုနဲ့ Exception ကို သီးခြားခွဲပြမယ်။ လက်ရှိ Cloud Commit စည်းမျဉ်းအရ Destination Stock ထည့်သွင်းမှုမှာ Owner Commit ကို ဆက်လက်လိုအပ်နေသေးပါတယ်။</p></div></div>
+
+    <div className="shipment-quick-stats">
+      <div className="shipment-quick-stat"><small>လက်ခံရန်ကျန်</small><strong>{awaitingReceiptCount}</strong></div>
+      <div className="shipment-quick-stat"><small>အရေအတွက်ကိုက်ညီ</small><strong>{matchedReceiptCount}</strong></div>
+      <div className="shipment-quick-stat shipment-quick-stat-warning"><small>Owner Review လိုအပ်</small><strong>{exceptionCount}</strong></div>
+    </div>
 
     <div className="panel form-panel shipment-form">
       <div className="panel-heading"><div className="panel-icon"><Send size={18} /></div><div><h3>ပစ္စည်းအများအပြား ပို့ရန်</h3><p>Shipment တစ်ခုထဲမှာ ပစ္စည်း ၅၀ မျိုးအထိ ထည့်နိုင်ပါတယ်။ Product/Barcode/ဈေးနှုန်းကို Source Branch ကနေ Snapshot ယူပါမယ်။</p></div></div>

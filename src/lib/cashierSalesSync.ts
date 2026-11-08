@@ -7,7 +7,7 @@ import {
 import { firebaseConfig, firestore, FIREBASE_BUSINESS_ID } from './firebase';
 import { recordFirestoreActivity } from './firestoreDiagnostics';
 import { cleanQuantity, quantityModeForProduct } from './quantity';
-import type { Product, Sale } from '../store/usePosStore';
+import type { Product, Sale, StockUnitRegistry } from '../store/usePosStore';
 
 export type CashierSaleQueueEntry = {
   sale: Sale;
@@ -82,6 +82,11 @@ function batchRef(branchId: string, batchId: string): DocumentReference<Document
   return doc(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, 'stockBatches', batchId);
 }
 
+function stockUnitRegistryRef(branchId: string, registryId: string): DocumentReference<DocumentData> {
+  if (!firestore) throw new Error('Firebase Firestore မချိတ်ဆက်ရသေးပါ။');
+  return doc(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, 'stockUnitRegistries', registryId);
+}
+
 /**
  * Commit a Cashier sale and its stock deductions atomically. A stable sale ID
  * is the idempotency key: replays return success without decrementing stock twice.
@@ -95,6 +100,15 @@ export async function commitCashierSale(sale: Sale, uid: string, branchId: strin
   const productDeltas = new Map<string, number>();
   const batchDeltas = new Map<string, number>();
   const itemModes = new Map<string, Product['quantityMode']>();
+  const unitSelectionsByRegistry = new Map<string, Map<string, { productId: string; barcode: string }>>();
+  for (const item of sale.items) {
+    for (const selection of item.stockUnitSelections || []) {
+      const selected = unitSelectionsByRegistry.get(selection.registryId) || new Map<string, { productId: string; barcode: string }>();
+      if (selected.has(selection.unitId)) throw new Error(`Barcode Unit တစ်ခုကို Sale ထဲမှာ ထပ်ထည့်ထားပါတယ်: ${selection.barcode}`);
+      selected.set(selection.unitId, { productId: item.productId, barcode: selection.barcode });
+      unitSelectionsByRegistry.set(selection.registryId, selected);
+    }
+  }
   for (const item of sale.items) {
     if (!Number.isFinite(item.quantity) || item.quantity <= 0) throw new Error('ပစ္စည်းအရေအတွက် မမှန်ကန်ပါ။');
     productDeltas.set(item.productId, (productDeltas.get(item.productId) || 0) + item.quantity);
@@ -123,6 +137,7 @@ export async function commitCashierSale(sale: Sale, uid: string, branchId: strin
   const auditRef = doc(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, 'auditEvents', auditId);
   const productRefs = new Map([...productDeltas.keys()].map((id) => [id, productRef(branchId, id)]));
   const batchRefs = new Map([...batchDeltas.keys()].map((id) => [id, batchRef(branchId, id)]));
+  const unitRegistryRefs = new Map([...unitSelectionsByRegistry.keys()].map((id) => [id, stockUnitRegistryRef(branchId, id)]));
   const sharedCustomerRef = sale.paymentMethod === 'Credit' && sale.customerId
     ? doc(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'shared', 'customers', 'records', sale.customerId)
     : null;
@@ -141,6 +156,7 @@ export async function commitCashierSale(sale: Sale, uid: string, branchId: strin
     batchDeltas: batchDeltaObject,
     stockLines,
     batchLines,
+    stockUnitRegistryIds: [...unitSelectionsByRegistry.keys()],
     cashierSyncVersion: 1,
   };
 
@@ -166,10 +182,12 @@ export async function commitCashierSale(sale: Sale, uid: string, branchId: strin
 
     const productEntries = [...productRefs.entries()];
     const batchEntries = [...batchRefs.entries()];
+    const unitRegistryEntries = [...unitRegistryRefs.entries()];
     const productSnapshots = await Promise.all(productEntries.map(([, ref]) => transaction.get(ref)));
     const batchSnapshots = await Promise.all(batchEntries.map(([, ref]) => transaction.get(ref)));
+    const unitRegistrySnapshots = await Promise.all(unitRegistryEntries.map(([, ref]) => transaction.get(ref)));
     const customerSnapshot = sharedCustomerRef ? await transaction.get(sharedCustomerRef) : null;
-    readsAcrossAttempts += productSnapshots.length + batchSnapshots.length + (customerSnapshot ? 1 : 0);
+    readsAcrossAttempts += productSnapshots.length + batchSnapshots.length + unitRegistrySnapshots.length + (customerSnapshot ? 1 : 0);
 
     const productUpdates: Array<{ ref: DocumentReference<DocumentData>; payload: Record<string, unknown> }> = [];
     for (let index = 0; index < productEntries.length; index += 1) {
@@ -212,12 +230,52 @@ export async function commitCashierSale(sale: Sale, uid: string, branchId: strin
       batchUpdates.push({ ref, payload: { ...currentPayload, quantity: cleanQuantity(Math.max(0, currentQuantity - delta), quantityModeForProduct(modeProduct)) } });
     }
 
-    // All reads are complete. The following writes commit together or not at all.
+    const unitRegistryUpdates: Array<{ ref: DocumentReference<DocumentData>; payload: StockUnitRegistry }> = [];
+    for (let index = 0; index < unitRegistryEntries.length; index += 1) {
+      const [registryId, ref] = unitRegistryEntries[index];
+      const snapshot = unitRegistrySnapshots[index];
+      if (!snapshot.exists() || snapshot.data().deleted === true || snapshot.data().kind !== 'stockUnitRegistries'
+        || snapshot.data().branchId !== branchId || !snapshot.data().payload || typeof snapshot.data().payload !== 'object') {
+        const error = new Error(`Cloud Barcode Registry မတွေ့ပါ: ${registryId}`);
+        (error as Error & { code?: string }).code = 'failed-precondition';
+        throw error;
+      }
+      const currentPayload = snapshot.data().payload as StockUnitRegistry;
+      const selected = unitSelectionsByRegistry.get(registryId);
+      if (!selected || currentPayload.branchId !== branchId || !Array.isArray(currentPayload.units)) {
+        const error = new Error(`Barcode Registry အချက်အလက် မကိုက်ညီပါ: ${registryId}`);
+        (error as Error & { code?: string }).code = 'failed-precondition';
+        throw error;
+      }
+      const selectedIds = new Set(selected.keys());
+      let found = 0;
+      const nextUnits = currentPayload.units.map((unit) => {
+        const expected = selected.get(unit.id);
+        if (!expected) return unit;
+        found += 1;
+        if (currentPayload.productId !== expected.productId || unit.barcode.trim().toUpperCase() !== expected.barcode.trim().toUpperCase() || unit.status !== 'in_stock') {
+          const error = new Error(`ဒီ Barcode ကို ရောင်းချလို့မရတော့ပါ: ${unit.barcode} · Status: ${unit.status}`);
+          (error as Error & { code?: string }).code = 'failed-precondition';
+          throw error;
+        }
+        return { ...unit, status: 'sold' as const, saleId: sale.id, soldAt: updatedAt, soldByUid: uid };
+      });
+      if (found !== selectedIds.size) {
+        const error = new Error(`Barcode Unit တချို့ကို Cloud Registry မှာ မတွေ့ပါ: ${registryId}`);
+        (error as Error & { code?: string }).code = 'failed-precondition';
+        throw error;
+      }
+      unitRegistryUpdates.push({ ref, payload: { ...currentPayload, units: nextUnits, updatedAt, updatedByUid: uid } });
+    }
+
+    // All reads are complete. Sale, product/batch stock and unit Barcode state
+    // are committed together, or none of them are committed.
     const wrapperBase = { scope: 'branchRecord', branchId, deleted: false, updatedAt, updatedBy: uid };
     productUpdates.forEach(({ ref, payload }) => transaction.update(ref, { ...wrapperBase, kind: 'products', payload, sourceSaleId: sale.id }));
     batchUpdates.forEach(({ ref, payload }) => transaction.update(ref, { ...wrapperBase, kind: 'stockBatches', payload, sourceSaleId: sale.id }));
+    unitRegistryUpdates.forEach(({ ref, payload }) => transaction.update(ref, { ...wrapperBase, kind: 'stockUnitRegistries', payload, sourceSaleId: sale.id }));
     transaction.set(saleRef, { ...wrapperBase, kind: 'sales', payload: cloudSale });
-    writesCommitted = productUpdates.length + batchUpdates.length + 1;
+    writesCommitted = productUpdates.length + batchUpdates.length + unitRegistryUpdates.length + 1;
 
     if (sharedCustomerRef && !customerSnapshot?.exists() && sale.customerSnapshot) {
       transaction.set(sharedCustomerRef, {
@@ -247,6 +305,7 @@ export async function commitCashierSale(sale: Sale, uid: string, branchId: strin
     branchId,
     productCount: productDeltas.size,
     batchCount: batchDeltas.size,
+    unitRegistryCount: unitRegistryRefs.size,
     result,
     transactionReadEstimate: readsAcrossAttempts,
     committedWrites: writesCommitted,

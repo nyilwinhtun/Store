@@ -1,15 +1,12 @@
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import {
-  createUserWithEmailAndPassword,
   onAuthStateChanged,
-  sendPasswordResetEmail,
-  signInWithEmailAndPassword,
   signOut,
   updateProfile,
   type User,
 } from 'firebase/auth';
 import {
-  AlertTriangle, BadgeCheck, Camera, CheckCircle2, Cloud, HardDrive, ImagePlus, LogIn, LogOut, Save, ShieldCheck, Store, UserRound, Image as ImageIcon,
+  AlertTriangle, BadgeCheck, Camera, CheckCircle2, Cloud, HardDrive, ImagePlus, LogOut, Save, ShieldCheck, Store, UserRound, Image as ImageIcon,
 } from 'lucide-react';
 import { firebaseAuth, firebaseConfigured } from '../lib/firebase';
 import { migrateDataUrlImage, saveLocalImage, useLocalImageSource } from '../lib/localImages';
@@ -104,9 +101,6 @@ export function ProfileManagementPage({ authorize, notify }: { authorize: (actio
   const [shopDraft, setShopDraft] = useState<ShopDraft>({ name: '', ownerName: '', phone: '', email: '', address: '', currency: 'MMK', receiptHeader: '', receiptFooter: '', logoUrl: '', bannerUrl: '' });
   const [ownerDraft, setOwnerDraft] = useState<OwnerDraft>({ displayName: '', phone: '', photoUrl: '' });
   const [user, setUser] = useState<User | null>(null);
-  const [authEmail, setAuthEmail] = useState('');
-  const [authPassword, setAuthPassword] = useState('');
-  const [creatingAccount, setCreatingAccount] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
@@ -314,36 +308,9 @@ export function ProfileManagementPage({ authorize, notify }: { authorize: (actio
     finally { setBusy(false); }
   };
 
-  const submitAuth = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!firebaseAuth) { setError('Firebase Authentication ကို မချိတ်ဆက်နိုင်ပါ။ Configuration ကို စစ်ပါ။'); return; }
-    setBusy(true); setError(''); setStatus('');
-    try {
-      if (creatingAccount) {
-        if (authPassword.length < 6) throw new Error('Password အနည်းဆုံး 6 လုံး ထည့်ပါ။');
-        const credential = await createUserWithEmailAndPassword(firebaseAuth, authEmail.trim(), authPassword);
-        if (ownerDraft.displayName.trim()) await updateProfile(credential.user, { displayName: ownerDraft.displayName.trim() });
-        setStatus('Firebase Owner Account ဖန်တီးပြီး Login ဝင်ထားပါပြီ။');
-      } else {
-        await signInWithEmailAndPassword(firebaseAuth, authEmail.trim(), authPassword);
-        setStatus('Firebase Login အောင်မြင်ပါပြီ။ Owner ဖြစ်ပါက Owner Dashboard၊ Cashier ဖြစ်ပါက Member Permission အတည်ပြုပြီး Cashier POS ကို ဖွင့်ပေးပါမယ်။');
-      }
-      setAuthPassword('');
-    } catch (reason) { setError(getErrorMessage(reason)); }
-    finally { setBusy(false); }
-  };
-
-  const resetPassword = async () => {
-    if (!firebaseAuth || !authEmail.trim()) { setError('Password Reset အတွက် Email ဖြည့်ပါ။'); return; }
-    setBusy(true); setError(''); setStatus('');
-    try { await sendPasswordResetEmail(firebaseAuth, authEmail.trim()); setStatus('Password ပြန်သတ်မှတ်ရန် Email ပို့ပြီးပါပြီ။ Inbox ကို စစ်ပါ။'); }
-    catch (reason) { setError(getErrorMessage(reason)); }
-    finally { setBusy(false); }
-  };
-
   const signOutAccount = async () => {
     if (!firebaseAuth) return;
-    if (!window.confirm('ဒီလုပ်ဆောင်ချက်သည် လက်ရှိ Minimart App တစ်ခုလုံး၏ Firebase Account ကို Sign Out လုပ်ပါမည်။ ပြီးနောက် Profile မှ Owner သို့မဟုတ် Cashier Account ဖြင့် ပြန် Login ဝင်နိုင်ပါတယ်။ ဆက်လုပ်မလား။')) return;
+    if (!window.confirm('ဒီလုပ်ဆောင်ချက်သည် လက်ရှိ Minimart App တစ်ခုလုံး၏ Firebase Account ကို Sign Out လုပ်ပါမည်။ ပြီးနောက် Website ၏ Login စာမျက်နှာသို့ ပြန်ရောက်ပါမယ်။ ဆက်လုပ်မလား။')) return;
     setBusy(true); setError(''); setStatus('');
     try { await signOut(firebaseAuth); setStatus('App Firebase Account မှ Sign Out လုပ်ပြီးပါပြီ။'); }
     catch (reason) { setError(getErrorMessage(reason)); }
@@ -399,19 +366,12 @@ export function ProfileManagementPage({ authorize, notify }: { authorize: (actio
         </form>
 
         <div className="panel form-panel profile-panel">
-          <div className="panel-heading"><div className="panel-icon"><Cloud size={18} /></div><div><h3>Firebase Business Account</h3><p>Owner နဲ့ Cashier နှစ်မျိုးလုံးအတွက် တူညီတဲ့ Login နေရာ။</p></div></div>
+          <div className="panel-heading"><div className="panel-icon"><Cloud size={18} /></div><div><h3>Firebase Business Account</h3><p>လက်ရှိအသုံးပြုနေသော Owner / Cashier Account အခြေအနေ။</p></div></div>
           {!firebaseConfigured || !firebaseAuth ? <div className="cloud-error">Firebase Configuration မပြည့်စုံသေးပါ။</div> : user ? <>
             <div className="profile-account-status"><BadgeCheck size={19} /><div><strong>Account ချိတ်ဆက်ထားသည်</strong><small>{user.email || user.uid}</small></div></div>
             <div className="profile-account-meta"><span>Display Name</span><strong>{user.displayName || 'မသတ်မှတ်ရသေး'}</strong><span>UID</span><code>{user.uid}</code></div>
             <button className="button button-outline" type="button" onClick={() => void signOutAccount()} disabled={busy}><LogOut size={15} /> App Account Sign Out</button>
-          </> : <>
-            <form className="form-panel profile-auth-form" onSubmit={(event) => void submitAuth(event)}>
-              <label>Email<input required type="email" autoComplete="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="Owner သို့မဟုတ် Cashier Email" /></label>
-              <label>Password<input required type="password" autoComplete={creatingAccount ? 'new-password' : 'current-password'} value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="အနည်းဆုံး 6 လုံး" /></label>
-              <button className="button button-primary" type="submit" disabled={busy}><LogIn size={15} /> {creatingAccount ? 'Owner Account ဖန်တီးရန်' : 'Owner / Cashier Login ဝင်ရန်'}</button>
-            </form>
-            <div className="profile-auth-links"><button type="button" className="text-link" onClick={() => setCreatingAccount((value) => !value)}>{creatingAccount ? 'ရှိပြီးသား Account Login ဝင်မယ်' : 'Owner Account အသစ် ဖန်တီးမယ်'}</button><button type="button" className="text-link" onClick={() => void resetPassword()}>Password မေ့သွားပါသလား?</button></div>
-          </>}
+          </> : <div className="cloud-help">Login ကို Website ဖွင့်ဝင်ချင်း ပေါ်လာသော သီးခြား Login စာမျက်နှာမှသာ ဝင်ရောက်ပါ။ ဒီနေရာမှာ Login Form မထားပါ။</div>}
           <div className="cloud-help">Cashier အဖြစ် Login ဝင်ရန် Owner က Firebase Authentication ထဲမှာ အကောင့်ဖန်တီးပြီး Team Access Member UID ကို အတိအကျ ချိတ်ထားရပါမယ်။ Login ဝင်ပြီးသည်နှင့် Role အလိုက် Owner Workspace သို့မဟုတ် Limited Cashier POS ကို အလိုအလျောက် ဖွင့်ပေးပါမယ်။<br /><br />Logo၊ Banner နဲ့ Profile ဓာတ်ပုံတွေကို Firebase Storage မသုံးဘဲ ဒီ Device ရဲ့ IndexedDB ထဲမှာ အခမဲ့သိမ်းထားပါတယ်။ Device တခြားတစ်ခုသို့ ပြောင်းသုံးမယ်ဆို JSON Backup ကို ပုံတွေနဲ့အတူ Restore လုပ်ပါ။</div>
         </div>
       </div>

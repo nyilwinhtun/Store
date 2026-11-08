@@ -2,10 +2,10 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { cleanQuantity, formatQuantity, inferQuantityMode, isValidQuantity, quantityModeForProduct, summarizeQuantities, type QuantityMode } from '../lib/quantity';
 import { normalizeBarcode } from '../lib/barcode';
-import type { CashierExpenseFields, CashierSettlementRecord } from '../types/finance';
+import type { BranchFinanceLedgerEntry, BranchFinanceLedgerEntryInput, BranchFinanceReconciliationInput, BranchFinanceReconciliationRecord, CashierAdvanceReconciliationInput, CashierAdvanceReconciliationRecord, CashierExpenseFields, CashierSettlementRecord } from '../types/finance';
 
 export type PriceMode = 'retail' | 'wholesale';
-export type BranchSettings = { storeName: string; currency: string; receiptFooter: string; receiptHeader?: string; /** Legacy setting retained for old backups; expense submissions are reporting-only and do not require approval. */ cashierExpenseApprovalLimit?: number };
+export type BranchSettings = { storeName: string; currency: string; receiptFooter: string; receiptHeader?: string; kpayAccountName?: string; kpayAccountNumber?: string; kpayAccountLabel?: string; cashLedgerOpeningBalance?: number; kpayLedgerOpeningBalance?: number; financeLedgerStartDate?: string; /** Legacy setting retained for old backups; expense submissions are reporting-only and do not require approval. */ cashierExpenseApprovalLimit?: number };
 export type Branch = { id: string; name: string; code: string; address: string; phone: string; ownerName?: string; email?: string; logoUrl?: string; bannerUrl?: string; status: 'active' | 'archived'; isDefault: boolean; createdAt: string; updatedAt: string; settings: BranchSettings };
 export type OwnerProfile = { displayName: string; phone: string; photoUrl: string; updatedAt?: string };
 export type Category = { id: string; branchId: string; name: string; color: string; isActive: boolean; createdAt: string };
@@ -13,7 +13,7 @@ export const DEFAULT_BRANCH_ID = 'branch-main';
 export const DEFAULT_CATEGORY_NAMES = ['အထွေထွေ', 'အစားအသောက်', 'အဖျော်ယမကာ', 'အိမ်သုံးပစ္စည်း', 'ကိုယ်ရေးကိုယ်တာ', 'အခြား'];
 export type BatchAllocation = { batchId: string; quantity: number };
 export type StockUnitStatus = 'in_stock' | 'reserved' | 'in_transit' | 'pending_approval' | 'sold' | 'damaged' | 'missing' | 'returned' | 'written_off';
-export type StockUnitBarcodeSource = 'manufacturer_serial' | 'app_generated';
+export type StockUnitBarcodeSource = 'purchased_sticker' | 'manufacturer_serial' | 'app_generated';
 export type StockUnit = {
   id: string;
   barcode: string;
@@ -24,6 +24,10 @@ export type StockUnit = {
   registeredByName?: string;
   batchId?: string;
   note?: string;
+  saleId?: string;
+  soldAt?: string;
+  soldByUid?: string;
+  lastSaleId?: string;
 };
 /** Chunked registry records per Product + Branch; each record stores up to 250 physical units. */
 export type StockUnitRegistry = {
@@ -75,6 +79,8 @@ export type CartItem = {
   unit?: string;
   quantityMode?: QuantityMode;
   batchAllocations?: BatchAllocation[];
+  /** One selected physical sticker per unit when this product uses unit-level barcode tracking. */
+  stockUnitSelections?: Array<{ unitId: string; barcode: string; registryId: string }>;
 };
 export type Sale = {
   branchId?: string;
@@ -83,9 +89,11 @@ export type Sale = {
   date: string;
   customer: string;
   customerId?: string;
-  paymentMethod: 'Cash' | 'Credit';
+  paymentMethod: 'Cash' | 'KPay' | 'Credit';
   /** Cash physically handed over by the customer; optional for older sales. */
   cashReceivedAmount?: number;
+  /** KPay provider receipt/reference entered after the transfer is completed. */
+  kpayTransactionReference?: string;
   /** Change returned to the customer; optional for older sales. */
   changeAmount?: number;
   paidAmount?: number;
@@ -192,6 +200,10 @@ export type StockBatch = {
   purchaseId: string;
   supplierId: string;
   stockReceiptId?: string;
+  /** Provenance for a branch shipment auto-completion transaction. */
+  sourceShipmentId?: string;
+  sourceShipmentLineIndex?: number;
+  sourceShipmentBatchIndex?: number;
   quantity: number;
   receivedAt: string;
   expiryDate: string;
@@ -358,6 +370,11 @@ export type BranchStockShipment = {
   totalQuantity: number;
   note: string;
   status: 'dispatched' | 'received' | 'approved' | 'cancelled';
+  completionMode?: 'owner' | 'auto';
+  autoCompletedAt?: string;
+  autoCompletedByUid?: string;
+  /** Per-line destination writes committed atomically with an exact-match receipt. */
+  autoCompletionPlan?: Array<{ sourceProductId: string; destinationProductId: string; destinationStockBefore: number; destinationStockAfter: number; destinationBatchIds: string[] }>;
   receivedItems?: Array<{ sourceProductId: string; receivedQuantity: number; damagedQuantity: number; note?: string }>;
   receivedAt?: string;
   receivedByUid?: string;
@@ -383,15 +400,21 @@ export type CashShift = {
   id: string;
   openedAt: string;
   openedBy: string;
+  openedByUid?: string;
   openingCash: number;
   closedAt?: string;
+  closedByUid?: string;
+  closedByName?: string;
   closingCash?: number;
   expectedCash?: number;
+  variance?: number;
   note?: string;
 };
 export type CashMovement = {
   branchId?: string;
   sourceSettlementId?: string;
+  createdByUid?: string;
+  createdByName?: string;
   id: string;
   shiftId: string;
   date: string;
@@ -426,6 +449,9 @@ type PosState = {
   sales: Sale[];
   expenses: Expense[];
   cashierSettlements: CashierSettlementRecord[];
+  branchFinanceLedgerEntries: BranchFinanceLedgerEntry[];
+  cashierAdvanceReconciliations: CashierAdvanceReconciliationRecord[];
+  branchFinanceReconciliations: BranchFinanceReconciliationRecord[];
   heldItems: HeldItem[];
   customers: Customer[];
   suppliers: Supplier[];
@@ -462,6 +488,9 @@ type PosState = {
   updateExpense: (id: string, changes: Partial<Expense>) => void;
   deleteExpense: (id: string) => void;
   addCashierSettlement: (input: Omit<CashierSettlementRecord, 'id' | 'createdAt' | 'paidAt' | 'status'> & { createdAt?: string }) => CashierSettlementRecord | null;
+  addBranchFinanceLedgerEntry: (input: BranchFinanceLedgerEntryInput) => BranchFinanceLedgerEntry | null;
+  addCashierAdvanceReconciliation: (input: CashierAdvanceReconciliationInput) => CashierAdvanceReconciliationRecord | null;
+  addBranchFinanceReconciliations: (inputs: BranchFinanceReconciliationInput[]) => BranchFinanceReconciliationRecord[] | null;
   addCustomer: (customer: Omit<Customer, 'id' | 'createdAt'>) => string | null;
   updateCustomer: (id: string, changes: Partial<Omit<Customer, 'id' | 'createdAt'>>) => boolean;
   deleteCustomer: (id: string) => void;
@@ -476,13 +505,13 @@ type PosState = {
   reverseStockTransfer: (input: { transferId: string; actor?: StockTransferActor; note: string }) => StockTransferReversalResult;
   dispatchBranchStockShipment: (input: { fromBranchId?: string; toBranchId: string; items: BranchShipmentDraftItem[]; note?: string; requestId?: string; actor?: StockTransferActor }) => BranchShipmentDispatchResult;
   confirmBranchStockShipmentReceipt: (input: { shipmentId: string; receivedItems: BranchShipmentReceiptInput[]; actor?: StockTransferActor; note?: string }) => boolean;
-  approveBranchStockShipment: (input: { shipmentId: string; actor?: StockTransferActor; note?: string }) => boolean;
+  approveBranchStockShipment: (input: { shipmentId: string; actor?: StockTransferActor; note?: string; autoComplete?: boolean }) => boolean;
   registerStockUnits: (input: StockUnitRegistrationInput) => StockUnitRegistrationResult;
   cancelBranchStockShipment: (input: { shipmentId: string; actor?: StockTransferActor; note: string }) => boolean;
   addSupplierPayment: (payment: Omit<SupplierPayment, 'id'>) => boolean;
   addPurchaseReturn: (purchaseId: string, quantity: number, note: string) => void;
-  openCashShift: (openingCash: number, note?: string) => void;
-  closeCashShift: (id: string, closingCash: number, expectedCash: number, note?: string) => void;
+  openCashShift: (openingCash: number, note?: string, actor?: { uid?: string; name?: string }) => void;
+  closeCashShift: (id: string, closingCash: number, expectedCash: number, note?: string, actor?: { uid?: string; name?: string }) => void;
   addCashMovement: (movement: Omit<CashMovement, 'id' | 'date'>) => void;
   addActivityLog: (entry: Omit<ActivityLog, 'id' | 'at'>) => void;
   holdItem: (item: CartItem) => void;
@@ -490,9 +519,22 @@ type PosState = {
   removeHeldItem: (productId: string) => void;
   updateSettings: (changes: Partial<StoreSettings>) => void;
   updateOwnerProfile: (changes: Partial<OwnerProfile>) => void;
-  importData: (data: Partial<Pick<PosState, 'branches' | 'activeBranchId' | 'categories' | 'products' | 'sales' | 'expenses' | 'cashierSettlements' | 'heldItems' | 'customers' | 'suppliers' | 'customerPayments' | 'purchases' | 'supplierPayments' | 'purchaseReturns' | 'stockBatches' | 'stockReceipts' | 'stockTransfers' | 'stockShipments' | 'stockUnitRegistries' | 'cashShifts' | 'cashMovements' | 'activityLogs' | 'ownerProfile' | 'settings'>>) => void;
+  importData: (data: Partial<Pick<PosState, 'branches' | 'activeBranchId' | 'categories' | 'products' | 'sales' | 'expenses' | 'cashierSettlements' | 'branchFinanceLedgerEntries' | 'cashierAdvanceReconciliations' | 'branchFinanceReconciliations' | 'heldItems' | 'customers' | 'suppliers' | 'customerPayments' | 'purchases' | 'supplierPayments' | 'purchaseReturns' | 'stockBatches' | 'stockReceipts' | 'stockTransfers' | 'stockShipments' | 'stockUnitRegistries' | 'cashShifts' | 'cashMovements' | 'activityLogs' | 'ownerProfile' | 'settings'>>) => void;
   clearAllData: () => void;
 };
+
+function isKPayReferenceUsed(
+  state: Pick<PosState, 'sales' | 'cashierSettlements' | 'branchFinanceLedgerEntries' | 'cashierAdvanceReconciliations'>,
+  branchId: string,
+  reference: string,
+): boolean {
+  const key = reference.trim().toLocaleLowerCase();
+  if (!key) return false;
+  return state.sales.some((entry) => entry.branchId === branchId && entry.paymentMethod === 'KPay' && entry.kpayTransactionReference?.trim().toLocaleLowerCase() === key)
+    || state.cashierSettlements.some((entry) => entry.branchId === branchId && entry.paymentMethod === 'kpay' && entry.transactionReference?.trim().toLocaleLowerCase() === key)
+    || state.branchFinanceLedgerEntries.some((entry) => entry.branchId === branchId && entry.channel === 'kpay' && entry.transactionReference?.trim().toLocaleLowerCase() === key)
+    || state.cashierAdvanceReconciliations.some((entry) => entry.branchId === branchId && entry.channel === 'kpay' && entry.transactionReference?.trim().toLocaleLowerCase() === key);
+}
 
 const defaultSettings: StoreSettings = {
   storeName: 'My Minimart',
@@ -516,7 +558,7 @@ export function normalizeOwnerProfile(value: unknown): OwnerProfile {
 }
 const newId = () => crypto.randomUUID();
 const epsilonForQuantity = () => 0.000001;
-const makeDefaultBranch = (settings: StoreSettings = defaultSettings): Branch => ({ id: DEFAULT_BRANCH_ID, name: settings.storeName || 'Main Store', code: 'MAIN', address: '', phone: '', bannerUrl: '', status: 'active', isDefault: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), settings: { storeName: settings.storeName || 'Main Store', currency: settings.currency || 'MMK', receiptFooter: settings.receiptFooter || defaultSettings.receiptFooter, receiptHeader: '' } });
+const makeDefaultBranch = (settings: StoreSettings = defaultSettings): Branch => ({ id: DEFAULT_BRANCH_ID, name: settings.storeName || 'Main Store', code: 'MAIN', address: '', phone: '', bannerUrl: '', status: 'active', isDefault: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), settings: { storeName: settings.storeName || 'Main Store', currency: settings.currency || 'MMK', receiptFooter: settings.receiptFooter || defaultSettings.receiptFooter, receiptHeader: '', cashLedgerOpeningBalance: 0, kpayLedgerOpeningBalance: 0 } });
 const makeDefaultCategories = (branchId: string, names: string[] = DEFAULT_CATEGORY_NAMES): Category[] => names.map((name, index) => ({ id: `${branchId}-cat-${index + 1}`, branchId, name, color: ['#0f766e', '#2563eb', '#d97706', '#7c3aed', '#db2777', '#64748b'][index % 6], isActive: true, createdAt: new Date().toISOString() }));
 const normalizedName = (value: string) => (value || '').trim().toLocaleLowerCase();
 const normalizedPhone = (value: string) => {
@@ -630,6 +672,9 @@ function migrateState(persisted: unknown, version: number): Partial<PosState> {
     sales,
     expenses: withBranch<Expense>(old.expenses),
     cashierSettlements: withBranch<CashierSettlementRecord>(old.cashierSettlements),
+    branchFinanceLedgerEntries: withBranch<BranchFinanceLedgerEntry>(old.branchFinanceLedgerEntries),
+    cashierAdvanceReconciliations: withBranch<CashierAdvanceReconciliationRecord>(old.cashierAdvanceReconciliations),
+    branchFinanceReconciliations: withBranch<BranchFinanceReconciliationRecord>(old.branchFinanceReconciliations),
     heldItems: withBranch<HeldItem>(old.heldItems),
     customers,
     suppliers: Array.isArray(old.suppliers) ? old.suppliers as Supplier[] : [],
@@ -654,7 +699,7 @@ export const usePosStore = create<PosState>()(
   persist(
     (set, get) => ({
       branches: [makeDefaultBranch()], activeBranchId: DEFAULT_BRANCH_ID, categories: makeDefaultCategories(DEFAULT_BRANCH_ID),
-      products: [], sales: [], expenses: [], cashierSettlements: [], heldItems: [], customers: [], suppliers: [],
+      products: [], sales: [], expenses: [], cashierSettlements: [], branchFinanceLedgerEntries: [], cashierAdvanceReconciliations: [], branchFinanceReconciliations: [], heldItems: [], customers: [], suppliers: [],
       customerPayments: [], purchases: [], supplierPayments: [], purchaseReturns: [], stockBatches: [], stockReceipts: [], stockTransfers: [], stockShipments: [], stockUnitRegistries: [], cashShifts: [], cashMovements: [], activityLogs: [], ownerProfile: defaultOwnerProfile, settings: defaultSettings,
       addBranch: (input) => {
         const name = input.name.trim();
@@ -667,7 +712,7 @@ export const usePosStore = create<PosState>()(
           id, name, code: `BR-${String(current.branches.length + 1).padStart(2, '0')}`,
           address: (input.address || '').trim(), phone: (input.phone || '').trim(), ownerName: '', email: '', logoUrl: '', bannerUrl: '', status: 'active', isDefault: false,
           createdAt: now, updatedAt: now,
-          settings: { storeName: name, currency: current.settings.currency, receiptFooter: current.settings.receiptFooter, receiptHeader: '' },
+          settings: { storeName: name, currency: current.settings.currency, receiptFooter: current.settings.receiptFooter, receiptHeader: '', cashLedgerOpeningBalance: 0, kpayLedgerOpeningBalance: 0 },
         };
         set((state) => ({ branches: [...state.branches, branch], categories: [...state.categories, ...makeDefaultCategories(id)], activityLogs: prependAudit(state.activityLogs, makeAudit('BRANCH_CREATE', 'Branch', `ဆိုင်ခွဲအသစ် ဖန်တီးသည်: ${name}`, id, state.activeBranchId)) }));
         return id;
@@ -768,9 +813,12 @@ export const usePosStore = create<PosState>()(
           return (!!barcodeKey && (existingBarcode === barcodeKey || existingSku === barcodeKey))
             || (!!skuKey && (existingBarcode === skuKey || existingSku === skuKey));
         })) return state;
+        const unitTracked = !!current && state.stockUnitRegistries.some((registry) => registry.branchId === state.activeBranchId && registry.productId === id && registry.units.length > 0);
         const nextUnit = changes.unit || current?.unit || 'ခု';
         const nextMode = changes.quantityMode || current?.quantityMode || inferQuantityMode(nextUnit);
-        const nextStock = typeof changes.stock === 'number' && Number.isFinite(changes.stock) ? Math.max(0, changes.stock) : current?.stock;
+        const requestedStock = typeof changes.stock === 'number' && Number.isFinite(changes.stock) ? Math.max(0, changes.stock) : current?.stock;
+        if (unitTracked && current && (requestedStock !== undefined && Math.abs(requestedStock - current.stock) > 1e-8 || changes.quantityMode !== undefined && changes.quantityMode !== quantityModeForProduct(current))) return state;
+        const nextStock = unitTracked ? current?.stock : requestedStock;
         const stockWasChanged = !!current && nextStock !== undefined && Math.abs(nextStock - current.stock) > 1e-8;
         const quantityModeWasChanged = !!current && changes.quantityMode !== undefined && changes.quantityMode !== quantityModeForProduct(current);
         if (nextStock !== undefined && (stockWasChanged || quantityModeWasChanged) && !isValidQuantity(nextStock, nextMode, true)) return state;
@@ -792,6 +840,7 @@ export const usePosStore = create<PosState>()(
       }),
       deleteProduct: (id) => set((state) => {
         const target = state.products.find((product) => product.id === id && product.branchId === state.activeBranchId);
+        if (state.stockUnitRegistries.some((registry) => registry.branchId === state.activeBranchId && registry.productId === id && registry.units.length > 0)) return state;
         return {
           products: state.products.filter((product) => !(product.id === id && product.branchId === state.activeBranchId)),
           heldItems: state.heldItems.filter((item) => !(item.productId === id && item.branchId === state.activeBranchId)),
@@ -803,7 +852,7 @@ export const usePosStore = create<PosState>()(
         const state = get();
         if (!Number.isFinite(quantity) || quantity === 0) return false;
         const target = state.products.find((product) => product.id === id && product.branchId === state.activeBranchId);
-        if (!target || !isValidQuantity(Math.abs(quantity), 'decimal') || !isValidQuantity(target.stock + quantity, quantityModeForProduct(target), true) || target.stock + quantity < 0) return false;
+        if (!target || state.stockUnitRegistries.some((registry) => registry.branchId === state.activeBranchId && registry.productId === id && registry.units.length > 0) || !isValidQuantity(Math.abs(quantity), 'decimal') || !isValidQuantity(target.stock + quantity, quantityModeForProduct(target), true) || target.stock + quantity < 0) return false;
         const receivedAt = new Date().toISOString();
         const nextStock = cleanQuantity(target.stock + quantity, quantityModeForProduct(target));
         const stockBatches = quantity < 0
@@ -822,9 +871,25 @@ export const usePosStore = create<PosState>()(
         const branchId = state.activeBranchId;
         const invalidSaleItem = sale.items.find((item) => {
           const product = state.products.find((entry) => entry.id === item.productId && entry.branchId === branchId);
-          return !product || !isValidQuantity(item.quantity, quantityModeForProduct(product)) || product.stock < item.quantity;
+          if (!product || !isValidQuantity(item.quantity, quantityModeForProduct(product)) || product.stock < item.quantity) return true;
+          const tracked = state.stockUnitRegistries.some((entry) => entry.branchId === branchId && entry.productId === product.id && entry.units.length > 0);
+          if (!tracked) return false;
+          const selections = item.stockUnitSelections || [];
+          if (quantityModeForProduct(product) !== 'whole' || selections.length !== item.quantity) return true;
+          if (new Set(selections.map((selection) => selection.unitId)).size !== selections.length) return true;
+          return selections.some((selection) => {
+            const registry = state.stockUnitRegistries.find((entry) => entry.id === selection.registryId && entry.branchId === branchId && entry.productId === product.id);
+            const unit = registry?.units.find((entry) => entry.id === selection.unitId && normalizeBarcode(entry.barcode) === normalizeBarcode(selection.barcode));
+            return !unit || unit.status !== 'in_stock';
+          });
         });
         if (invalidSaleItem) return state;
+        if (sale.paymentMethod === 'KPay') {
+          const branch = state.branches.find((entry) => entry.id === branchId);
+          const reference = sale.kpayTransactionReference?.trim().toLowerCase() || '';
+          if (!branch?.settings.kpayAccountName?.trim() || !branch.settings.kpayAccountNumber?.trim() || !reference
+            || isKPayReferenceUsed(state, branchId, reference)) return state;
+        }
         let customers = state.customers;
         let customerId = sale.customerId;
         let customerSnapshot: Customer | undefined;
@@ -857,13 +922,26 @@ export const usePosStore = create<PosState>()(
           }
           return { ...item, ...(allocations.length ? { batchAllocations: allocations } : {}) };
         });
-        const paidAmount = sale.paymentMethod === 'Cash' ? sale.total : Math.max(0, Math.min(sale.total, sale.paidAmount ?? 0));
-        const dueAmount = sale.paymentMethod === 'Cash' ? 0 : Math.max(0, sale.total - paidAmount);
+        const paidAmount = sale.paymentMethod === 'Cash' || sale.paymentMethod === 'KPay' ? sale.total : Math.max(0, Math.min(sale.total, sale.paidAmount ?? 0));
+        const dueAmount = sale.paymentMethod === 'Cash' || sale.paymentMethod === 'KPay' ? 0 : Math.max(0, sale.total - paidAmount);
         const saleToSave: Sale = { ...sale, branchId, customerId, paidAmount, dueAmount, items: saleItems, ...(customerSnapshot ? { customerSnapshot } : {}) };
+        const unitSelectionsByRegistry = new Map<string, Set<string>>();
+        for (const item of saleToSave.items) for (const selection of item.stockUnitSelections || []) {
+          const ids = unitSelectionsByRegistry.get(selection.registryId) || new Set<string>();
+          ids.add(selection.unitId); unitSelectionsByRegistry.set(selection.registryId, ids);
+        }
+        const stockUnitRegistries = state.stockUnitRegistries.map((registry) => {
+          const selectedIds = unitSelectionsByRegistry.get(registry.id);
+          if (!selectedIds || registry.branchId !== branchId) return registry;
+          return { ...registry, updatedAt: saleToSave.date, units: registry.units.map((unit) => selectedIds.has(unit.id)
+            ? { ...unit, status: 'sold' as const, saleId: saleToSave.id, soldAt: saleToSave.date, soldByUid: saleToSave.createdByUid || '' }
+            : unit) };
+        });
         savedSale = saleToSave;
         return {
           customers,
           stockBatches,
+          stockUnitRegistries,
           sales: [saleToSave, ...state.sales],
           activityLogs: prependAudit(state.activityLogs, makeAudit('CHECKOUT', 'Sale', `Voucher ${saleToSave.receiptNo} · ${saleToSave.customer} · ${saleToSave.total} MMK`, saleToSave.id, state.activeBranchId)),
           products: state.products.map((product) => {
@@ -892,8 +970,20 @@ export const usePosStore = create<PosState>()(
             description: `Voucher ${sale.receiptNo} ကို ပယ်ဖျက်သည် · ${reason.trim()}`,
           };
           succeeded = true;
+          const returnedUnitIdsByRegistry = new Map<string, Set<string>>();
+          for (const item of sale.items) for (const selection of item.stockUnitSelections || []) {
+            const ids = returnedUnitIdsByRegistry.get(selection.registryId) || new Set<string>();
+            ids.add(selection.unitId); returnedUnitIdsByRegistry.set(selection.registryId, ids);
+          }
           return {
             sales: state.sales.map((entry) => entry.id === id && entry.branchId === state.activeBranchId ? updatedSale : entry),
+            stockUnitRegistries: state.stockUnitRegistries.map((registry) => {
+              const ids = returnedUnitIdsByRegistry.get(registry.id);
+              if (!ids || registry.branchId !== state.activeBranchId) return registry;
+              return { ...registry, updatedAt: now, units: registry.units.map((unit) => ids.has(unit.id) && unit.saleId === id
+                ? { ...unit, status: 'in_stock' as const, lastSaleId: id, saleId: undefined, soldAt: undefined, soldByUid: undefined }
+                : unit) };
+            }),
             activityLogs: prependAudit(state.activityLogs, audit),
             products: state.products.map((product) => {
               if (product.branchId !== state.activeBranchId) return product;
@@ -929,11 +1019,7 @@ export const usePosStore = create<PosState>()(
           || !Number.isSafeInteger(amount) || amount <= 0
           || !input.createdByUid.trim()) return null;
         if (input.paymentMethod === 'kpay' && (!input.receiverAccountName?.trim() || !input.receiverAccountNumber?.trim() || !input.transactionReference?.trim() || input.transactionReference.trim().length > 120)) return null;
-        if (input.paymentMethod === 'kpay') {
-          const transactionKey = input.transactionReference?.trim().toLowerCase();
-          if (transactionKey && state.cashierSettlements.some((entry) => entry.paymentMethod === 'kpay'
-            && entry.status === 'paid' && entry.transactionReference?.trim().toLowerCase() === transactionKey)) return null;
-        }
+        if (input.paymentMethod === 'kpay' && isKPayReferenceUsed(state, branchId, input.transactionReference || '')) return null;
         if (input.purpose === 'expense_reimbursement' && !input.relatedExpenseId) return null;
         if (input.purpose !== 'expense_reimbursement' && input.relatedExpenseId) return null;
         if (state.cashierSettlements.some((entry) => input.relatedExpenseId && entry.relatedExpenseId === input.relatedExpenseId && entry.status === 'paid')) return null;
@@ -963,8 +1049,8 @@ export const usePosStore = create<PosState>()(
           paidAt: now,
           receiverAccountName: input.receiverAccountName?.trim() || undefined,
           receiverAccountNumber: input.receiverAccountNumber?.trim() || undefined,
-          senderAccountName: input.senderAccountName?.trim() || undefined,
-          senderAccountNumber: input.senderAccountNumber?.trim() || undefined,
+          senderAccountName: input.senderAccountName?.trim() || state.branches.find((branch) => branch.id === branchId)?.settings.kpayAccountName || undefined,
+          senderAccountNumber: input.senderAccountNumber?.trim() || state.branches.find((branch) => branch.id === branchId)?.settings.kpayAccountNumber || undefined,
           transactionReference: input.transactionReference?.trim() || undefined,
           note: input.note?.trim() || '',
         };
@@ -973,13 +1059,129 @@ export const usePosStore = create<PosState>()(
           id: newId(), branchId, shiftId: activeShift.id, date: now, direction: 'out', amount,
           note: `Cashier ${input.cashierName} · ${input.purpose} · Settlement ${id}`,
           sourceSettlementId: id,
+          createdByUid: input.paidByUid || input.createdByUid,
+          createdByName: input.paidByName || 'Owner',
         } : undefined;
         set((current) => ({
           cashierSettlements: [saved, ...current.cashierSettlements],
           expenses: linkedExpense ? current.expenses.map((entry) => entry.id === linkedExpense!.id && entry.branchId === branchId
             ? { ...entry, reimbursedBySettlementId: id } : entry) : current.expenses,
           cashMovements: cashMovement ? [cashMovement, ...current.cashMovements] : current.cashMovements,
-          activityLogs: prependAudit(current.activityLogs, makeAudit('CASHIER_SETTLEMENT_PAID', 'Cashier Settlement', `${input.cashierName} · ${input.purpose} · ${amount} MMK · ${input.paymentMethod.toUpperCase()}`, id, branchId)),
+          activityLogs: prependAudit(current.activityLogs, { ...makeAudit('CASHIER_SETTLEMENT_PAID', 'Cashier Settlement', `${input.cashierName} · ${input.purpose} · ${amount} MMK · ${input.paymentMethod.toUpperCase()}`, id, branchId), actor: input.paidByName || 'Owner', actorUid: input.paidByUid || input.createdByUid }),
+        }));
+        return saved;
+      },
+      addBranchFinanceLedgerEntry: (input) => {
+        const state = get();
+        const branchId = state.activeBranchId;
+        const amount = Number(input.amount);
+        const note = input.note.trim();
+        const reference = input.transactionReference?.trim() || '';
+        if (!branchId || !state.branches.some((branch) => branch.id === branchId)
+          || !Number.isSafeInteger(amount) || amount <= 0 || !note
+          || !input.createdByUid.trim() || !input.createdByName.trim()) return null;
+        if (input.channel === 'kpay' && (!reference || isKPayReferenceUsed(state, branchId, reference))) return null;
+        const now = new Date().toISOString();
+        const saved: BranchFinanceLedgerEntry = {
+          id: input.channel === 'kpay' && reference ? `kpay-ledger-${encodeURIComponent(branchId)}-${encodeURIComponent(reference.toLowerCase())}` : newId(),
+          branchId, channel: input.channel, direction: input.direction, category: input.category,
+          amount, date: now, note, ...(reference ? { transactionReference: reference } : {}),
+          createdAt: now, createdByUid: input.createdByUid, createdByName: input.createdByName,
+        };
+        if (state.branchFinanceLedgerEntries.some((entry) => entry.id === saved.id)) return null;
+        set((current) => ({
+          branchFinanceLedgerEntries: [saved, ...current.branchFinanceLedgerEntries],
+          activityLogs: prependAudit(current.activityLogs, { ...makeAudit('BRANCH_FINANCE_ENTRY', 'Branch Finance', `${input.channel.toUpperCase()} ${input.direction} ${amount} MMK · ${note}`, saved.id, branchId), actor: input.createdByName, actorUid: input.createdByUid }),
+        }));
+        return saved;
+      },
+      addCashierAdvanceReconciliation: (input) => {
+        const state = get();
+        const branchId = state.activeBranchId;
+        const advance = state.cashierSettlements.find((entry) => entry.id === input.advanceSettlementId && entry.branchId === branchId
+          && entry.cashierUid && entry.purpose === 'cash_advance' && entry.status === 'paid');
+        const amount = Number(input.amount);
+        if (!advance || !Number.isSafeInteger(amount) || amount <= 0 || !input.createdByUid.trim() || !input.createdByName.trim()) return null;
+        const alreadyReconciled = state.cashierAdvanceReconciliations.filter((entry) => entry.advanceSettlementId === advance.id && entry.branchId === branchId)
+          .reduce((sum, entry) => sum + entry.amount, 0);
+        const outstanding = Math.max(0, advance.amount - alreadyReconciled);
+        if (amount > outstanding) return null;
+        let relatedExpense: Expense | undefined;
+        if (input.kind === 'expense-applied') {
+          if (!input.relatedExpenseId) return null;
+          relatedExpense = state.expenses.find((entry) => entry.id === input.relatedExpenseId && entry.branchId === branchId);
+          if (!relatedExpense || relatedExpense.createdByUid !== advance.cashierUid
+            || !['branch-cash', 'branch-kpay'].includes(relatedExpense.fundedBy || '')
+            || relatedExpense.amount !== amount
+            || state.cashierAdvanceReconciliations.some((entry) => entry.relatedExpenseId === relatedExpense!.id)) return null;
+          const expectedChannel = relatedExpense.fundedBy === 'branch-kpay' ? 'kpay' : 'cash';
+          if (input.channel !== expectedChannel) return null;
+        } else {
+          if (input.relatedExpenseId) return null;
+          if (input.channel === 'kpay' && (!input.transactionReference?.trim()
+            || isKPayReferenceUsed(state, branchId, input.transactionReference))) return null;
+        }
+        const now = new Date().toISOString();
+        const saved: CashierAdvanceReconciliationRecord = {
+          id: newId(), branchId, advanceSettlementId: advance.id, cashierUid: advance.cashierUid,
+          cashierName: advance.cashierName, kind: input.kind, amount, channel: input.channel,
+          ...(input.relatedExpenseId ? { relatedExpenseId: input.relatedExpenseId } : {}),
+          ...(input.transactionReference?.trim() ? { transactionReference: input.transactionReference.trim() } : {}),
+          note: input.note.trim(), createdAt: now, createdByUid: input.createdByUid, createdByName: input.createdByName,
+        };
+        const activeShift = input.kind === 'cash-returned' && input.channel === 'cash'
+          ? state.cashShifts.find((shift) => shift.branchId === branchId && !shift.closedAt)
+          : undefined;
+        const cashMovement: CashMovement | undefined = activeShift ? {
+          id: newId(), branchId, shiftId: activeShift.id, date: now, direction: 'in', amount,
+          note: `Cashier Advance return · ${advance.cashierName} · ${advance.id}`,
+          sourceSettlementId: advance.id,
+          createdByUid: input.createdByUid,
+          createdByName: input.createdByName,
+        } : undefined;
+        const audit = makeAudit('CASH_ADVANCE_RECONCILE', 'Cashier Advance', `${advance.cashierName} · ${input.kind} · ${amount} MMK`, saved.id, branchId);
+        audit.actor = input.createdByName;
+        audit.actorUid = input.createdByUid;
+        set((current) => ({
+          cashierAdvanceReconciliations: [saved, ...current.cashierAdvanceReconciliations],
+          cashMovements: cashMovement ? [cashMovement, ...current.cashMovements] : current.cashMovements,
+          activityLogs: prependAudit(current.activityLogs, audit),
+        }));
+        return saved;
+      },
+      addBranchFinanceReconciliations: (inputs) => {
+        const state = get();
+        const branchId = state.activeBranchId;
+        if (!branchId || !state.branches.some((branch) => branch.id === branchId) || !Array.isArray(inputs) || inputs.length < 1 || inputs.length > 2) return null;
+        const seenChannels = new Set<string>();
+        for (const input of inputs) {
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(input.businessDate)
+            || Number.isNaN(Date.parse(`${input.businessDate}T00:00:00`))
+            || !['cash', 'kpay'].includes(input.channel)
+            || seenChannels.has(input.channel)
+            || !Number.isSafeInteger(input.expectedBalance)
+            || !Number.isSafeInteger(input.actualBalance) || input.actualBalance < 0
+            || !Number.isSafeInteger(input.totalIn) || input.totalIn < 0
+            || !Number.isSafeInteger(input.totalOut) || input.totalOut < 0
+            || !input.createdByUid.trim() || !input.createdByName.trim()) return null;
+          seenChannels.add(input.channel);
+        }
+        const now = new Date().toISOString();
+        const saved: BranchFinanceReconciliationRecord[] = inputs.map((input) => ({
+          ...input,
+          id: newId(),
+          branchId,
+          variance: input.actualBalance - input.expectedBalance,
+          note: input.note.trim(),
+          createdAt: now,
+        }));
+        set((current) => ({
+          branchFinanceReconciliations: [...saved, ...current.branchFinanceReconciliations],
+          activityLogs: saved.reduce((logs, entry) => prependAudit(logs, { ...makeAudit(
+            'FINANCE_RECONCILIATION', 'Branch Finance Reconciliation',
+            `${entry.channel.toUpperCase()} · ${entry.businessDate} · မျှော်မှန်း ${entry.expectedBalance} MMK · အမှန် ${entry.actualBalance} MMK · ကွာဟချက် ${entry.variance} MMK`,
+            entry.id, branchId,
+          ), actor: entry.createdByName }), current.activityLogs),
         }));
         return saved;
       },
@@ -1050,7 +1252,8 @@ export const usePosStore = create<PosState>()(
         const product = state.products.find((entry) => entry.id === purchase.productId && entry.branchId === state.activeBranchId);
         const quantity = Number(purchase.quantity);
         const unitCost = Number(purchase.unitCost);
-        if (!product || !isValidQuantity(quantity, quantityModeForProduct(product)) || !Number.isFinite(unitCost) || unitCost < 0) return state;
+        if (!product || state.stockUnitRegistries.some((registry) => registry.branchId === state.activeBranchId && registry.productId === product.id && registry.units.length > 0)
+          || !isValidQuantity(quantity, quantityModeForProduct(product)) || !Number.isFinite(unitCost) || unitCost < 0) return state;
         const id = newId();
         const date = new Date().toISOString();
         const requestedSupplierId = purchase.supplierId || 'general-supplier';
@@ -1136,6 +1339,7 @@ export const usePosStore = create<PosState>()(
             product = productUpdates.get(draft.productId || '') || state.products.find((entry) => entry.id === draft.productId && entry.branchId === branchId);
             if (!product) return null;
           }
+          if (state.stockUnitRegistries.some((registry) => registry.branchId === branchId && registry.productId === product!.id && registry.units.length > 0)) return null;
           if (!isValidQuantity(quantity, quantityModeForProduct(product))) return null;
 
           const previous = productUpdates.get(product.id) || product;
@@ -1220,6 +1424,7 @@ export const usePosStore = create<PosState>()(
           let product = barcodeMatches[0] || nameMatches[0];
           if (barcodeMatches[0] && (normalizedName(barcodeMatches[0].name) !== normalizedName(item.name) || normalizedName(barcodeMatches[0].unit || 'ခု') !== normalizedName(item.unit))) return null;
           if (product && item.barcode && product.barcode && normalizeBarcode(product.barcode) !== item.barcode) return null;
+          if (product && state.stockUnitRegistries.some((registry) => registry.branchId === hubBranch.id && registry.productId === product!.id && registry.units.length > 0)) return null;
           if (product && !isValidQuantity(item.quantity, quantityModeForProduct(product))) return null;
           if (!product && !isValidQuantity(item.quantity, inferQuantityMode(item.unit))) return null;
           if (!product) {
@@ -1291,6 +1496,12 @@ export const usePosStore = create<PosState>()(
           if (seenProducts.has(draft.sourceProductId)) return fail('ပစ္စည်းတစ်မျိုးကို Shipment တစ်ခုထဲမှာ ထပ်ထည့်ထားပါတယ်။ ထပ်နေတဲ့စာကြောင်းကို ဖယ်ပါ။');
           seenProducts.add(draft.sourceProductId);
           const source = products[sourceIndex];
+          const trackedBarcodeUnits = state.stockUnitRegistries
+            .filter((registry) => registry.branchId === sourceBranch.id && registry.productId === source.id)
+            .flatMap((registry) => registry.units);
+          if (trackedBarcodeUnits.length > 0) {
+            return fail(`${source.name}: ဒီပစ္စည်းမှာ Unique Barcode Unit Tracking အသုံးပြုထားပါတယ်။ Barcode တစ်ခုချင်း Branch Transfer လုပ်နိုင်တဲ့လုပ်ငန်းစဉ် မပြီးသေးတဲ့အတွက် Quantity-only Transfer ကို ယာယီပိတ်ထားပါတယ်။ Barcode မပျောက်စေရန် ဒီပစ္စည်းကို မပို့ပါနှင့်။`);
+          }
           const quantity = Number(draft.quantity);
           const mode = quantityModeForProduct(source);
           if (!Number.isFinite(quantity) || !isValidQuantity(quantity, mode) || quantity <= 0) {
@@ -1453,6 +1664,16 @@ export const usePosStore = create<PosState>()(
         const state = get();
         const shipment = state.stockShipments.find((entry) => entry.id === input.shipmentId);
         if (!shipment || shipment.status !== 'received' || !Array.isArray(shipment.receivedItems) || shipment.receivedItems.length !== shipment.items.length) return false;
+        // Never merge a legacy quantity-only shipment into a branch product already
+        // tracked by physical sticker units. That would create unbarcoded sellable stock.
+        for (const item of shipment.items) {
+          const destinationMatches = state.products.filter((product) => product.branchId === shipment.toBranchId
+            && ((!!item.sku && normalizedName(product.sku) === normalizedName(item.sku))
+              || (!!item.barcode && normalizedName(product.barcode) === normalizedName(item.barcode))
+              || (normalizedName(product.name) === normalizedName(item.productName)
+                && normalizedName(product.unit || 'ခု') === normalizedName(item.unit || 'ခု'))));
+          if (destinationMatches.some((product) => state.stockUnitRegistries.some((registry) => registry.branchId === shipment.toBranchId && registry.productId === product.id && registry.units.length > 0))) return false;
+        }
         const destinationBranch = state.branches.find((branch) => branch.id === shipment.toBranchId && branch.status === 'active');
         if (!destinationBranch) return false;
         const products = state.products.map((product) => ({ ...product }));
@@ -1462,7 +1683,9 @@ export const usePosStore = create<PosState>()(
         const now = new Date().toISOString();
         const epsilon = 0.000001;
 
-        for (const item of shipment.items) {
+        const autoCompletionPlan: NonNullable<BranchStockShipment['autoCompletionPlan']> = [];
+        for (let itemIndex = 0; itemIndex < shipment.items.length; itemIndex += 1) {
+          const item = shipment.items[itemIndex];
           const received = shipment.receivedItems.find((entry) => entry.sourceProductId === item.sourceProductId);
           if (!received) return false;
           const quantityMode = item.quantityMode || inferQuantityMode(item.unit);
@@ -1472,6 +1695,7 @@ export const usePosStore = create<PosState>()(
             || received.damagedQuantity < 0 || received.damagedQuantity > received.receivedQuantity) return false;
           const acceptedQuantity = cleanQuantity(Math.max(0, received.receivedQuantity - received.damagedQuantity), quantityMode);
           if (acceptedQuantity <= epsilon) {
+            if (input.autoComplete) return false;
             approvedLines.push({ ...item, acceptedQuantity: 0 });
             continue;
           }
@@ -1510,6 +1734,7 @@ export const usePosStore = create<PosState>()(
               quantity: cleanQuantity(destinationUntracked, quantityMode), receivedAt: destination.createdAt || now, expiryDate: '', unitCost: Number(destination.costPrice) || 0,
             });
           }
+          const destinationStockBefore = previousStock;
           const newStock = cleanQuantity(previousStock + acceptedQuantity, quantityMode);
           const weightedCost = newStock > 0
             ? ((previousStock * (Number(destination.costPrice) || 0)) + (acceptedQuantity * item.costPrice)) / newStock
@@ -1524,20 +1749,34 @@ export const usePosStore = create<PosState>()(
           if (productIndex >= 0) products[productIndex] = updatedDestination;
 
           let batchRemaining = acceptedQuantity;
+          const destinationBatchIds: string[] = [];
+          let allocationIndex = 0;
           for (const allocation of item.batchAllocations) {
             if (batchRemaining <= epsilon) break;
             const take = Math.min(allocation.quantity, batchRemaining);
             if (take <= epsilon) continue;
+            const destinationBatchId = newId();
             batches.push({
-              id: newId(), branchId: destinationBranch.id, productId: updatedDestination.id,
+              id: destinationBatchId, branchId: destinationBranch.id, productId: updatedDestination.id,
               purchaseId: allocation.purchaseId || '', supplierId: allocation.supplierId || '', stockReceiptId: shipment.id,
+              ...(input.autoComplete ? { sourceShipmentId: shipment.id, sourceShipmentLineIndex: itemIndex, sourceShipmentBatchIndex: allocationIndex } : {}),
               quantity: cleanQuantity(take, quantityMode), receivedAt: allocation.receivedAt || now,
               expiryDate: allocation.expiryDate || '', unitCost: allocation.unitCost,
             });
+            destinationBatchIds.push(destinationBatchId);
+            allocationIndex += 1;
             batchRemaining = Math.max(0, batchRemaining - take);
           }
           if (batchRemaining > epsilon) return false;
           approvedLines.push({ ...item, acceptedQuantity });
+          if (input.autoComplete) {
+            if (Math.abs(acceptedQuantity - item.quantity) > epsilon || Math.abs(destinationStockBefore + item.quantity - newStock) > epsilon
+              || destinationBatchIds.length !== item.batchAllocations.length) return false;
+            autoCompletionPlan.push({
+              sourceProductId: item.sourceProductId, destinationProductId: updatedDestination.id,
+              destinationStockBefore, destinationStockAfter: newStock, destinationBatchIds,
+            });
+          }
         }
 
         let committed = false;
@@ -1546,8 +1785,9 @@ export const usePosStore = create<PosState>()(
           if (!latest || latest.status !== 'received' || current.stockShipments.some((entry) => entry.id !== input.shipmentId && entry.shipmentNo === shipment.shipmentNo)) return current;
           committed = true;
           const approved: BranchStockShipment = {
-            ...latest, items: approvedLines, status: 'approved', approvedAt: now,
+            ...latest, items: input.autoComplete ? latest.items : approvedLines, status: 'approved', approvedAt: now,
             approvedByUid: input.actor?.uid || '', approvedByEmail: input.actor?.email || '', approvedByName: input.actor?.name || 'Owner', approvalNote: (input.note || '').trim(),
+            ...(input.autoComplete ? { completionMode: 'auto' as const, autoCompletedAt: now, autoCompletedByUid: input.actor?.uid || '', autoCompletionPlan } : { completionMode: 'owner' as const }),
           };
           return {
             products: products.map((product) => ({ ...product })), stockBatches: batches.map((batch) => ({ ...batch })), categories,
@@ -1570,6 +1810,7 @@ export const usePosStore = create<PosState>()(
         for (const item of shipment.items) {
           const productIndex = products.findIndex((product) => product.id === item.sourceProductId && product.branchId === shipment.fromBranchId);
           if (productIndex < 0) return false;
+          if (state.stockUnitRegistries.some((registry) => registry.branchId === shipment.fromBranchId && registry.productId === item.sourceProductId && registry.units.length > 0)) return false;
           const mode = item.quantityMode || inferQuantityMode(item.unit);
           products[productIndex] = { ...products[productIndex], stock: cleanQuantity(products[productIndex].stock + item.quantity, mode) };
           for (const allocation of item.batchAllocations) {
@@ -1636,6 +1877,9 @@ export const usePosStore = create<PosState>()(
 
           const source = products.find((product) => product.id === draft.sourceProductId && product.branchId === sourceBranch.id);
           if (!source || !isValidQuantity(quantity, quantityModeForProduct(source)) || source.stock + epsilon < quantity) return null;
+          const hasRegisteredUnits = state.stockUnitRegistries.some((registry) => registry.branchId === sourceBranch.id
+            && registry.productId === source.id && registry.units.length > 0);
+          if (hasRegisteredUnits) return null;
           const sourceStockBefore = source.stock;
           const sourceTrackedTotal = batches
             .filter((batch) => batch.branchId === sourceBranch.id && batch.productId === source.id)
@@ -1942,18 +2186,14 @@ export const usePosStore = create<PosState>()(
         const product = state.products.find((entry) => entry.id === input.productId && (entry.branchId || DEFAULT_BRANCH_ID) === branchId);
         if (!product) return { ok: false, message: 'ရွေးချယ်ထားသော Product ကို ဒီဆိုင်မှာ မတွေ့ပါ။' };
         if (quantityModeForProduct(product) !== 'whole' || !Number.isInteger(product.stock)) {
-          return { ok: false, message: 'Unit Barcode Registration ကို ပြည့်ကိန်း Stock ပစ္စည်းများမှာသာ အသုံးပြုနိုင်ပါတယ်။' };
+          return { ok: false, message: 'ပစ္စည်းတစ်ခုချင်း Barcode စနစ်ကို ပြည့်ကိန်း Stock ပစ္စည်းများမှာသာ အသုံးပြုနိုင်ပါတယ်။' };
         }
-        if (!Array.isArray(input.units) || input.units.length === 0) return { ok: false, message: 'မှတ်ပုံတင်မည့် Barcode မရှိပါ။' };
+        if (!Array.isArray(input.units) || input.units.length === 0 || input.units.length > 500) {
+          return { ok: false, message: 'တစ်ကြိမ်လျှင် Barcode ၁ ခုမှ ၅၀၀ ခုအထိ ထည့်နိုင်ပါတယ်။' };
+        }
         const productRegistries = state.stockUnitRegistries
           .filter((entry) => entry.branchId === branchId && entry.productId === product.id)
           .sort((a, b) => (a.chunkIndex ?? 0) - (b.chunkIndex ?? 0));
-        const existingInStock = productRegistries.flatMap((entry) => entry.units)
-          .filter((unit) => unit.status === 'in_stock' || unit.status === 'reserved').length;
-        const remaining = Math.max(0, Math.floor(product.stock) - existingInStock);
-        if (input.units.length > remaining) {
-          return { ok: false, message: `လက်ရှိ Stock မှာ Barcode အသစ်ထည့်နိုင်တာ ${remaining} ခုသာ ကျန်ပါတယ်။` };
-        }
         const allRegistered = state.stockUnitRegistries.flatMap((entry) => entry.units.map((unit) => normalizeBarcode(unit.barcode)));
         const usedCodes = new Set(allRegistered);
         const productCodes = new Set(state.products.flatMap((entry) => [normalizeBarcode(entry.barcode), normalizeBarcode(entry.sku)]).filter(Boolean));
@@ -1976,8 +2216,7 @@ export const usePosStore = create<PosState>()(
           ...(input.actorName ? { registeredByName: input.actorName } : {}),
           ...(entry.note?.trim() ? { note: entry.note.trim() } : {}),
         }));
-        // Chunk registries by Product + Branch; never create one Firestore document per bottle.
-        // 250 units/document leaves ample headroom below Firestore's 1 MiB document limit.
+        // One accepted sticker is one newly received physical unit.
         const maxUnitsPerRegistry = 250;
         const nextProductRegistries = productRegistries.map((entry) => ({ ...entry, units: [...entry.units] }));
         let cursor = 0;
@@ -2005,14 +2244,28 @@ export const usePosStore = create<PosState>()(
         }
         const productRegistryIds = new Set(productRegistries.map((entry) => entry.id));
         const nextRegistryIds = new Set(nextProductRegistries.map((entry) => entry.id));
+        const isFirstUnitRegistration = productRegistries.length === 0;
+        // Existing counted stock must be stickered one-for-one on the first
+        // registration; do not double-increase that opening quantity.
+        if (isFirstUnitRegistration && product.stock > 0 && newUnits.length !== product.stock) {
+          return { ok: false, message: `လက်ရှိ Stock ${product.stock} ခု ရှိနေပါတယ်။ ပထမဆုံး Barcode Registration မှာ ရှိပြီးသား Stock အရေအတွက်အတိုင်း Sticker အားလုံး Scan ဖတ်ပါ။ မဟုတ်ရင် လက်ကျန် Stock ကို အရင်စစ်ပြီး 0 ပြင်ပါ။` };
+        }
+        const receivedQuantity = isFirstUnitRegistration && product.stock > 0 ? 0 : newUnits.length;
+        const nextProduct = { ...product, stock: cleanQuantity(product.stock + receivedQuantity, quantityModeForProduct(product)) };
+        const stockBatch: StockBatch | null = receivedQuantity > 0 ? {
+          id: newId(), branchId, productId: product.id, purchaseId: '', supplierId: '',
+          quantity: receivedQuantity, receivedAt: now, expiryDate: '', unitCost: product.costPrice,
+        } : null;
         set((current) => ({
+          products: current.products.map((entry) => entry.id === product.id && (entry.branchId || DEFAULT_BRANCH_ID) === branchId ? nextProduct : entry),
+          stockBatches: stockBatch ? [stockBatch, ...current.stockBatches] : current.stockBatches,
           stockUnitRegistries: [
             ...current.stockUnitRegistries.filter((entry) => !productRegistryIds.has(entry.id) && !nextRegistryIds.has(entry.id)),
             ...nextProductRegistries,
           ],
-          activityLogs: prependAudit(current.activityLogs, makeAudit('STOCK_UNIT_REGISTER', 'Stock Unit', `${product.name} အတွက် Unit Barcode ${newUnits.length} ခု မှတ်ပုံတင်သည်`, product.id, branchId)),
+          activityLogs: prependAudit(current.activityLogs, makeAudit('STOCK_UNIT_REGISTER', 'Stock Unit', `${product.name} · Barcode Sticker ${newUnits.length} ခု Scan ဖတ်ပြီး Stock တိုးသည်`, product.id, branchId)),
         }));
-        return { ok: true, created: newUnits.length, remainingUnregistered: remaining - newUnits.length };
+        return { ok: true, created: newUnits.length, remainingUnregistered: 0 };
       },
       addSupplierPayment: (payment) => {
         const state = get();
@@ -2040,6 +2293,7 @@ export const usePosStore = create<PosState>()(
         const qty = Number(quantity);
         const productForReturn = state.products.find((entry) => entry.id === purchase?.productId && entry.branchId === state.activeBranchId);
         if (!purchase || !productForReturn || !isValidQuantity(qty, quantityModeForProduct(productForReturn))) return state;
+        if (state.stockUnitRegistries.some((registry) => registry.branchId === state.activeBranchId && registry.productId === productForReturn.id && registry.units.some((unit) => unit.status === 'in_stock' || unit.status === 'reserved'))) return state;
         const batch = state.stockBatches.find((entry) => entry.branchId === state.activeBranchId && entry.purchaseId === purchaseId && entry.productId === purchase.productId);
         const product = state.products.find((entry) => entry.id === purchase.productId && entry.branchId === state.activeBranchId);
         if (!batch || !product || qty > batch.quantity) return state;
@@ -2057,27 +2311,27 @@ export const usePosStore = create<PosState>()(
           activityLogs: prependAudit(state.activityLogs, makeAudit('PURCHASE_RETURN', 'Inventory', `${purchase.supplierName} သို့ ${purchase.productName} ${qty} ခု ပြန်ပို့သည် · ${total} MMK`, saved.id, state.activeBranchId)),
         };
       }),
-      openCashShift: (openingCash, note = '') => set((state) => {
+      openCashShift: (openingCash, note = '', actor) => set((state) => {
         if (state.cashShifts.some((shift) => shift.branchId === state.activeBranchId && !shift.closedAt) || !Number.isFinite(openingCash) || openingCash < 0) return state;
-        const shift: CashShift = { branchId: state.activeBranchId, id: newId(), openedAt: new Date().toISOString(), openedBy: 'Local device user', openingCash, note };
-        return { cashShifts: [shift, ...state.cashShifts], activityLogs: prependAudit(state.activityLogs, makeAudit('OPEN_SHIFT', 'Cash shift', `ငွေကောင်တာဖွင့်သည် · အဖွင့်ငွေ ${openingCash} MMK`, shift.id, state.activeBranchId)) };
+        const shift: CashShift = { branchId: state.activeBranchId, id: newId(), openedAt: new Date().toISOString(), openedBy: actor?.name?.trim() || 'Local device user', ...(actor?.uid ? { openedByUid: actor.uid } : {}), openingCash, note };
+        return { cashShifts: [shift, ...state.cashShifts], activityLogs: prependAudit(state.activityLogs, { ...makeAudit('OPEN_SHIFT', 'Cash shift', `ငွေကောင်တာဖွင့်သည် · အဖွင့်ငွေ ${openingCash} MMK`, shift.id, state.activeBranchId), actor: actor?.name?.trim() || 'Local device user', actorUid: actor?.uid }) };
       }),
-      closeCashShift: (id, closingCash, expectedCash, note = '') => set((state) => {
+      closeCashShift: (id, closingCash, expectedCash, note = '', actor) => set((state) => {
         const shift = state.cashShifts.find((entry) => entry.id === id && entry.branchId === state.activeBranchId && !entry.closedAt);
         if (!shift || !Number.isFinite(closingCash) || closingCash < 0) return state;
         const closedAt = new Date().toISOString();
         return {
-          cashShifts: state.cashShifts.map((entry) => entry.id === id && entry.branchId === state.activeBranchId ? { ...entry, closedAt, closingCash, expectedCash, note: [entry.note, note].filter(Boolean).join(' · ') } : entry),
-          activityLogs: prependAudit(state.activityLogs, makeAudit('CLOSE_SHIFT', 'Cash shift', `ငွေကောင်တာပိတ်သည် · မျှော်မှန်း ${expectedCash} MMK · ရေတွက် ${closingCash} MMK`, id, state.activeBranchId)),
+          cashShifts: state.cashShifts.map((entry) => entry.id === id && entry.branchId === state.activeBranchId ? { ...entry, closedAt, closingCash, expectedCash, variance: closingCash - expectedCash, ...(actor?.uid ? { closedByUid: actor.uid } : {}), ...(actor?.name?.trim() ? { closedByName: actor.name.trim() } : {}), note: [entry.note, note].filter(Boolean).join(' · ') } : entry),
+          activityLogs: prependAudit(state.activityLogs, { ...makeAudit('CLOSE_SHIFT', 'Cash shift', `ငွေကောင်တာပိတ်သည် · မျှော်မှန်း ${expectedCash} MMK · ရေတွက် ${closingCash} MMK`, id, state.activeBranchId), actor: actor?.name?.trim() || 'Local device user', actorUid: actor?.uid }),
         };
       }),
       addCashMovement: (movement) => set((state) => {
         const active = state.cashShifts.find((shift) => shift.id === movement.shiftId && shift.branchId === state.activeBranchId && !shift.closedAt);
-        if (!active || !Number.isFinite(movement.amount) || movement.amount <= 0 || !movement.note.trim()) return state;
+        if (!active || !Number.isSafeInteger(movement.amount) || movement.amount <= 0 || !movement.note.trim()) return state;
         const saved: CashMovement = { ...movement, branchId: state.activeBranchId, id: newId(), date: new Date().toISOString() };
         return {
           cashMovements: [saved, ...state.cashMovements],
-          activityLogs: prependAudit(state.activityLogs, makeAudit(movement.direction === 'in' ? 'CASH_IN' : 'CASH_OUT', 'Cash movement', `${movement.note} · ${movement.amount} MMK`, saved.id, state.activeBranchId)),
+          activityLogs: prependAudit(state.activityLogs, { ...makeAudit(movement.direction === 'in' ? 'CASH_IN' : 'CASH_OUT', 'Cash movement', `${movement.note} · ${movement.amount} MMK`, saved.id, state.activeBranchId), actor: movement.createdByName || 'Local device user', actorUid: movement.createdByUid }),
         };
       }),
       addActivityLog: (entry) => set((state) => ({ activityLogs: prependAudit(state.activityLogs, { ...entry, branchId: state.activeBranchId, id: newId(), at: new Date().toISOString() }) })),
@@ -2126,6 +2380,9 @@ export const usePosStore = create<PosState>()(
         const nextSales = normalizeBranchRecords<Sale>(data.sales, state.sales);
         const nextExpenses = normalizeBranchRecords<Expense>(data.expenses, state.expenses);
         const nextCashierSettlements = normalizeBranchRecords<CashierSettlementRecord>(data.cashierSettlements, state.cashierSettlements);
+        const nextBranchFinanceLedgerEntries = normalizeBranchRecords<BranchFinanceLedgerEntry>(data.branchFinanceLedgerEntries, state.branchFinanceLedgerEntries);
+        const nextCashierAdvanceReconciliations = normalizeBranchRecords<CashierAdvanceReconciliationRecord>(data.cashierAdvanceReconciliations, state.cashierAdvanceReconciliations);
+        const nextBranchFinanceReconciliations = normalizeBranchRecords<BranchFinanceReconciliationRecord>(data.branchFinanceReconciliations, state.branchFinanceReconciliations);
         const nextHeldItems = normalizeBranchRecords<HeldItem>(data.heldItems, state.heldItems);
         const nextCustomerPayments = normalizeBranchRecords<CustomerPayment>(data.customerPayments, state.customerPayments);
         const nextPurchases = normalizeBranchRecords<Purchase>(data.purchases, state.purchases);
@@ -2156,7 +2413,7 @@ export const usePosStore = create<PosState>()(
         }
         return {
           branches: nextBranches, activeBranchId: nextActiveBranchId, categories,
-          products: nextProducts, sales: nextSales, expenses: nextExpenses, cashierSettlements: nextCashierSettlements, heldItems: nextHeldItems,
+          products: nextProducts, sales: nextSales, expenses: nextExpenses, cashierSettlements: nextCashierSettlements, branchFinanceLedgerEntries: nextBranchFinanceLedgerEntries, cashierAdvanceReconciliations: nextCashierAdvanceReconciliations, branchFinanceReconciliations: nextBranchFinanceReconciliations, heldItems: nextHeldItems,
           customers: Array.isArray(data.customers) ? data.customers : state.customers,
           suppliers: Array.isArray(data.suppliers) ? data.suppliers : state.suppliers,
           customerPayments: nextCustomerPayments, purchases: nextPurchases, supplierPayments: nextSupplierPayments,
@@ -2164,12 +2421,12 @@ export const usePosStore = create<PosState>()(
           cashMovements: nextCashMovements, activityLogs: nextActivityLogs, ownerProfile: data.ownerProfile ? normalizeOwnerProfile({ ...normalizeOwnerProfile(state.ownerProfile), ...data.ownerProfile }) : normalizeOwnerProfile(state.ownerProfile), settings,
         };
       }),
-      clearAllData: () => set({ branches: [makeDefaultBranch()], activeBranchId: DEFAULT_BRANCH_ID, categories: makeDefaultCategories(DEFAULT_BRANCH_ID), products: [], sales: [], expenses: [], cashierSettlements: [], heldItems: [], customers: [], suppliers: [], customerPayments: [], purchases: [], supplierPayments: [], purchaseReturns: [], stockBatches: [], stockReceipts: [], stockTransfers: [], stockShipments: [], stockUnitRegistries: [], cashShifts: [], cashMovements: [], activityLogs: [], ownerProfile: defaultOwnerProfile, settings: defaultSettings }),
+      clearAllData: () => set({ branches: [makeDefaultBranch()], activeBranchId: DEFAULT_BRANCH_ID, categories: makeDefaultCategories(DEFAULT_BRANCH_ID), products: [], sales: [], expenses: [], cashierSettlements: [], branchFinanceLedgerEntries: [], cashierAdvanceReconciliations: [], branchFinanceReconciliations: [], heldItems: [], customers: [], suppliers: [], customerPayments: [], purchases: [], supplierPayments: [], purchaseReturns: [], stockBatches: [], stockReceipts: [], stockTransfers: [], stockShipments: [], stockUnitRegistries: [], cashShifts: [], cashMovements: [], activityLogs: [], ownerProfile: defaultOwnerProfile, settings: defaultSettings }),
     }),
     {
       name: 'minimart-pos-data-v1',
       storage: createJSONStorage(() => localStorage),
-      version: 14,
+      version: 18,
       migrate: migrateState,
       // Also normalize same-version or partially-written legacy snapshots on every hydration.
       merge: (persistedState, currentState) => {
@@ -2182,12 +2439,15 @@ export const usePosStore = create<PosState>()(
           products: Array.isArray(persisted.products) ? persisted.products.map((product) => ({ ...product, quantityMode: product.quantityMode || inferQuantityMode(product.unit) })) : currentState.products,
           stockUnitRegistries: Array.isArray(persisted.stockUnitRegistries) ? persisted.stockUnitRegistries : currentState.stockUnitRegistries,
           cashierSettlements: Array.isArray(persisted.cashierSettlements) ? persisted.cashierSettlements : currentState.cashierSettlements,
+          branchFinanceLedgerEntries: Array.isArray(persisted.branchFinanceLedgerEntries) ? persisted.branchFinanceLedgerEntries : currentState.branchFinanceLedgerEntries,
+          cashierAdvanceReconciliations: Array.isArray(persisted.cashierAdvanceReconciliations) ? persisted.cashierAdvanceReconciliations : currentState.cashierAdvanceReconciliations,
+          branchFinanceReconciliations: Array.isArray(persisted.branchFinanceReconciliations) ? persisted.branchFinanceReconciliations : currentState.branchFinanceReconciliations,
           ownerProfile: normalizeOwnerProfile(persisted.ownerProfile ?? currentState.ownerProfile),
         };
       },
       partialize: (state) => ({
         branches: state.branches, activeBranchId: state.activeBranchId, categories: state.categories,
-        products: state.products, sales: state.sales, expenses: state.expenses, cashierSettlements: state.cashierSettlements, heldItems: state.heldItems,
+        products: state.products, sales: state.sales, expenses: state.expenses, cashierSettlements: state.cashierSettlements, branchFinanceLedgerEntries: state.branchFinanceLedgerEntries, cashierAdvanceReconciliations: state.cashierAdvanceReconciliations, branchFinanceReconciliations: state.branchFinanceReconciliations, heldItems: state.heldItems,
         customers: state.customers, suppliers: state.suppliers, customerPayments: state.customerPayments,
         purchases: state.purchases, supplierPayments: state.supplierPayments, purchaseReturns: state.purchaseReturns, stockBatches: state.stockBatches, stockReceipts: state.stockReceipts, stockTransfers: state.stockTransfers, stockShipments: state.stockShipments, stockUnitRegistries: state.stockUnitRegistries, cashShifts: state.cashShifts,
         cashMovements: state.cashMovements, activityLogs: state.activityLogs, ownerProfile: state.ownerProfile, settings: state.settings,

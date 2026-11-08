@@ -17,6 +17,8 @@ type Props = {
   isCashier: boolean;
   cashierUid: string;
   cashierName: string;
+  branchKpayAccountName?: string;
+  branchKpayAccountNumber?: string;
   onCreate: (input: CashierSettlementCreateInput) => Promise<void>;
 };
 
@@ -38,7 +40,7 @@ const csvDownload = (rows: unknown[][]) => {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 };
 
-export function CashierSettlementManagementPage({ settlements, expenses, branchId, branchName, currency, isCashier, cashierUid, cashierName, onCreate }: Props) {
+export function CashierSettlementManagementPage({ settlements, expenses, branchId, branchName, currency, isCashier, cashierUid, cashierName, branchKpayAccountName = '', branchKpayAccountNumber = '', onCreate }: Props) {
   const access = useBusinessAccess();
   const [members, setMembers] = useState<CashierOption[]>([]);
   const [membersLoading, setMembersLoading] = useState(false);
@@ -50,8 +52,9 @@ export function CashierSettlementManagementPage({ settlements, expenses, branchI
   const [relatedExpenseId, setRelatedExpenseId] = useState('');
   const [receiverAccountName, setReceiverAccountName] = useState('');
   const [receiverAccountNumber, setReceiverAccountNumber] = useState('');
-  const [senderAccountName, setSenderAccountName] = useState('');
-  const [senderAccountNumber, setSenderAccountNumber] = useState('');
+  const [senderAccountName, setSenderAccountName] = useState(branchKpayAccountName);
+  const [senderAccountNumber, setSenderAccountNumber] = useState(branchKpayAccountNumber);
+  useEffect(() => { setSenderAccountName(branchKpayAccountName); setSenderAccountNumber(branchKpayAccountNumber); }, [branchKpayAccountName, branchKpayAccountNumber]);
   const [transactionReference, setTransactionReference] = useState('');
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
@@ -198,8 +201,8 @@ export function CashierSettlementManagementPage({ settlements, expenses, branchI
           <strong>KPay ငွေလွှဲအချက်အလက်</strong>
           <label>Cashier လက်ခံသူအမည် *<input required value={receiverAccountName} onChange={(event) => setReceiverAccountName(event.target.value)} placeholder="ဥပမာ - Aung Aung" /></label>
           <label>Cashier KPay ဖုန်းနံပါတ် / Account *<input required value={receiverAccountNumber} onChange={(event) => setReceiverAccountNumber(event.target.value)} placeholder="09xxxxxxxxx" inputMode="tel" /></label>
-          <label>ဆိုင်ဘက်မှ ပေးချေသည့် KPay Account အမည်<input value={senderAccountName} onChange={(event) => setSenderAccountName(event.target.value)} placeholder="ဆိုင် KPay Account အမည် (optional)" /></label>
-          <label>ဆိုင်ဘက်မှ KPay Account နံပါတ်<input value={senderAccountNumber} onChange={(event) => setSenderAccountNumber(event.target.value)} placeholder="ဆိုင် KPay ဖုန်းနံပါတ် (optional)" inputMode="tel" /></label>
+          <label>ဆိုင်ဘက်မှ ပေးချေသည့် KPay Account အမည်<input value={senderAccountName} onChange={(event) => setSenderAccountName(event.target.value)} placeholder="Branch KPay Account မသတ်မှတ်ရသေး" /></label>
+          <label>ဆိုင်ဘက်မှ KPay Account နံပါတ်<input value={senderAccountNumber} onChange={(event) => setSenderAccountNumber(event.target.value)} placeholder="Branch KPay Account မသတ်မှတ်ရသေး" inputMode="tel" /></label>
           <label>KPay Transaction ID *<input required value={transactionReference} onChange={(event) => setTransactionReference(event.target.value)} placeholder="ငွေလွှဲပြီးနောက် ရရှိသည့် Transaction ID" maxLength={120} /></label>
         </div>}
         <label>မှတ်ချက်<textarea rows={3} value={note} onChange={(event) => setNote(event.target.value)} placeholder="ဥပမာ - November လစာ / Expense ပြန်အမ်း" /></label>

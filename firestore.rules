@@ -53,6 +53,17 @@ service cloud.firestore {
         && get(memberPath(businessId, request.auth.uid)).data.branchIds[0] == branchId;
     }
 
+
+    function branchHasConfiguredKPay(businessId, branchId) {
+      return exists(branchPath(businessId, branchId))
+        && get(branchPath(businessId, branchId)).data.payload is map
+        && get(branchPath(businessId, branchId)).data.payload.settings is map
+        && get(branchPath(businessId, branchId)).data.payload.settings.kpayAccountName is string
+        && get(branchPath(businessId, branchId)).data.payload.settings.kpayAccountName.size() > 0
+        && get(branchPath(businessId, branchId)).data.payload.settings.kpayAccountNumber is string
+        && get(branchPath(businessId, branchId)).data.payload.settings.kpayAccountNumber.size() > 0;
+    }
+
     function isStockReceiverForBranch(businessId, branchId) {
       return isCashierForBranch(businessId, branchId)
         && get(memberPath(businessId, request.auth.uid)).data.canReceiveStock == true;
@@ -83,6 +94,227 @@ service cloud.firestore {
         && request.resource.data.payload.receivedAt is string
         && request.resource.data.payload.receivedItems is list
         && request.resource.data.payload.receivedItems.size() == resource.data.payload.items.size();
+    }
+
+    // Exact-match Branch Shipment completion is restricted to a receiver assigned
+    // to the destination branch. Product/Batch writes must reference the same
+    // approved shipment and a specific immutable line/allocation in that shipment.
+    function validStockShipmentAutoCompleteUpdate(businessId, branchId) {
+      let payload = request.resource.data.payload;
+      return isStockReceiverForBranch(businessId, branchId)
+        && resource.data.scope == 'branchRecord'
+        && resource.data.kind == 'stockShipments'
+        && resource.data.branchId == branchId
+        && resource.data.deleted != true
+        && resource.data.payload is map
+        && resource.data.payload.status == 'dispatched'
+        && request.resource.data.scope == 'branchRecord'
+        && request.resource.data.kind == 'stockShipments'
+        && request.resource.data.branchId == branchId
+        && request.resource.data.deleted == false
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['payload', 'updatedAt', 'updatedBy'])
+        && payload.diff(resource.data.payload).affectedKeys().hasOnly([
+          'status', 'receivedAt', 'receivedByUid', 'receivedByEmail', 'receivedByName', 'receiverNote',
+          'receivedItems', 'approvedAt', 'approvedByUid', 'approvedByEmail', 'approvedByName',
+          'approvalNote', 'completionMode', 'autoCompletedAt', 'autoCompletedByUid', 'autoCompletionPlan'
+        ])
+        && payload.status == 'approved'
+        && payload.toBranchId == branchId
+        && payload.completionMode == 'auto'
+        && payload.autoCompletedByUid == request.auth.uid
+        && payload.autoCompletedAt is string
+        && payload.receivedByUid == request.auth.uid
+        && payload.receivedAt is string
+        && payload.approvedByUid == request.auth.uid
+        && payload.approvedAt is string
+        && payload.items == resource.data.payload.items
+        && payload.items is list
+        && payload.items.size() > 0
+        && payload.items.size() <= 50
+        && payload.receivedItems is list
+        && payload.receivedItems.size() == payload.items.size()
+        && payload.autoCompletionPlan is list
+        && payload.autoCompletionPlan.size() == payload.items.size();
+    }
+
+    function validStockShipmentProductCreate(businessId, branchId, productId) {
+      let shipmentId = request.resource.data.sourceShipmentId;
+      let lineIndex = request.resource.data.sourceShipmentLineIndex;
+      let shipmentPath = /databases/$(database)/documents/businesses/$(businessId)/branches/$(branchId)/stockShipments/$(shipmentId);
+      let shipment = getAfter(shipmentPath).data;
+      let payload = shipment.payload;
+      let line = payload.items[lineIndex];
+      let receipt = payload.receivedItems[lineIndex];
+      let plan = payload.autoCompletionPlan[lineIndex];
+      let product = request.resource.data.payload;
+      return isStockReceiverForBranch(businessId, branchId)
+        && shipmentId is string
+        && lineIndex is int
+        && existsAfter(shipmentPath)
+        && shipment.kind == 'stockShipments'
+        && shipment.branchId == branchId
+        && payload.status == 'approved'
+        && payload.completionMode == 'auto'
+        && payload.autoCompletedByUid == request.auth.uid
+        && payload.toBranchId == branchId
+        && lineIndex >= 0 && lineIndex < payload.items.size()
+        && line.sourceProductId == receipt.sourceProductId
+        && plan.sourceProductId == line.sourceProductId
+        && plan.destinationProductId == productId
+        && plan.destinationStockBefore == 0
+        && plan.destinationStockAfter >= line.quantity - 0.000001
+        && plan.destinationStockAfter <= line.quantity + 0.000001
+        && plan.destinationBatchIds is list
+        && plan.destinationBatchIds.size() == line.batchAllocations.size()
+        && receipt.receivedQuantity == line.quantity
+        && receipt.damagedQuantity == 0
+        && request.resource.data.keys().hasOnly([
+          'scope', 'kind', 'branchId', 'payload', 'deleted', 'updatedAt', 'updatedBy',
+          'sourceShipmentId', 'sourceShipmentLineIndex'
+        ])
+        && request.resource.data.scope == 'branchRecord'
+        && request.resource.data.kind == 'products'
+        && request.resource.data.branchId == branchId
+        && request.resource.data.deleted == false
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.sourceShipmentId == shipmentId
+        && request.resource.data.sourceShipmentLineIndex == lineIndex
+        && product is map
+        && product.id == productId
+        && product.branchId == branchId
+        && product.stock == line.quantity
+        && product.name == line.productName
+        && product.sku == line.sku
+        && product.barcode == line.barcode
+        && product.costPrice == line.costPrice
+        && product.retailPrice == line.retailPrice
+        && product.wholesalePrice == line.wholesalePrice
+        && product.lowStockAt == line.lowStockAt
+        && product.unit == line.unit
+        && product.quantityMode == line.quantityMode;
+    }
+
+    function validStockShipmentProductUpdate(businessId, branchId, productId) {
+      let shipmentId = request.resource.data.sourceShipmentId;
+      let lineIndex = request.resource.data.sourceShipmentLineIndex;
+      let shipmentPath = /databases/$(database)/documents/businesses/$(businessId)/branches/$(branchId)/stockShipments/$(shipmentId);
+      let shipment = getAfter(shipmentPath).data;
+      let payload = shipment.payload;
+      let line = payload.items[lineIndex];
+      let receipt = payload.receivedItems[lineIndex];
+      let plan = payload.autoCompletionPlan[lineIndex];
+      let product = request.resource.data.payload;
+      let previous = resource.data.payload;
+      return isStockReceiverForBranch(businessId, branchId)
+        && resource.data.scope == 'branchRecord'
+        && resource.data.kind == 'products'
+        && resource.data.branchId == branchId
+        && resource.data.deleted != true
+        && shipmentId is string
+        && lineIndex is int
+        && existsAfter(shipmentPath)
+        && shipment.kind == 'stockShipments'
+        && shipment.branchId == branchId
+        && payload.status == 'approved'
+        && payload.completionMode == 'auto'
+        && payload.autoCompletedByUid == request.auth.uid
+        && payload.toBranchId == branchId
+        && lineIndex >= 0 && lineIndex < payload.items.size()
+        && line.sourceProductId == receipt.sourceProductId
+        && plan.sourceProductId == line.sourceProductId
+        && plan.destinationProductId == productId
+        && plan.destinationStockBefore == previous.stock
+        && plan.destinationStockAfter >= previous.stock + line.quantity - 0.000001
+        && plan.destinationStockAfter <= previous.stock + line.quantity + 0.000001
+        && plan.destinationBatchIds is list
+        && plan.destinationBatchIds.size() == line.batchAllocations.size()
+        && receipt.receivedQuantity == line.quantity
+        && receipt.damagedQuantity == 0
+        && request.resource.data.keys().hasOnly([
+          'scope', 'kind', 'branchId', 'payload', 'deleted', 'updatedAt', 'updatedBy',
+          'sourceShipmentId', 'sourceShipmentLineIndex'
+        ])
+        && request.resource.data.scope == 'branchRecord'
+        && request.resource.data.kind == 'products'
+        && request.resource.data.branchId == branchId
+        && request.resource.data.deleted == false
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.sourceShipmentId == shipmentId
+        && request.resource.data.sourceShipmentLineIndex == lineIndex
+        && request.resource.data.payload.diff(previous).affectedKeys().hasOnly([
+          'stock', 'name', 'sku', 'barcode', 'category', 'costPrice', 'retailPrice',
+          'wholesalePrice', 'lowStockAt', 'unit', 'quantityMode'
+        ])
+        && product.id == productId
+        && product.branchId == branchId
+        && product.stock == plan.destinationStockAfter
+        && product.name == line.productName
+        && product.sku == (line.sku != '' ? line.sku : previous.sku)
+        && product.barcode == (line.barcode != '' ? line.barcode : (previous.barcode is string ? previous.barcode : ''))
+        && product.category == (line.category != '' ? line.category : previous.category)
+        && product.costPrice >= (((previous.stock * previous.costPrice) + (line.quantity * line.costPrice)) / plan.destinationStockAfter) - 0.000001
+        && product.costPrice <= (((previous.stock * previous.costPrice) + (line.quantity * line.costPrice)) / plan.destinationStockAfter) + 0.000001
+        && product.retailPrice == line.retailPrice
+        && product.wholesalePrice == line.wholesalePrice
+        && product.lowStockAt == line.lowStockAt
+        && product.unit == line.unit
+        && product.quantityMode == line.quantityMode;
+    }
+
+    function validStockShipmentBatchCreate(businessId, branchId, batchId) {
+      let shipmentId = request.resource.data.sourceShipmentId;
+      let lineIndex = request.resource.data.sourceShipmentLineIndex;
+      let batchIndex = request.resource.data.sourceShipmentBatchIndex;
+      let shipmentPath = /databases/$(database)/documents/businesses/$(businessId)/branches/$(branchId)/stockShipments/$(shipmentId);
+      let shipment = getAfter(shipmentPath).data;
+      let payload = shipment.payload;
+      let line = payload.items[lineIndex];
+      let receipt = payload.receivedItems[lineIndex];
+      let plan = payload.autoCompletionPlan[lineIndex];
+      let allocation = line.batchAllocations[batchIndex];
+      return isStockReceiverForBranch(businessId, branchId)
+        && shipmentId is string
+        && lineIndex is int
+        && batchIndex is int
+        && existsAfter(shipmentPath)
+        && shipment.kind == 'stockShipments'
+        && shipment.branchId == branchId
+        && payload.status == 'approved'
+        && payload.completionMode == 'auto'
+        && payload.autoCompletedByUid == request.auth.uid
+        && payload.toBranchId == branchId
+        && lineIndex >= 0 && lineIndex < payload.items.size()
+        && batchIndex >= 0 && batchIndex < line.batchAllocations.size()
+        && line.sourceProductId == receipt.sourceProductId
+        && receipt.receivedQuantity == line.quantity
+        && receipt.damagedQuantity == 0
+        && plan.sourceProductId == line.sourceProductId
+        && plan.destinationBatchIds[batchIndex] == batchId
+        && request.resource.data.payload.productId == plan.destinationProductId
+        && request.resource.data.keys().hasOnly([
+          'scope', 'kind', 'branchId', 'payload', 'deleted', 'updatedAt', 'updatedBy',
+          'sourceShipmentId', 'sourceShipmentLineIndex', 'sourceShipmentBatchIndex'
+        ])
+        && request.resource.data.scope == 'branchRecord'
+        && request.resource.data.kind == 'stockBatches'
+        && request.resource.data.branchId == branchId
+        && request.resource.data.deleted == false
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.sourceShipmentId == shipmentId
+        && request.resource.data.sourceShipmentLineIndex == lineIndex
+        && request.resource.data.sourceShipmentBatchIndex == batchIndex
+        && request.resource.data.payload is map
+        && request.resource.data.payload.id == batchId
+        && request.resource.data.payload.branchId == branchId
+        && request.resource.data.payload.productId == plan.destinationProductId
+        && request.resource.data.payload.stockReceiptId == shipmentId
+        && request.resource.data.payload.quantity >= allocation.quantity - 0.000001
+        && request.resource.data.payload.quantity <= allocation.quantity + 0.000001
+        && request.resource.data.payload.unitCost == allocation.unitCost
+        && request.resource.data.payload.expiryDate == allocation.expiryDate
+        && request.resource.data.payload.purchaseId == allocation.purchaseId
+        && request.resource.data.payload.supplierId == allocation.supplierId;
     }
 
     function validCashierSaleAuditCreate(businessId, branchId, eventId) {
@@ -169,7 +401,11 @@ service cloud.firestore {
         && request.resource.data.payload.items.size() > 0
         && request.resource.data.payload.total is number
         && request.resource.data.payload.total >= 0
-        && request.resource.data.payload.paymentMethod in ['Cash', 'Credit']
+        && request.resource.data.payload.paymentMethod in ['Cash', 'KPay', 'Credit']
+        && (request.resource.data.payload.paymentMethod != 'KPay'
+          || (request.resource.data.payload.kpayTransactionReference is string
+            && request.resource.data.payload.kpayTransactionReference.size() > 0
+            && branchHasConfiguredKPay(businessId, branchId)))
         && request.resource.data.payload.productDeltas is map
         && request.resource.data.payload.productDeltas.keys().size() > 0
         && request.resource.data.payload.stockLines is list
@@ -297,6 +533,45 @@ service cloud.firestore {
         ]);
     }
 
+    // Cashier may mark registered barcode units sold only in the same
+    // transaction that creates the linked Sale for this exact Branch.
+    function linkedStockUnitSaleUpdate(businessId, branchId, registryId) {
+      let saleId = request.resource.data.sourceSaleId;
+      let linkedSale = salePath(businessId, branchId, saleId);
+      return isCashierForBranch(businessId, branchId)
+        && resource.data.kind == 'stockUnitRegistries'
+        && resource.data.branchId == branchId
+        && resource.data.deleted != true
+        && resource.data.payload is map
+        && request.resource.data.scope == 'branchRecord'
+        && request.resource.data.kind == 'stockUnitRegistries'
+        && request.resource.data.branchId == branchId
+        && request.resource.data.deleted == false
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.sourceSaleId is string
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'payload', 'updatedAt', 'updatedBy', 'sourceSaleId'
+        ])
+        && request.resource.data.payload is map
+        && request.resource.data.payload.diff(resource.data.payload).affectedKeys().hasOnly([
+          'units', 'updatedAt', 'updatedByUid'
+        ])
+        && request.resource.data.payload.productId == resource.data.payload.productId
+        && request.resource.data.payload.branchId == branchId
+        && request.resource.data.payload.units is list
+        && resource.data.payload.units is list
+        && request.resource.data.payload.units.size() == resource.data.payload.units.size()
+        && !exists(linkedSale)
+        && existsAfter(linkedSale)
+        && getAfter(linkedSale).data.kind == 'sales'
+        && getAfter(linkedSale).data.branchId == branchId
+        && getAfter(linkedSale).data.updatedBy == request.auth.uid
+        && getAfter(linkedSale).data.payload.createdByUid == request.auth.uid
+        && getAfter(linkedSale).data.payload.status == 'completed'
+        && getAfter(linkedSale).data.payload.stockUnitRegistryIds is list
+        && getAfter(linkedSale).data.payload.stockUnitRegistryIds.hasAny([registryId]);
+    }
+
     function validCashierCustomerCreate(businessId, recordId) {
       let branchId = request.resource.data.branchId;
       let saleId = request.resource.data.sourceSaleId;
@@ -358,7 +633,7 @@ service cloud.firestore {
         match /{collectionName}/{recordId} {
           allow get: if isOwner(businessId)
             || (isCashierForBranch(businessId, branchId)
-              && (collectionName in ['categories', 'products', 'stockBatches']
+              && (collectionName in ['categories', 'products', 'stockBatches', 'stockUnitRegistries']
                 || (collectionName == 'stockShipments' && isStockReceiverForBranch(businessId, branchId))
                 || (collectionName == 'expenses'
                   && (!exists(/databases/$(database)/documents/businesses/$(businessId)/branches/$(branchId)/expenses/$(recordId))
@@ -375,7 +650,7 @@ service cloud.firestore {
 
           allow list: if isOwner(businessId)
             || (isCashierForBranch(businessId, branchId)
-              && (collectionName in ['categories', 'products', 'stockBatches']
+              && (collectionName in ['categories', 'products', 'stockBatches', 'stockUnitRegistries']
                 || (collectionName == 'stockShipments' && isStockReceiverForBranch(businessId, branchId))
                 || (collectionName == 'expenses'
                   && request.query.limit <= 100
@@ -390,15 +665,18 @@ service cloud.firestore {
           allow create: if (isOwner(businessId) && collectionName != 'auditEvents')
             || (collectionName == 'sales' && validCashierSaleCreate(businessId, branchId, recordId))
             || (collectionName == 'expenses' && validCashierExpenseCreate(businessId, branchId, recordId))
+            || (collectionName == 'products' && validStockShipmentProductCreate(businessId, branchId, recordId))
+            || (collectionName == 'stockBatches' && validStockShipmentBatchCreate(businessId, branchId, recordId))
             || (collectionName == 'auditEvents' && (validCashierSaleAuditCreate(businessId, branchId, recordId)
               || validOwnerVoidAuditCreate(businessId, branchId, recordId)));
 
-          allow update: if (isOwner(businessId) && collectionName != 'auditEvents')
-            || (collectionName == 'stockShipments' && validStockShipmentReceiptUpdate(businessId, branchId))
-            || (collectionName == 'products' && linkedProductStockReduction(businessId, branchId, recordId))
-            || (collectionName == 'stockBatches' && linkedBatchStockReduction(businessId, branchId, recordId));
+          allow update: if (isOwner(businessId) && collectionName != 'auditEvents' && collectionName != 'branchFinanceReconciliations')
+            || (collectionName == 'stockShipments' && (validStockShipmentReceiptUpdate(businessId, branchId) || validStockShipmentAutoCompleteUpdate(businessId, branchId)))
+            || (collectionName == 'products' && (linkedProductStockReduction(businessId, branchId, recordId) || validStockShipmentProductUpdate(businessId, branchId, recordId)))
+            || (collectionName == 'stockBatches' && linkedBatchStockReduction(businessId, branchId, recordId))
+            || (collectionName == 'stockUnitRegistries' && linkedStockUnitSaleUpdate(businessId, branchId, recordId));
 
-          allow delete: if isOwner(businessId) && collectionName != 'auditEvents';
+          allow delete: if isOwner(businessId) && collectionName != 'auditEvents' && collectionName != 'branchFinanceReconciliations';
         }
       }
 

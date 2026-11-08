@@ -1,55 +1,43 @@
-# Minimart POS — v3.1.1 Cashier KPay & Cash Settlement (Preview 7)
+# Minimart POS — v3.2.0 Preview 5
 
-ဒီ Preview မှာ Owner သည် Cashier တစ်ယောက်ချင်းစီထံ Cash / KPay ဖြင့် အမှန်တကယ် ပေးချေပြီးနောက် Settlement မှတ်တမ်းတင်နိုင်သည်။ Cashier သည် မိမိ UID နှင့်ကိုက်ညီသော ငွေလက်ခံ History ကိုသာ ကြည့်နိုင်သည်။
+ဒီ Project သည် Minimart POS v3.2.0 အတွက် သီးခြား Preview Working Copy ဖြစ်သည်။ Production Release အဖြစ် မသတ်မှတ်ရသေးပါ။
 
-## ပါဝင်သောအချက်များ
+## စတင်အသုံးပြုရန်
 
-- Cashier တစ်ယောက်ချင်းစီကို Owner က Cash / KPay ဖြင့် ငွေရှင်းပေးနိုင်သည်။
-- ငွေရှင်းအမျိုးအစား: Expense Reimbursement, Cash Advance, Salary, Other Payment။
-- KPay Record အတွက် Cashier လက်ခံသူအမည်၊ Account Number နှင့် Transaction ID လိုအပ်သည်။ Duplicate KPay Transaction ID ကို UI / Store Validation နှင့် Deterministic Settlement ID ဖြင့် ကာကွယ်ထားသည်။
-- Owner သည် သက်ဆိုင်ရာ Branch ၏ Active Cashier Member ကို ရွေးနိုင်သည်။
-- Cashier သည် မိမိ Settlement History ကိုသာ ကြည့်နိုင်သည်။
-- Expense Reimbursement သည် ကိုယ်ပိုင်ငွေဖြင့် တင်ပြထားသော Expense တစ်ခုကို တစ်ကြိမ်သာ အပြည့်ပြန်အမ်းနိုင်ပြီး Settlement နှင့် Expense ကို ချိတ်ဆက်သည်။
-- Cash Payment အတွက် Open Cash Shift ရှိပါက Cash Out Movement ဖန်တီးသည်။
-- Owner Auto Sync / Cashier own-settlement listener / Backup & Restore ထဲတွင် Settlement Data ပါဝင်သည်။
-- CSV Export နှင့် Cashier monthly Cash/KPay summary ပါဝင်သည်。
+```bash
+npm install
+npm run typecheck
+npm run build
+npm run dev
+```
 
-## KPay အသုံးပြုမှု
+## Project Structure
 
-ဒီ App မှ KPay ကို တိုက်ရိုက်မလွှဲပါ။ Owner သည် KPay App မှ အရင်လွှဲပြီးမှ Transaction ID ဖြည့်ကာ ငွေရှင်းပြီး မှတ်တမ်းတင်ရသည်။ Cashier ရဲ့ လက်ခံ Account နဲ့ ငွေလွှဲအချက်အလက်တွေကို မှတ်တမ်းအဖြစ် သိမ်းသည်။
+- `src/features/auth/` — Website ဖွင့်ချိန် ပထမဆုံးပြသမည့် Standalone Login Screen
+- `src/components/` — POS နှင့် Management UI Components
+- `src/lib/` — Firebase, Sync, Business Access နှင့် shared services
+- `src/store/` — Zustand POS Store
+- `src/types/` — TypeScript data types
+- `public/` — PWA manifest, icons နှင့် service worker
+- `docs/current/` — လက်ရှိ v3.2.0 ဆိုင်ရာလမ်းညွှန်
+- `docs/testing/` — စမ်းသပ်ရန် Checklist များ
+- `docs/releases/` — ယခင် Release Notes
+- `docs/archive/` — Version အဟောင်းများ၏ မှတ်တမ်း
+- `docs/reference/` — Firebase, Stock, Cloud Sync နှင့် အခြား Technical Reference များ
 
-## ဒီ Preview တွင် မပါသေးသောအရာများ
+## Login Behavior
 
-- Branch KPay Master Account Setup / Balance Ledger။
-- KPay API Direct Transfer။
-- Cashier Member Profile မှ KPay Account Auto-fill။
-- Receipt Photo Upload။
-- Partial Expense Reimbursement။
-- Cash Advance Reconciliation / Outstanding Advance။
-- Settlement Void / Reversal UI။
-- Salary / Cash Advance / Other Payment များကို Profit Analytics Expense Total နှင့် အလိုအလျောက် ချိတ်ဆက်ခြင်း။
+- Firebase Auth ဖွင့်ထားပြီး User မဝင်ထားလျှင် Website Root (`/`) တွင် Login Screen ကို ပြမည်။
+- Login အောင်မြင်လျှင် Firebase Business Access စစ်ဆေးပြီး Owner သို့မဟုတ် Cashier Workspace ကို အလိုအလျောက် ဖွင့်မည်။
+- Sign Out လုပ်လျှင် Login Screen သို့ ပြန်ရောက်မည်။
+- Login Form ကို Sidebar / Main Menu ထဲတွင် မထားပါ။
+- Login Page မှ Owner Account အသစ်ဖန်တီးခြင်း / Sign Up ကို လုံးဝဖယ်ရှားထားသည်။ ရှိပြီးသား Owner/Cashier Account များသာ Login ဝင်နိုင်သည်။
+- Owner Account ကို လိုအပ်ပါက ခွင့်ပြုထားသော Admin/Firebase Console provisioning နည်းလမ်းဖြင့်သာ စီမံရမည်။
+- Owner သည် Team Access ထဲမှ Cashier Account ကိုသာ ဖန်တီးနိုင်ပြီး Login Page မှ Owner Sign Up မရှိပါ။
+- Firebase Authentication API, Firebase Config နှင့် Business Access Resolution Logic များကို မူရင်းအတိုင်း ထိန်းသိမ်းထားရန် ရည်ရွယ်ထားသည်။
 
-## မပြောင်းလဲထားသော မူလအပိုင်းများ
+## Release Safety
 
-Firebase Authentication / Owner Login / Cashier Login, POS Checkout, Product, Sales, Stock, Stock Transfer, Branch Shipment / Receiving Workflow နှင့် Preview 6 ၏ Owner-Review-only Expense Reporting Mode ကို ဆက်ထိန်းထားသည်။
+ဒီ Preview ကို Production သို့ မတင်မီ Full TypeScript Build, Vite Build, Firebase Emulator Rules Test, Owner/Cashier Login Regression, Offline/Sync နှင့် Branch Workflow စမ်းသပ်မှုများ ပြီးစီးရမည်။
 
-## Setup
-
-1. Production Data ကို JSON Backup ထုတ်ပါ။
-2. ZIP ကို Folder အသစ်တွင် ဖြည်ပါ။ Production Folder ကို overwrite မလုပ်ပါနှင့်။
-3. မူလ `.env` ကို လိုအပ်ပါက လုံခြုံစွာ ကူးထည့်ပြီး Firebase Project / Business ID / Owner UID မပြောင်းပါနှင့်။
-4. `npm install`
-5. `npm run typecheck`
-6. `npm run build`
-7. Build အောင်မြင်မှ `npm run dev -- --host --port 5173 --strictPort`
-8. `CASHIER-KPAY-SETTLEMENT-TEST-PLAN-MY.md` အတိုင်း Owner Mac + Cashier Phone နှစ်လုံးဖြင့် စမ်းသပ်ပါ။
-
-## Test Status
-
-- TypeScript / TSX 38 ဖိုင်ကို syntax-only transpilation ဖြင့် parse လုပ်ရာ Syntax Error မတွေ့ပါ (ambient declaration file တစ်ခုကို transpile output မထုတ်သဖြင့် သီးခြားထားသည်)။
-- `node_modules` မရှိသဖြင့် Full Typecheck ကို အတည်မပြုနိုင်ပါ။ `npm install` သည် ဒီပတ်ဝန်းကျင်တွင် timeout ဖြစ်သည်။
-- Firestore Rules Emulator Test နှင့် Live Two-Device Test မပြီးသေးပါ။
-- Preview အဖြစ်သာ စမ်းသပ်ပါ။ Production Release ဟု မယူဆပါနှင့်။
-
-အသေးစိတ်: `V3.1.1-CASHIER-KPAY-SETTLEMENT-MY.md`  
-စမ်းသပ်ရန်: `CASHIER-KPAY-SETTLEMENT-TEST-PLAN-MY.md`
+အသေးစိတ် Documentation Index ကို `docs/README.md` တွင် ကြည့်ပါ။

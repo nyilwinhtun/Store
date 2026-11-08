@@ -12,7 +12,7 @@ import {
 } from 'firebase/firestore';
 import { firebaseAuth, firestore, FIREBASE_BUSINESS_ID } from '../lib/firebase';
 import { useBusinessAccess } from '../lib/businessAccess';
-import { usePosStore, type Branch, type Category, type Product, type Sale, type StockBatch, type BranchStockShipment, type Expense } from '../store/usePosStore';
+import { usePosStore, type Branch, type Category, type Product, type Sale, type StockBatch, type BranchStockShipment, type Expense, type StockUnitRegistry } from '../store/usePosStore';
 import type { CashierSettlementRecord } from '../types/finance';
 import { publishAutoSyncStatus } from '../lib/autoSyncStatus';
 import { recordFirestoreActivity } from '../lib/firestoreDiagnostics';
@@ -56,6 +56,7 @@ export function CashierAutoSyncProvider() {
     let categories: Category[] = [];
     let products: Product[] = [];
     let stockBatches: StockBatch[] = [];
+    let stockUnitRegistries: StockUnitRegistry[] = [];
     let stockShipments: BranchStockShipment[] = [];
     const shipmentStatusById = new Map<string, BranchStockShipment['status']>();
     let shipmentServerBaselineReady = false;
@@ -89,11 +90,28 @@ export function CashierAutoSyncProvider() {
       // Never retain another Cashier's private expense or settlement records on this device.
       const otherExpenses = current.expenses.filter((entry) => entry.createdByUid === uid && entry.branchId !== branchId);
       const otherSettlements = current.cashierSettlements.filter((entry) => entry.cashierUid === uid && entry.branchId !== branchId);
+      // Keep locally completed-but-not-yet-cloud-committed barcode units sold.
+      // A cached/realtime registry snapshot must not make an offline sale sellable again.
+      const cloudSaleIds = new Set(sales.map((entry) => entry.id));
+      const pendingUnitSaleByKey = new Map<string, Sale>();
+      current.sales
+        .filter((entry) => entry.branchId === branchId && entry.createdByUid === uid && entry.status === 'completed' && !cloudSaleIds.has(entry.id))
+        .forEach((entry) => entry.items.forEach((item) => (item.stockUnitSelections || []).forEach((selection) => {
+          pendingUnitSaleByKey.set(`${selection.registryId}::${selection.unitId}`, entry);
+        })));
+      const mergedUnitRegistries = replaceBranchRecords(current.stockUnitRegistries, branchId, stockUnitRegistries).map((registry) => ({
+        ...registry,
+        units: registry.units.map((unit) => {
+          const pendingSale = pendingUnitSaleByKey.get(`${registry.id}::${unit.id}`);
+          return pendingSale ? { ...unit, status: 'sold' as const, saleId: pendingSale.id, soldAt: pendingSale.date, soldByUid: uid } : unit;
+        }),
+      }));
       current.importData({
         ...(branch ? { branches, activeBranchId: branchId } : {}),
         categories: replaceBranchRecords(current.categories, branchId, categories),
         products: replaceBranchRecords(current.products, branchId, products),
         stockBatches: replaceBranchRecords(current.stockBatches, branchId, stockBatches),
+        stockUnitRegistries: mergedUnitRegistries,
         expenses: [...otherExpenses, ...mergedOwnExpenses.values()],
         cashierSettlements: [...otherSettlements, ...mergedOwnSettlements.values()],
         ...(access.canReceiveStock ? { stockShipments: replaceBranchRecords(current.stockShipments, branchId, stockShipments) } : {}),
@@ -113,13 +131,13 @@ export function CashierAutoSyncProvider() {
         recordFirestoreActivity(uid, 'read', `cashier-listener-changes:${key}`, changes);
       }
       ready.add(key);
-      const requiredReadyCount = access.canReceiveStock ? 8 : 7;
+      const requiredReadyCount = access.canReceiveStock ? 9 : 8;
       if (ready.size >= requiredReadyCount) {
         publishAutoSyncStatus(uid, {
           state: 'synced',
           message: access.canReceiveStock
-            ? `Cashier Cloud ချိတ်ဆက်ပြီးပါပြီ။ ${branch?.name || branchId} ၏ Product / Stock / မိမိ Sales / Expense / မိမိရရှိငွေစာရင်း နဲ့ ကုန်လက်ခံ Shipment ကို Sync လုပ်နေပါတယ်။`
-            : `Cashier Cloud ချိတ်ဆက်ပြီးပါပြီ။ ${branch?.name || branchId} ၏ Product / Stock / မိမိ Sales / Expense / မိမိရရှိငွေစာရင်း ကို Sync လုပ်နေပါတယ်။ Stock Receiver ခွင့် မဖွင့်ထားပါ။`,
+            ? `Cashier Cloud ချိတ်ဆက်ပြီးပါပြီ။ ${branch?.name || branchId} ၏ Product / Stock / Barcode Units / မိမိ Sales / Expense / မိမိရရှိငွေစာရင်း နဲ့ ကုန်လက်ခံ Shipment ကို Sync လုပ်နေပါတယ်။`
+            : `Cashier Cloud ချိတ်ဆက်ပြီးပါပြီ။ ${branch?.name || branchId} ၏ Product / Stock / Barcode Units / မိမိ Sales / Expense / မိမိရရှိငွေစာရင်း ကို Sync လုပ်နေပါတယ်။ Stock Receiver ခွင့် မဖွင့်ထားပါ။`,
           savedAt: new Date().toISOString(),
         });
         if (!queueFlushStarted) {
@@ -147,7 +165,7 @@ export function CashierAutoSyncProvider() {
     }));
     unsubscribers.push(unsubscribeBranch);
 
-    const attachCollection = <T extends { id: string; branchId?: string }>(kind: 'categories' | 'products' | 'stockBatches' | 'stockShipments', apply: (items: T[], serverConfirmed: boolean, changedIds: string[]) => void) => {
+    const attachCollection = <T extends { id: string; branchId?: string }>(kind: 'categories' | 'products' | 'stockBatches' | 'stockUnitRegistries' | 'stockShipments', apply: (items: T[], serverConfirmed: boolean, changedIds: string[]) => void) => {
       const ref = collection(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, kind);
       recordFirestoreActivity(uid, 'listenerStart', `cashier-listener:${kind}`, 1);
       const unsubscribe = onSnapshot(ref, listenOptions, (snapshot) => {
@@ -169,6 +187,7 @@ export function CashierAutoSyncProvider() {
     attachCollection<Category>('categories', (items) => { categories = items; });
     attachCollection<Product>('products', (items) => { products = items; });
     attachCollection<StockBatch>('stockBatches', (items) => { stockBatches = items; });
+    attachCollection<StockUnitRegistry>('stockUnitRegistries', (items) => { stockUnitRegistries = items; });
     if (access.canReceiveStock) {
       attachCollection<BranchStockShipment>('stockShipments', (items, serverConfirmed, changedIds) => {
         stockShipments = items.filter((shipment) => shipment.toBranchId === branchId);

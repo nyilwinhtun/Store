@@ -32,7 +32,7 @@ const listenOptions = { includeMetadataChanges: true } as const;
 // collections stay realtime because the checkout flow needs them immediately.
 const incrementalBranchKinds = new Set<BranchRecordKind>([
   'sales', 'expenses', 'cashierSettlements', 'heldItems', 'customerPayments', 'purchases', 'supplierPayments',
-  'purchaseReturns', 'stockReceipts', 'stockTransfers', 'stockShipments', 'cashShifts', 'cashMovements', 'activityLogs',
+  'purchaseReturns', 'stockReceipts', 'stockTransfers', 'stockShipments', 'cashShifts', 'cashMovements', 'activityLogs', 'branchFinanceLedgerEntries', 'cashierAdvanceReconciliations', 'branchFinanceReconciliations',
 ]);
 
 const cursorStorageKey = (uid: string, scope: string, branchId: string, kind: string) =>
@@ -545,7 +545,7 @@ export function OwnerAutoSyncProvider() {
       'branches', 'categories', 'products', 'sales', 'expenses', 'cashierSettlements', 'heldItems',
       'customerPayments', 'purchases', 'supplierPayments', 'purchaseReturns',
       'stockBatches', 'stockReceipts', 'stockTransfers', 'stockShipments', 'stockUnitRegistries', 'cashShifts',
-      'cashMovements', 'activityLogs', 'customers', 'suppliers', 'settings', 'ownerProfile',
+      'cashMovements', 'activityLogs', 'branchFinanceLedgerEntries', 'cashierAdvanceReconciliations', 'branchFinanceReconciliations', 'customers', 'suppliers', 'settings', 'ownerProfile',
     ] as const;
     const unsubscribeStore = usePosStore.subscribe((state, previousState) => {
       if (applyingRemote || shipmentCommitInProgress || !isReady()) return;

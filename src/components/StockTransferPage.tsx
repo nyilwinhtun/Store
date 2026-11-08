@@ -18,6 +18,7 @@ export function StockTransferPage({ authorize, notify, onViewDestination }: {
   const activeBranchId = usePosStore((state) => state.activeBranchId);
   const products = usePosStore((state) => state.products);
   const stockBatches = usePosStore((state) => state.stockBatches);
+  const stockUnitRegistries = usePosStore((state) => state.stockUnitRegistries);
   const stockTransfers = usePosStore((state) => state.stockTransfers);
   const transferStock = usePosStore((state) => state.transferStock);
   const reverseStockTransfer = usePosStore((state) => state.reverseStockTransfer);
@@ -56,6 +57,7 @@ export function StockTransferPage({ authorize, notify, onViewDestination }: {
     .filter((product) => product.branchId === sourceBranchId && product.stock > 0)
     .sort((a, b) => a.name.localeCompare(b.name)), [products, sourceBranchId]);
   const selectedProduct = sourceProducts.find((product) => product.id === sourceProductId);
+  const selectedProductHasUnitBarcodes = !!selectedProduct && stockUnitRegistries.some((registry) => registry.branchId === sourceBranchId && registry.productId === selectedProduct.id && registry.units.some((unit) => unit.status === 'in_stock' || unit.status === 'reserved'));
   const localNow = new Date();
   const currentDay = `${localNow.getFullYear()}-${String(localNow.getMonth() + 1).padStart(2, '0')}-${String(localNow.getDate()).padStart(2, '0')}`;
   const selectedBatches = selectedProduct ? stockBatches.filter((batch) => batch.branchId === sourceBranchId && batch.productId === selectedProduct.id && batch.quantity > 0) : [];
@@ -77,6 +79,7 @@ export function StockTransferPage({ authorize, notify, onViewDestination }: {
     const qty = Number(quantity);
     if (batchMismatch && !window.confirm('ဒီပစ္စည်း၏ Stock Batch စုစုပေါင်းသည် Product Stock ထက်ပိုနေပါတယ်။ လွှဲနိုင်မည့်ပမာဏကို Product Stock နှင့် Expiry မှန်ကန်သော Batch ပမာဏအတွင်းသာ ကန့်သတ်ပါမယ်။ Transfer ပြီးနောက် Batch မှတ်တမ်းကို ထပ်စစ်ပါမယ်။ ဆက်လွှဲမလား။')) return;
     if (destinationModeMismatch) { notify('လက်ခံဆိုင်မှာ ရှိပြီးသား Product ရဲ့ အရေအတွက်တွက်ချက်ပုံ မတူပါ။ Destination Product ကို ပြင်ပြီးမှ လွှဲပါ။'); return; }
+    if (selectedProductHasUnitBarcodes) { notify('ဒီ Product မှာ Unique Barcode Sticker Tracking ရှိပါတယ်။ Barcode တစ်ခုချင်း Branch Transfer မပြီးသေးတဲ့အတွက် ယာယီမလွှဲနိုင်သေးပါ။'); return; }
     if (!selectedProduct || !isValidQuantity(qty, quantityMode) || qty > availableQuantity) {
       notify(`လွှဲနိုင်သော Stock ${selectedProduct ? formatQuantity(availableQuantity, quantityMode) : '0'} ${selectedProduct?.unit || 'ခု'} ထက် မပိုရပါ။ အရေအတွက်ယူနစ်ဖြစ်ပါက ဒသမမထည့်ပါနဲ့။`);
       return;

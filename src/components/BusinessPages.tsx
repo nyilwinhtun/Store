@@ -136,6 +136,7 @@ export function SupplierPurchasePage() {
   const allSupplierPayments = usePosStore((state) => state.supplierPayments);
   const allPurchaseReturns = usePosStore((state) => state.purchaseReturns);
   const allStockBatches = usePosStore((state) => state.stockBatches);
+  const stockUnitRegistries = usePosStore((state) => state.stockUnitRegistries);
   const branches = usePosStore((state) => state.branches);
   const activeBranchId = usePosStore((state) => state.activeBranchId);
   const activeBranch = branches.find((branch) => branch.id === activeBranchId);
@@ -220,6 +221,7 @@ export function SupplierPurchasePage() {
     const product = products.find((entry) => entry.id === productId);
     const total = qty * cost;
     if (!product || !isValidQuantity(qty, quantityModeForProduct(product)) || !(cost >= 0) || !Number.isFinite(paid) || paid < 0 || paid > total) { window.alert('အရေအတွက်ကို ပစ္စည်းယူနစ်အလိုက် မှန်ကန်စွာ ထည့်ပါ။'); return; }
+    if (stockUnitRegistries.some((registry) => registry.branchId === activeBranchId && registry.productId === product.id && registry.units.length > 0)) { window.alert('ဒီ Product မှာ Barcode Sticker တစ်ခုချင်းစီ စာရင်းသွင်းထားပြီးပါပြီ။ Quantity နဲ့ Purchase ထပ်မထည့်နိုင်ပါ။ Stock Receiving ထဲက ပုံမှန် Quantity လက်ခံမှုအစား Sticker Scan Registration ကို အသုံးပြုပါ။'); return; }
     const supplier = suppliers.find((entry) => entry.id === supplierId);
     addPurchase({ supplierId, supplierName: supplier?.name || 'အထွေထွေ Supplier', productId, productName: product.name, quantity: qty, unitCost: cost, expiryDate, note: purchaseNote.trim(), initialPaidAmount: paid, paymentMethod: initialPaymentMethod });
     setQuantity('1'); setUnitCost(''); setExpiryDate(''); setPurchaseNote(''); setInitialPaidAmount('0');
@@ -237,6 +239,7 @@ export function SupplierPurchasePage() {
     const qty = Number(returnQuantity);
     const returnProduct = selectedReturnPurchase ? products.find((product) => product.id === selectedReturnPurchase.productId) : undefined;
     if (!selectedReturnPurchase || !selectedReturnBatch || !returnProduct || !isValidQuantity(qty, quantityModeForProduct(returnProduct)) || qty > selectedReturnBatch.quantity) return;
+    if (stockUnitRegistries.some((registry) => registry.branchId === activeBranchId && registry.productId === returnProduct.id && registry.units.some((unit) => unit.status === 'in_stock' || unit.status === 'reserved'))) { window.alert('ဒီ Product မှာ Unit Barcode Tracking အသုံးပြုနေပါတယ်။ Barcode တစ်ခုချင်း Supplier Return မလုပ်နိုင်သေးတဲ့အတွက် စာရင်းမပြောင်းလဲထားပါ။'); return; }
     if (!window.confirm(`${selectedReturnPurchase.productName} ${qty} ခုကို Supplier သို့ ပြန်ပို့မလား။ Stock လျှော့ပြီး Supplier လက်ကျန်ကို ပြန်တွက်ပါမယ်။`)) return;
     addPurchaseReturn(selectedReturnPurchase.id, qty, returnNote);
     setReturnQuantity('1'); setReturnNote('');

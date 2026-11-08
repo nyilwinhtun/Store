@@ -15,14 +15,21 @@ const downloadCsv = (name: string, rows: unknown[][]) => {
 };
 
 export function CashManagementPage() {
+  const access = useBusinessAccess();
   const allShifts = usePosStore((state) => state.cashShifts);
   const allMovements = usePosStore((state) => state.cashMovements);
   const allSales = usePosStore((state) => state.sales);
+  const allExpenses = usePosStore((state) => state.expenses);
+  const advanceReconciliations = usePosStore((state) => state.cashierAdvanceReconciliations);
   const allPayments = usePosStore((state) => state.customerPayments);
   const activeBranchId = usePosStore((state) => state.activeBranchId);
   const shifts = useMemo(() => allShifts.filter((entry) => entry.branchId === activeBranchId), [allShifts, activeBranchId]);
   const movements = useMemo(() => allMovements.filter((entry) => entry.branchId === activeBranchId), [allMovements, activeBranchId]);
   const sales = useMemo(() => allSales.filter((entry) => entry.branchId === activeBranchId), [allSales, activeBranchId]);
+  const expenses = useMemo(() => {
+    const appliedToAdvance = new Set(advanceReconciliations.filter((entry) => entry.kind === 'expense-applied' && entry.relatedExpenseId).map((entry) => entry.relatedExpenseId as string));
+    return allExpenses.filter((entry) => entry.branchId === activeBranchId && entry.fundedBy === 'branch-cash' && !appliedToAdvance.has(entry.id));
+  }, [allExpenses, activeBranchId, advanceReconciliations]);
   const payments = useMemo(() => allPayments.filter((entry) => entry.branchId === activeBranchId), [allPayments, activeBranchId]);
   const settings = usePosStore((state) => state.settings);
   const openCashShift = usePosStore((state) => state.openCashShift);
@@ -37,32 +44,35 @@ export function CashManagementPage() {
   const activeShift = shifts.find((shift) => !shift.closedAt);
 
   const totals = useMemo(() => {
-    if (!activeShift) return { cashSales: 0, creditCollection: 0, cashIn: 0, cashOut: 0, expected: 0 };
+    if (!activeShift) return { cashSales: 0, creditCollection: 0, cashIn: 0, cashOut: 0, branchCashExpenses: 0, expected: 0 };
     const afterOpen = (value: string) => new Date(value).getTime() >= new Date(activeShift.openedAt).getTime();
     const cashSales = sales.filter((sale) => sale.status === 'completed' && afterOpen(sale.date)).reduce((sum, sale) => {
       if (sale.paymentMethod === 'Cash') return sum + sale.total;
+      // KPay is tracked in the separate KPay ledger and must never inflate the physical cash drawer.
+      if (sale.paymentMethod === 'KPay') return sum;
       // Any deposit recorded on a credit invoice is treated as cash for this shift.
       return sum + (sale.paidAmount || 0);
     }, 0);
     const creditCollection = payments.filter((payment) => afterOpen(payment.date) && (payment.paymentMethod || 'Cash') === 'Cash').reduce((sum, payment) => sum + payment.amount, 0);
+    const branchCashExpenses = expenses.filter((expense) => afterOpen(expense.date)).reduce((sum, expense) => sum + expense.amount, 0);
     const shiftMovements = movements.filter((movement) => movement.shiftId === activeShift.id);
     const cashIn = shiftMovements.filter((movement) => movement.direction === 'in').reduce((sum, movement) => sum + movement.amount, 0);
     const cashOut = shiftMovements.filter((movement) => movement.direction === 'out').reduce((sum, movement) => sum + movement.amount, 0);
-    return { cashSales, creditCollection, cashIn, cashOut, expected: activeShift.openingCash + cashSales + creditCollection + cashIn - cashOut };
-  }, [activeShift, sales, payments, movements]);
+    return { cashSales, creditCollection, cashIn, cashOut, branchCashExpenses, expected: activeShift.openingCash + cashSales + creditCollection + cashIn - cashOut - branchCashExpenses };
+  }, [activeShift, sales, payments, movements, expenses]);
 
   const openSubmit = (event: FormEvent) => {
     event.preventDefault();
     const amount = Number(openingCash);
     if (!Number.isFinite(amount) || amount < 0) return;
-    openCashShift(amount, shiftNote.trim());
+    openCashShift(amount, shiftNote.trim(), { uid: access.uid, name: access.displayName || access.email || 'Owner' });
     setOpeningCash('0'); setShiftNote('');
   };
   const movementSubmit = (event: FormEvent) => {
     event.preventDefault();
     const amount = Number(movementAmount);
     if (!activeShift || !(amount > 0) || !movementNote.trim()) return;
-    addCashMovement({ shiftId: activeShift.id, direction: movementDirection, amount, note: movementNote.trim() });
+    addCashMovement({ shiftId: activeShift.id, direction: movementDirection, amount, note: movementNote.trim(), createdByUid: access.uid || undefined, createdByName: access.displayName || access.email || 'Cashier' });
     setMovementAmount(''); setMovementNote('');
   };
   const closeSubmit = (event: FormEvent) => {
@@ -70,12 +80,12 @@ export function CashManagementPage() {
     const amount = Number(closingCash);
     if (!activeShift || !Number.isFinite(amount) || amount < 0) return;
     if (!window.confirm('ရေတွက်ထားသောငွေပမာဏဖြင့် Cash Shift ကို ပိတ်မလား။ ပိတ်ပြီးလျှင် ဒီ Shift ကို ပြန်ဖွင့်၍မရပါ။')) return;
-    closeCashShift(activeShift.id, amount, totals.expected, shiftNote.trim());
+    closeCashShift(activeShift.id, amount, totals.expected, shiftNote.trim(), { uid: access.uid, name: access.displayName || access.email || 'Owner' });
     setClosingCash(''); setShiftNote('');
   };
   const exportShifts = () => downloadCsv(`minimart-cash-shifts-${new Date().toISOString().slice(0, 10)}.csv`, [
-    ['Opened At', 'Closed At', 'Opening Cash', 'Expected Cash', 'Counted Cash', 'Difference', 'Note'],
-    ...shifts.map((shift) => [shift.openedAt, shift.closedAt || 'OPEN', shift.openingCash, shift.expectedCash ?? '', shift.closingCash ?? '', shift.closingCash !== undefined && shift.expectedCash !== undefined ? shift.closingCash - shift.expectedCash : '', shift.note || '']),
+    ['Opened At', 'Opened By', 'Closed At', 'Closed By', 'Opening Cash', 'Expected Cash', 'Counted Cash', 'Difference', 'Note'],
+    ...shifts.map((shift) => [shift.openedAt, shift.openedBy, shift.closedAt || 'OPEN', shift.closedByName || '', shift.openingCash, shift.expectedCash ?? '', shift.closingCash ?? '', shift.variance ?? (shift.closingCash !== undefined && shift.expectedCash !== undefined ? shift.closingCash - shift.expectedCash : ''), shift.note || '']),
   ]);
 
   return <section className="page-stack">
@@ -92,7 +102,7 @@ export function CashManagementPage() {
         <div className="mini-stat"><div className="mini-stat-icon"><Activity size={17} /></div><div><small>မျှော်မှန်းလက်ကျန်ငွေ</small><strong>{money(totals.expected, settings.currency)}</strong></div></div>
       </div>
       <div className="panel"><div className="panel-heading"><div><h3>လက်ရှိ Shift</h3><p>စတင်ချိန် {dateTime(activeShift.openedAt)} · {activeShift.openedBy}</p></div><span className="tag tag-success">OPEN</span></div>
-        <div className="cash-summary-grid"><div><small>ငွေဝင်</small><strong className="stock-ok">+{money(totals.cashIn, settings.currency)}</strong></div><div><small>ငွေထွက်</small><strong className="stock-warning">-{money(totals.cashOut, settings.currency)}</strong></div><div><small>မျှော်မှန်းငွေ</small><strong>{money(totals.expected, settings.currency)}</strong></div></div>
+        <div className="cash-summary-grid"><div><small>ငွေဝင်</small><strong className="stock-ok">+{money(totals.cashIn, settings.currency)}</strong></div><div><small>ငွေထွက်</small><strong className="stock-warning">-{money(totals.cashOut, settings.currency)}</strong></div><div><small>ဆိုင် Cash အသုံးစရိတ်</small><strong className="stock-warning">-{money(totals.branchCashExpenses, settings.currency)}</strong></div><div><small>မျှော်မှန်းငွေ</small><strong>{money(totals.expected, settings.currency)}</strong></div></div>
       </div>
       <div className="business-grid">
         <form className="panel form-panel" onSubmit={movementSubmit}>
@@ -111,13 +121,13 @@ export function CashManagementPage() {
         </form>
       </div>
       <div className="panel"><div className="panel-heading"><div><h3>ယခု Shift ငွေဝင်/ထွက် မှတ်တမ်း</h3><p>ငွေရွှေ့ပြောင်းမှုများ</p></div><span className="subtle-count">{movements.filter((movement) => movement.shiftId === activeShift.id).length} records</span></div>
-        {movements.filter((movement) => movement.shiftId === activeShift.id).length === 0 ? <div className="empty-state"><div className="empty-icon"><Wallet size={23} /></div><strong>ငွေဝင်/ထွက် မှတ်တမ်း မရှိသေးပါ</strong><p>လိုအပ်သည့်အခါ အပေါ်က Form မှာ မှတ်တမ်းတင်ပါ။</p></div> : <div className="table-wrap"><table><thead><tr><th>အချိန်</th><th>အမျိုးအစား</th><th>အကြောင်းအရင်း</th><th>ပမာဏ</th></tr></thead><tbody>{movements.filter((movement) => movement.shiftId === activeShift.id).map((movement) => <tr key={movement.id}><td>{dateTime(movement.date)}</td><td><span className={`tag ${movement.direction === 'in' ? 'tag-success' : 'tag-warn'}`}>{movement.direction === 'in' ? 'ငွေဝင်' : 'ငွေထွက်'}</span></td><td>{movement.note}</td><td><b>{movement.direction === 'in' ? '+' : '-'}{money(movement.amount, settings.currency)}</b></td></tr>)}</tbody></table></div>}
+        {movements.filter((movement) => movement.shiftId === activeShift.id).length === 0 ? <div className="empty-state"><div className="empty-icon"><Wallet size={23} /></div><strong>ငွေဝင်/ထွက် မှတ်တမ်း မရှိသေးပါ</strong><p>လိုအပ်သည့်အခါ အပေါ်က Form မှာ မှတ်တမ်းတင်ပါ။</p></div> : <div className="table-wrap"><table><thead><tr><th>အချိန်</th><th>အမျိုးအစား</th><th>အကြောင်းအရင်း</th><th>မှတ်တမ်းတင်သူ</th><th>ပမာဏ</th></tr></thead><tbody>{movements.filter((movement) => movement.shiftId === activeShift.id).map((movement) => <tr key={movement.id}><td>{dateTime(movement.date)}</td><td><span className={`tag ${movement.direction === 'in' ? 'tag-success' : 'tag-warn'}`}>{movement.direction === 'in' ? 'ငွေဝင်' : 'ငွေထွက်'}</span></td><td>{movement.note}</td><td>{movement.createdByName || '—'}</td><td><b>{movement.direction === 'in' ? '+' : '-'}{money(movement.amount, settings.currency)}</b></td></tr>)}</tbody></table></div>}
       </div>
     </>}
     <div className="panel"><div className="panel-heading"><div><h3>ယခင် Shift မှတ်တမ်း</h3><p>နေ့စဉ် ပိတ်သိမ်းမှုနှင့် ငွေကွာဟချက်</p></div><span className="subtle-count">{shifts.filter((shift) => shift.closedAt).length} closed</span></div>
-      {shifts.filter((shift) => shift.closedAt).length === 0 ? <div className="empty-state"><div className="empty-icon"><ClipboardList size={23} /></div><strong>ပိတ်ပြီးသော Shift မရှိသေးပါ</strong><p>ပထမဆုံး Cash Shift ကို ပိတ်ပြီးနောက် ဒီနေရာမှာ ပြပါမယ်။</p></div> : <div className="table-wrap"><table><thead><tr><th>ဖွင့်ချိန်</th><th>ပိတ်ချိန်</th><th>အဖွင့်ငွေ</th><th>မျှော်မှန်းငွေ</th><th>ရေတွက်ငွေ</th><th>ကွာဟချက်</th></tr></thead><tbody>{shifts.filter((shift) => shift.closedAt).map((shift) => { const variance = (shift.closingCash ?? 0) - (shift.expectedCash ?? 0); return <tr key={shift.id}><td>{dateTime(shift.openedAt)}</td><td>{shift.closedAt ? dateTime(shift.closedAt) : '—'}</td><td>{money(shift.openingCash, settings.currency)}</td><td>{money(shift.expectedCash ?? 0, settings.currency)}</td><td>{money(shift.closingCash ?? 0, settings.currency)}</td><td><b className={variance === 0 ? 'stock-ok' : 'stock-warning'}>{variance > 0 ? '+' : ''}{money(variance, settings.currency)}</b></td></tr>; })}</tbody></table></div>}
+      {shifts.filter((shift) => shift.closedAt).length === 0 ? <div className="empty-state"><div className="empty-icon"><ClipboardList size={23} /></div><strong>ပိတ်ပြီးသော Shift မရှိသေးပါ</strong><p>ပထမဆုံး Cash Shift ကို ပိတ်ပြီးနောက် ဒီနေရာမှာ ပြပါမယ်။</p></div> : <div className="table-wrap"><table><thead><tr><th>ဖွင့်ချိန်</th><th>ပိတ်ချိန်</th><th>ဖွင့်သူ</th><th>ပိတ်သူ</th><th>အဖွင့်ငွေ</th><th>မျှော်မှန်းငွေ</th><th>ရေတွက်ငွေ</th><th>ကွာဟချက်</th></tr></thead><tbody>{shifts.filter((shift) => shift.closedAt).map((shift) => { const variance = shift.variance ?? ((shift.closingCash ?? 0) - (shift.expectedCash ?? 0)); return <tr key={shift.id}><td>{dateTime(shift.openedAt)}</td><td>{shift.closedAt ? dateTime(shift.closedAt) : '—'}</td><td>{shift.openedBy || '—'}</td><td>{shift.closedByName || '—'}</td><td>{money(shift.openingCash, settings.currency)}</td><td>{money(shift.expectedCash ?? 0, settings.currency)}</td><td>{money(shift.closingCash ?? 0, settings.currency)}</td><td><b className={variance === 0 ? 'stock-ok' : 'stock-warning'}>{variance > 0 ? '+' : ''}{money(variance, settings.currency)}</b></td></tr>; })}</tbody></table></div>}
     </div>
-    <div className="panel security-note"><Activity size={18} /><div><strong>ငွေစာရင်းတွက်ချက်မှု မှတ်ချက်</strong><p>မျှော်မှန်းငွေ = အဖွင့်ငွေ + Cash Sale + Credit Sale တွင် ကြိုပေးထားသော Paid Amount (Cash ဟုယူဆ) + Cash အကြွေးပြန်ဆပ် + Cash In − Cash Out ဖြစ်ပါတယ်။ အရင်ဗားရှင်းမှ Payment Method မသတ်မှတ်ထားသော Credit Payment များကို Cash ဟုယူဆထားပါတယ်။ Expense မှတ်တမ်းများကို ငွေသား/ဘဏ် ခွဲမမှတ်ထားသေးသောကြောင့် ဤတွက်ချက်မှုမှ အလိုအလျောက် မနုတ်ပါ။</p></div></div>
+    <div className="panel security-note"><Activity size={18} /><div><strong>ငွေစာရင်းတွက်ချက်မှု မှတ်ချက်</strong><p>မျှော်မှန်းငွေ = အဖွင့်ငွေ + Cash Sale + Credit Sale တွင် ကြိုပေးထားသော Cash + Cash အကြွေးပြန်ဆပ် + Cash In − Cash Out − Branch Cash ဖြင့်ပေးထားသော Expense ဖြစ်ပါတယ်။ Branch KPay Expense နဲ့ KPay Sale ကို Cash Drawer ထဲ မပေါင်းပါ။ Cashier ကိုယ်ပိုင်ငွေသုံးထားသော Expense ကိုလည်း ဤ Cash Shift မှ မနုတ်ပါ။</p></div></div>
   </section>;
 }
 

@@ -18,6 +18,7 @@ export function StockReceivingPage({ notify }: { notify: (message: string) => vo
   const branches = usePosStore((state) => state.branches);
   const allProducts = usePosStore((state) => state.products);
   const allReceipts = usePosStore((state) => state.stockReceipts);
+  const stockUnitRegistries = usePosStore((state) => state.stockUnitRegistries);
   const addQuickGoodsArrival = usePosStore((state) => state.addQuickGoodsArrival);
   const hubBranch = branches.find((branch) => branch.isDefault) || branches.find((branch) => branch.id === DEFAULT_BRANCH_ID) || branches[0];
   const products = useMemo(() => allProducts.filter((product) => product.branchId === hubBranch?.id), [allProducts, hubBranch?.id]);
@@ -44,6 +45,9 @@ export function StockReceivingPage({ notify }: { notify: (message: string) => vo
     if (items.some((item) => !item.name || !Number.isFinite(item.quantity) || item.quantity <= 0)) {
       notify('ပစ္စည်းအမည်နဲ့ အရေအတွက်ကို မှန်ကန်စွာ ဖြည့်ပါ။'); return;
     }
+    const trackedProduct = items.map((item) => findLineProduct({ ...blankLine(), name: item.name, unit: item.unit, barcode: item.barcode || '', quantity: String(item.quantity) }))
+      .find((product) => product && stockUnitRegistries.some((registry) => registry.branchId === hubBranch.id && registry.productId === product.id && registry.units.length > 0));
+    if (trackedProduct) { notify(`${trackedProduct.name}: ဒီ Product မှာ Barcode Sticker Unit Tracking အသုံးပြုထားပါတယ်။ Quantity နဲ့ ကုန်ရောက်စာရင်း ထပ်မတိုးနိုင်ပါ။ Product/Stock ထဲက Sticker Scan Registration ကို သုံးပါ။`); return; }
     const receiptId = addQuickGoodsArrival({ receivedDate, note, items });
     if (!receiptId) { notify('ကုန်ရောက်စာရင်း မသိမ်းနိုင်ပါ။ အမည်၊ ယူနစ်နဲ့ အရေအတွက်ကို စစ်ဆေးပါ။'); return; }
     setLines([blankLine()]); setNote(''); setReceivedDate(today());
