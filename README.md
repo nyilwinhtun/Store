@@ -1,50 +1,62 @@
-# Minimart POS — v3.2.0 Preview 6
+# Minimart POS v3.2.5 — Data Integrity & Offline Reliability
 
-ဒီ Project သည် Minimart POS v3.2.0 အတွက် သီးခြား Release-Readiness Preview 6 Working Copy ဖြစ်သည်။ Production Release အဖြစ် မသတ်မှတ်ရသေးပါ။
+> Release Candidate. Build, Rules Emulator tests, and device-level offline recovery must pass before Production deployment.
 
-## စတင်အသုံးပြုရန်
+React + TypeScript + Vite + Firebase Firestore based Minimart POS with Owner/Cashier access, Multi-Branch management and Shared Pricing.
+
+## Start here
+
+- [v3.2.5 စတင်အသုံးပြုရန်](docs/setup/V3.2.5-START-HERE-MY.md)
+- [v3.2.5 Release Notes](docs/releases/V3.2.5-DATA-INTEGRITY-OFFLINE-RELIABILITY-MY.md)
+- [v3.2.5 QA Test Plan](docs/test-plans/V3.2.5-DATA-INTEGRITY-TEST-PLAN-MY.md)
+- [v3.2.5 Firestore Rules Update](docs/firebase/V3.2.5-FIRESTORE-RULES-UPDATE-MY.md)
+- [Firebase Security Deployment Guide](docs/firebase/V3.2.3-SECURITY-DEPLOYMENT-MY.md)
+- [Documentation Index](docs/README.md)
+
+## First-time setup
 
 ```bash
 npm install
-npm run typecheck
-npm run build
+npm --prefix functions install
+```
+
+## Daily development
+
+```bash
 npm run dev
 ```
 
-## Project Structure
+## Before release
 
-- `src/features/auth/` — Website ဖွင့်ချိန် ပထမဆုံးပြသမည့် Standalone Login Screen
-- `src/components/` — POS နှင့် Management UI Components
-- `src/lib/` — Firebase, Sync, Business Access နှင့် shared services
-- `src/store/` — Zustand POS Store
-- `src/types/` — TypeScript data types
-- `public/` — PWA manifest, icons နှင့် service worker
-- `docs/current/` — လက်ရှိ v3.2.0 ဆိုင်ရာလမ်းညွှန်
-- `docs/testing/` — စမ်းသပ်ရန် Checklist များ
-- `docs/releases/` — ယခင် Release Notes
-- `docs/archive/` — Version အဟောင်းများ၏ မှတ်တမ်း
-- `docs/reference/` — Firebase, Stock, Cloud Sync နှင့် အခြား Technical Reference များ
+Full QA (requires Java JDK for Firestore Emulator):
 
-## Login Behavior
+```bash
+npm run qa
+```
 
-- Firebase Auth ဖွင့်ထားပြီး User မဝင်ထားလျှင် Website Root (`/`) တွင် Login Screen ကို ပြမည်။
-- Login အောင်မြင်လျှင် Firebase Business Access စစ်ဆေးပြီး Owner သို့မဟုတ် Cashier Workspace ကို အလိုအလျောက် ဖွင့်မည်။
-- Sign Out လုပ်လျှင် Login Screen သို့ ပြန်ရောက်မည်။
-- Login Form ကို Sidebar / Main Menu ထဲတွင် မထားပါ။
-- Login Page မှ Owner Account အသစ်ဖန်တီးခြင်း / Sign Up ကို လုံးဝဖယ်ရှားထားသည်။ ရှိပြီးသား Owner/Cashier Account များသာ Login ဝင်နိုင်သည်။
-- Owner Account ကို လိုအပ်ပါက ခွင့်ပြုထားသော Admin/Firebase Console provisioning နည်းလမ်းဖြင့်သာ စီမံရမည်။
-- Owner သည် Team Access ထဲမှ Cashier Account ကိုသာ ဖန်တီးနိုင်ပြီး Login Page မှ Owner Sign Up မရှိပါ။
-- Firebase Authentication API, Firebase Config နှင့် Business Access Resolution Logic များကို မူရင်းအတိုင်း ထိန်းသိမ်းထားရန် ရည်ရွယ်ထားသည်။
+Quick QA without Firestore Emulator:
 
-## Release QA Notes
+```bash
+npm run qa:quick
+```
 
-- `package-lock.json` သည် ဒီ Preview ZIP ထဲတွင် မပါဝင်သေးပါ။ `npm ci` မလုပ်နိုင်သေးပါ။ Developer Mac တွင် Registry ချိတ်ဆက်နိုင်ချိန် `npm install` ဖြင့် Lockfile ထုတ်ပြီး Commit လုပ်ရန်လိုသည်။
-- `npm install` ကို ဒီစစ်ဆေးမှု ပတ်ဝန်းကျင်တွင် Timeout ဖြစ်ခဲ့သဖြင့် Full TypeScript/Vite Build ကို အတည်မပြုနိုင်သေးပါ။
-- `npm run release:check` သည် Source-level Release Gate များကိုသာ စစ်ဆေးသည်။ Full Build၊ Firebase Emulator၊ Browser UI သို့မဟုတ် Live Login စမ်းသပ်မှုကို အစားမထိုးပါ။
-- Owner နှင့် Cashier များက Browser/Device တစ်ခုတည်းကို မျှဝေသုံးမည်ဆိုပါက Local persistence နှင့် Firestore IndexedDB cache ကို အရင်စမ်းသပ်ရမည်။ Sign Out လုပ်ရုံဖြင့် Firestore IndexedDB cache မရှင်းကြောင်း Cloud Sync UI တွင် သတိပေးထားသည်။
+Bundle report after a successful build:
 
-## Release Safety
+```bash
+npm run report:bundle
+```
 
-ဒီ Preview ကို Production သို့ မတင်မီ Full TypeScript Build, Vite Build, Firebase Emulator Rules Test, Owner/Cashier Login Regression, Offline/Sync နှင့် Branch Workflow စမ်းသပ်မှုများ ပြီးစီးရမည်။
+## Important
 
-အသေးစိတ် Documentation Index ကို `docs/README.md` တွင် ကြည့်ပါ။
+- The app has no public registration UI. Owner/Cashier authorization and the Identity Platform blocking triggers still require correct Firebase project setup and deployment as described in the Firebase guide.
+- Do not deploy Firestore Rules or Cloud Functions to Production until the intended Firebase project, owner UID, test results and deployment checklist are verified.
+- Lazy-loaded pages are cached by the service worker after first use. A page not previously opened may require internet on its first visit.
+- The v3.2.5 service worker cache update does not clear LocalStorage or IndexedDB business data.
+
+## Project folders
+
+- `src/` — React application, page components, Firebase integration and POS store.
+- `public/` — PWA icons, manifest and service worker.
+- `functions/` — Identity Platform blocking functions (separate install/build).
+- `scripts/` — Security preflight, QA runner and bundle reporting.
+- `docs/` — Setup, architecture, Firebase, release notes and test plans.

@@ -92,7 +92,7 @@ export function BranchFinanceManagementPage({ authorize, notify }: Props) {
     setReconciliationDate(dayKey());
   }, [activeBranch?.id, activeBranch?.updatedAt]);
 
-  const branchExpenses = useMemo(() => expenses.filter((entry) => entry.branchId === activeBranchId), [expenses, activeBranchId]);
+  const branchExpenses = useMemo(() => expenses.filter((entry) => entry.branchId === activeBranchId && entry.approvalStatus !== 'pending' && entry.approvalStatus !== 'rejected'), [expenses, activeBranchId]);
   const branchSales = useMemo(() => sales.filter((entry) => entry.branchId === activeBranchId && entry.status === 'completed'), [sales, activeBranchId]);
   const branchPayments = useMemo(() => customerPayments.filter((entry) => entry.branchId === activeBranchId), [customerPayments, activeBranchId]);
   const branchSupplierPayments = useMemo(() => supplierPayments.filter((entry) => entry.branchId === activeBranchId), [supplierPayments, activeBranchId]);

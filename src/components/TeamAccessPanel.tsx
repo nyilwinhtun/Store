@@ -1,14 +1,11 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
-import { deleteApp, initializeApp } from 'firebase/app';
-import { createUserWithEmailAndPassword, getAuth, sendPasswordResetEmail, signOut } from 'firebase/auth';
+import { sendPasswordResetEmail } from 'firebase/auth';
 import { collection, deleteDoc, doc, getDocFromServer, getDocs, runTransaction, updateDoc } from 'firebase/firestore';
-import { BadgeCheck, Copy, KeyRound, LoaderCircle, LockKeyhole, Plus, RefreshCw, ShieldCheck, Store, Trash2, UserRound, UserX } from 'lucide-react';
-import { FIREBASE_BUSINESS_ID, firebaseApp, firebaseAuth, firebaseConfig, firestore } from '../lib/firebase';
+import { BadgeCheck, Copy, KeyRound, LockKeyhole, RefreshCw, ShieldCheck, Store, Trash2, UserRound, UserX } from 'lucide-react';
+import { FIREBASE_BUSINESS_ID, firebaseAuth, firestore } from '../lib/firebase';
 import { useBusinessAccess } from '../lib/businessAccess';
 import { usePosStore, type Branch } from '../store/usePosStore';
 import { recordFirestoreActivity } from '../lib/firestoreDiagnostics';
-
-type ProvisionMode = 'create' | 'link';
 
 type MemberRecord = {
   /** Canonical Firestore document ID; this must match Firebase Auth UID. */
@@ -47,8 +44,6 @@ export function TeamAccessPanel() {
   const [members, setMembers] = useState<MemberRecord[]>([]);
   const [email, setEmail] = useState('');
   const [displayName, setDisplayName] = useState('');
-  const [password, setPassword] = useState('');
-  const [provisionMode, setProvisionMode] = useState<ProvisionMode>('create');
   const [existingUid, setExistingUid] = useState('');
   const [branchIds, setBranchIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -119,7 +114,7 @@ export function TeamAccessPanel() {
   if (access.status !== 'active' || access.role !== 'owner') return null;
 
   const validateMemberForm = () => {
-    if (!firebaseApp || !firebaseAuth || !firestore) {
+    if (!firebaseAuth || !firestore) {
       setError('Firebase Configuration မပြည့်စုံပါ။');
       return false;
     }
@@ -127,12 +122,8 @@ export function TeamAccessPanel() {
       setError('အမည်၊ Email နဲ့ တာဝန်ယူမည့် ဆိုင်ခွဲ တစ်ခုတည်းကို ရွေးပါ။');
       return false;
     }
-    if (provisionMode === 'create' && password.length < 6) {
-      setError('Password အနည်းဆုံး 6 လုံး ရှိရပါမယ်။');
-      return false;
-    }
-    if (provisionMode === 'link' && !existingUid.trim()) {
-      setError('Firebase Authentication မှ Cashier UID ကို ထည့်ပါ။');
+    if (!existingUid.trim()) {
+      setError('Firebase Authentication မှာ ရှိပြီးသား Cashier UID ကို ထည့်ပါ။');
       return false;
     }
     return true;
@@ -187,64 +178,9 @@ export function TeamAccessPanel() {
     }
   };
 
-  const createCashier = async (event: FormEvent) => {
-    event.preventDefault();
-    if (provisionMode !== 'create' || !validateMemberForm()) return;
-
-    setBusy(true); setError(''); setMessage('');
-    const randomId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const secondaryName = `cashier-provision-${randomId}`;
-    let secondaryApp: ReturnType<typeof initializeApp> | null = null;
-    let secondaryAuth: ReturnType<typeof getAuth> | null = null;
-    let createdUid = '';
-    let authAccountCreated = false;
-    try {
-      secondaryApp = initializeApp(firebaseConfig, secondaryName);
-      secondaryAuth = getAuth(secondaryApp);
-      const credential = await createUserWithEmailAndPassword(secondaryAuth, email.trim(), password);
-      createdUid = credential.user.uid;
-      authAccountCreated = true;
-
-      try {
-        await saveCashierMembership(createdUid);
-      } catch (writeError) {
-        const code = typeof writeError === 'object' && writeError && 'code' in writeError
-          ? String((writeError as { code: unknown }).code) : '';
-        throw new Error(
-          `Firebase Authentication မှာ Account ဖန်တီးပြီးပါပြီ (UID: ${createdUid})။ သို့သော် Firestore Member Record မသိမ်းနိုင်ပါ${code ? ` (${code})` : ''}။ Firestore Rules မှ Owner ကို businesses/${FIREBASE_BUSINESS_ID}/members ကို Create လုပ်ခွင့်ပေးထားသလား စစ်ပါ။ Account ကို ထပ်မဖန်တီးပါနဲ့။ “ရှိပြီးသား Account ချိတ်ရန်” ကိုသုံးပြီး ဒီ UID ကို Member အဖြစ် ချိတ်နိုင်ပါတယ်။`,
-        );
-      }
-
-      setMessage(`Cashier Account ဖန်တီးပြီး Branch ချိတ်ဆက်ပြီးပါပြီ။ UID: ${createdUid} · Cashier ကို ဒီ Email နဲ့ Login ဝင်ခိုင်းပါ။`);
-      setEmail(''); setDisplayName(''); setPassword(''); setExistingUid('');
-      try { await loadMembers(); } catch (refreshError) { setError(`Account ဖန်တီးပြီးပါပြီ။ Member စာရင်းကိုသာ ပြန်မဖတ်နိုင်သေးပါ: ${messageFor(refreshError)}`); }
-    } catch (reason) {
-      // If Auth creation succeeded but the membership write failed, preserve the UID
-      // and give the Owner a recovery route instead of silently hiding an orphan account.
-      if (authAccountCreated && createdUid && reason instanceof Error && reason.message.includes('Firestore Member Record')) {
-        setError(reason.message);
-        setExistingUid(createdUid);
-        setPassword('');
-        setProvisionMode('link');
-      } else {
-        setError(messageFor(reason));
-      }
-    } finally {
-      if (secondaryAuth) {
-        try { await signOut(secondaryAuth); } catch { /* Secondary Auth cleanup is best-effort. */ }
-      }
-      if (secondaryApp) {
-        try { await deleteApp(secondaryApp); } catch { /* Secondary app cleanup is best-effort. */ }
-      }
-      setBusy(false);
-    }
-  };
-
   const linkExistingCashier = async (event: FormEvent) => {
     event.preventDefault();
-    if (provisionMode !== 'link' || !validateMemberForm()) return;
+    if (!validateMemberForm()) return;
 
     setBusy(true); setError(''); setMessage('');
     try {
@@ -365,31 +301,26 @@ export function TeamAccessPanel() {
   };
 
   return <section className="panel form-panel team-access-panel">
-    <div className="panel-heading"><div className="panel-icon"><ShieldCheck size={18} /></div><div><h3>ဝန်ထမ်းအကောင့် / Branch Permission</h3><p>Owner က Cashier Account ဖန်တီးပြီး တာဝန်ယူမည့် ဆိုင်ခွဲတစ်ခုတည်းကို သတ်မှတ်နိုင်ပါတယ်။</p></div><span className="tag tag-success">Owner Only</span></div>
-    <div className="cloud-help"><strong>Business ID: {FIREBASE_BUSINESS_ID}</strong><br />ဒီအပိုင်းမှာ Cashier Login Account နဲ့ Branch Membership ကို စီမံပါတယ်။ Account ဖန်တီးပြီးနောက် Member စာရင်းမှာ UID၊ Email နဲ့ Branch ခွင့်ပြုချက်ကို စစ်ဆေးနိုင်ပါတယ်။</div>
+    <div className="panel-heading"><div className="panel-icon"><ShieldCheck size={18} /></div><div><h3>ဝန်ထမ်းအကောင့် / Branch Permission</h3><p>Owner က Firebase Console မှ ကြိုတင်ဖန်တီးထားသော Cashier Account ကို ချိတ်ဆက်ပြီး တာဝန်ယူမည့် ဆိုင်ခွဲတစ်ခုတည်းကို သတ်မှတ်နိုင်ပါတယ်။</p></div><span className="tag tag-success">Owner Only</span></div>
+    <div className="cloud-help"><strong>Business ID: {FIREBASE_BUSINESS_ID}</strong><br />ဒီအပိုင်းမှာ ရှိပြီးသား Cashier Login Account နဲ့ Branch Membership ကို စီမံပါတယ်။ UID၊ Email နဲ့ Branch ခွင့်ပြုချက်ကို Server မှ စစ်ဆေးနိုင်ပါတယ်။</div>
 
     <div className="form-panel team-create-form">
-      <div className="panel-heading"><div className="panel-icon"><UserRound size={18} /></div><div><h4>Cashier Account စီမံရန်</h4><p>Account အသစ်ဖန်တီးနိုင်သလို Firebase Authentication မှာ ရှိပြီးသား Account ကိုလည်း UID နဲ့ ချိတ်နိုင်ပါတယ်။</p></div></div>
-      <div className="team-branch-options" role="group" aria-label="Cashier Account နည်းလမ်းရွေးရန်">
-        <button className={`button ${provisionMode === 'create' ? 'button-primary' : 'button-outline'}`} type="button" onClick={() => { setProvisionMode('create'); setError(''); setMessage(''); }} disabled={busy}>Account အသစ်ဖန်တီးရန်</button>
-        <button className={`button ${provisionMode === 'link' ? 'button-primary' : 'button-outline'}`} type="button" onClick={() => { setProvisionMode('link'); setPassword(''); setError(''); setMessage(''); }} disabled={busy}>ရှိပြီးသား Account ချိတ်ရန်</button>
-      </div>
-      <form onSubmit={(event) => void (provisionMode === 'create' ? createCashier(event) : linkExistingCashier(event))}>
+      <div className="panel-heading"><div className="panel-icon"><UserRound size={18} /></div><div><h4>ရှိပြီးသား Cashier Account ချိတ်ဆက်ရန်</h4><p>App ထဲမှ Account အသစ်ဖန်တီးခြင်းကို ပိတ်ထားပါတယ်။ Firebase Console မှ Owner/Admin က ကြိုတင်ဖန်တီးထားသော Account ကိုသာ ချိတ်ဆက်နိုင်ပါတယ်။</p></div></div>
+      <div className="cloud-help"><strong>လုံခြုံရေးစည်းမျဉ်း</strong><br />Public Sign Up မရှိပါ။ Cashier Account လိုအပ်ပါက ခွင့်ပြုထားသော Firebase Project Admin က Authentication → Users မှ ဖန်တီးပြီး ဒီနေရာမှာ UID နဲ့ Branch Membership ချိတ်ဆက်ပါ။</div>
+      <form onSubmit={(event) => void linkExistingCashier(event)}>
         <div className="form-grid">
           <label>ဝန်ထမ်းအမည် *<input required value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Cashier အမည်" /></label>
           <label>Email *<input required type="email" autoComplete="off" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="cashier@example.com" /></label>
-          {provisionMode === 'create'
-            ? <label>Password *<input required type="password" minLength={6} autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="အနည်းဆုံး 6 လုံး" /></label>
-            : <label>Firebase Authentication UID *<input required autoComplete="off" value={existingUid} onChange={(event) => setExistingUid(event.target.value.trim())} placeholder="Firebase Console မှ UID ထည့်ပါ" /></label>}
+          <label>Firebase Authentication UID *<input required autoComplete="off" value={existingUid} onChange={(event) => setExistingUid(event.target.value.trim())} placeholder="Firebase Console မှ UID ထည့်ပါ" /></label>
         </div>
-        {provisionMode === 'link' && <div className="cloud-help">ဒီနည်းလမ်းကို Firebase Authentication ထဲမှာ Account ရှိပြီးသားဖြစ်တဲ့အခါ သုံးပါ။ Firebase Console → Authentication → Users မှာ အဲဒီ Email ရဲ့ UID အတိအကျကို ကူးထည့်ပါ။ Password ကို ဒီနေရာမှာ မလိုပါ။ UID မမှန်ရင် Cashier Login ဝင်လို့မရပါ။</div>}
+        <div className="cloud-help">Firebase Console → Authentication → Users မှာ ရှိပြီးသား Account ရဲ့ UID အတိအကျကို ကူးထည့်ပါ။ Password ကို ဒီနေရာမှာ မလိုပါ။ UID နဲ့ Email မကိုက်ညီရင် ချိတ်ဆက်မှုကို Access Check က ငြင်းပယ်ပါမယ်။</div>
         <div className="team-branch-picker"><strong>တာဝန်ယူမည့် ဆိုင်ခွဲ (တစ်ခုတည်း) *</strong><label className="team-single-branch-select"><Store size={14} /><select required value={branchIds[0] || ''} onChange={(event) => setBranchIds(event.target.value ? [event.target.value] : [])}><option value="">ဆိုင်ခွဲ ရွေးပါ</option>{activeBranches.map((branch: Branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label></div>
-        <button className="button button-primary" type="submit" disabled={busy || !email.trim() || !displayName.trim() || branchIds.length !== 1 || (provisionMode === 'create' ? password.length < 6 : !existingUid.trim())}>{busy ? <LoaderCircle className="spin-icon" size={15} /> : provisionMode === 'create' ? <Plus size={15} /> : <ShieldCheck size={15} />} {provisionMode === 'create' ? 'Cashier Account ဖန်တီးရန်' : 'ရှိပြီးသား Account ကို Cashier အဖြစ် ချိတ်ရန်'}</button>
+        <button className="button button-primary" type="submit" disabled={busy || !email.trim() || !displayName.trim() || branchIds.length !== 1 || !existingUid.trim()}>{busy ? 'စစ်ဆေးနေပါတယ်…' : <><ShieldCheck size={15} /> ရှိပြီးသား Account ကို Cashier အဖြစ် ချိတ်ရန်</>}</button>
       </form>
     </div>
 
     <div className="panel-heading team-list-heading"><div><h4>Member စာရင်း</h4><p>{members.length} accounts</p></div><button className="button button-outline" type="button" onClick={() => void loadMembers()} disabled={busy}><RefreshCw size={14} /> ပြန်စစ်ရန်</button></div>
-    {members.length === 0 ? <div className="empty-state"><UserRound size={22} /><strong>Member မရှိသေးပါ</strong><p>Owner Account ကို Firestore မှာ အရင်အတည်ပြုပြီး Cashier အသစ် ဖန်တီးနိုင်ပါတယ်။</p></div> : <div className="team-member-list">{members.map((member) => <div className="team-member-row" key={member.uid}>
+    {members.length === 0 ? <div className="empty-state"><UserRound size={22} /><strong>Member မရှိသေးပါ</strong><p>Firebase Authentication မှာ ရှိပြီးသား Cashier Account ကို Owner က UID နဲ့ ချိတ်ဆက်နိုင်ပါတယ်။</p></div> : <div className="team-member-list">{members.map((member) => <div className="team-member-row" key={member.uid}>
       <div className="team-member-avatar">{member.role === 'owner' ? <BadgeCheck size={18} /> : <UserRound size={18} />}</div>
       <div className="team-member-main"><strong>{member.displayName || member.email || member.uid}</strong><small>{member.email} · {member.role === 'owner' ? 'Owner' : 'Limited Cashier'}</small><small className="team-member-uid">Firestore Document UID: <code>{member.uid}</code><button className="team-copy-uid" type="button" onClick={() => void copyValue(member.uid, 'Firebase UID')} title="UID ကူးရန်"><Copy size={12} /> UID ကူးရန်</button></small>{member.storedUid && member.storedUid !== member.uid && <small className="team-member-branch-warning">သတိပြုရန်: Document ID နှင့် Document ထဲက uid Field မတူပါ။ Cashier Login UID ကို Document ID နဲ့ တိုက်စစ်ပါ။</small>}{member.role === 'owner' ? <small>ဆိုင်အားလုံး</small> : <label className="team-member-branch-assignment">တာဝန်ယူမည့် ဆိုင်ခွဲ <select value={member.branchIds?.length === 1 ? member.branchIds[0] : ''} onChange={(event) => void reassignMemberBranch(member, event.target.value)} disabled={busy}><option value="">ဆိုင်ခွဲတစ်ခု ရွေးချယ်ပါ</option>{activeBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>}{member.role === 'cashier' && <label className="team-member-receiver-toggle"><input type="checkbox" checked={member.canReceiveStock === true} onChange={(event) => void setMemberReceiverPermission(member, event.target.checked)} disabled={busy || member.status !== 'active' || member.branchIds?.length !== 1} /><span><strong>Stock Receiver ခွင့်</strong><small>ရောက်လာသော ပစ္စည်းကို စစ်ဆေးလက်ခံနိုင်သည်။ Owner Approval မတိုင်မီ Stock မတိုးပါ။</small></span></label>}{member.role === 'cashier' && member.branchIds?.length !== 1 && <small className="team-member-branch-warning">Branch တစ်ခုတည်း သတ်မှတ်ရန် လိုအပ်ပါသည်။</small>}</div>
       <span className={`tag ${member.status === 'active' ? 'tag-success' : 'tag-warn'}`}>{member.status === 'active' ? 'Active' : 'Disabled'}</span>

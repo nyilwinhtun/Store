@@ -27,12 +27,13 @@ import {
 const DELETED_HASH = '__MINIMART_DELETED__';
 const MISSING_HASH = '__MINIMART_MISSING__';
 const listenOptions = { includeMetadataChanges: true } as const;
+const SESSION_UID_KEY = 'minimart-active-session-uid-v1';
 
-// Historical collections are synchronized incrementally. Product/catalog/stock
-// collections stay realtime because the checkout flow needs them immediately.
+// Historical collections are synchronized incrementally. Only categories and products
+// stay full-collection listeners because the checkout flow needs them immediately.
 const incrementalBranchKinds = new Set<BranchRecordKind>([
-  'sales', 'expenses', 'cashierSettlements', 'heldItems', 'customerPayments', 'purchases', 'supplierPayments',
-  'purchaseReturns', 'stockReceipts', 'stockTransfers', 'stockShipments', 'cashShifts', 'cashMovements', 'activityLogs', 'branchFinanceLedgerEntries', 'cashierAdvanceReconciliations', 'branchFinanceReconciliations',
+  'sales', 'expenses', 'cashierSettlements', 'customerPayments', 'purchases', 'supplierPayments',
+  'purchaseReturns', 'stockBatches', 'stockReceipts', 'stockTransfers', 'stockShipments', 'cashShifts', 'cashMovements', 'branchFinanceLedgerEntries', 'cashierAdvanceReconciliations', 'branchFinanceReconciliations',
 ]);
 
 const cursorStorageKey = (uid: string, scope: string, branchId: string, kind: string) =>
@@ -48,9 +49,6 @@ function readStoredCollectionCursor(uid: string, scope: string, branchId: string
 function readCollectionCursor(uid: string, scope: string, branchId: string, kind: string): string | null {
   const stored = readStoredCollectionCursor(uid, scope, branchId, kind);
   if (stored) return stored;
-  // v2.9.4 devices do not have collection cursors yet. Their manifest timestamp
-  // is a safe starting point with an overlap window, avoiding a duplicate full
-  // history scan during the v2.9.5 migration.
   const baselineTime = readManifest(uid)?.savedAt;
   return baselineTime && !Number.isNaN(Date.parse(baselineTime)) ? baselineTime : null;
 }
@@ -97,9 +95,10 @@ export function OwnerAutoSyncProvider() {
     const isOwner = !!uid && access.status === 'active' && access.role === 'owner' && access.uid === uid;
     if (!uid || !isOwner || !firestore) return;
 
-    // A new device is bootstrapped from the first server-confirmed listener
-    // snapshots. Do not run a separate full getDocs scan before attaching these
-    // same listeners, which would read the same collections twice.
+    try {
+      localStorage.setItem(SESSION_UID_KEY, uid);
+    } catch { /* ignore storage errors */ }
+
     let bootstrapping = !readManifest(uid);
     let bootstrapAttempted = false;
     let disposed = false;
@@ -107,8 +106,6 @@ export function OwnerAutoSyncProvider() {
     let reconcileAgain = false;
     let applyingRemote = false;
     let branchIds: string[] = [];
-    // Shared Customer/Supplier listeners are optional for branch inventory sync.
-    // A missing nested Firestore Rule must not freeze Product / Stock / Sales.
     const ready = new Set<string>();
     const pendingWrites = new Set<string>();
     const serverSnapshotSeen = new Set<string>();
@@ -160,9 +157,6 @@ export function OwnerAutoSyncProvider() {
           const baselineEntry = baseline.records[key];
           const recordScope = localItem?.scope || remoteItem?.scope || baselineEntry?.scope;
           const recordKind = localItem?.kind || remoteItem?.kind || baselineEntry?.kind;
-          // Do not pull, push, or delete shared records until their listener has
-          // received a server snapshot. This keeps a permission-denied shared path
-          // from blocking branch Product / Stock / Sales sync or creating tombstones.
           if (recordScope === 'shared' && !sharedReady.has(recordKind as SharedRecordKind)) continue;
           const baseHash = baselineEntry?.hash;
           const localHash = localItem ? hashPayload(localItem.payload) : DELETED_HASH;
@@ -175,7 +169,15 @@ export function OwnerAutoSyncProvider() {
           if (baseHash === undefined) {
             if (remoteHash === MISSING_HASH && localItem) push.push(localItem);
             else if (!localItem && remoteItem && !remoteItem.deleted) { merged.set(key, remoteItem); hasPull = true; }
-            else if (localItem && remoteItem) conflicts.push(key);
+            else if (localItem && remoteItem) {
+              // Prefer remote for cashier-updated records like sales and shifts to prevent unnecessary sync conflicts.
+              if (recordKind === 'sales' || recordKind === 'cashShifts' || recordKind === 'expenses') {
+                merged.set(key, remoteItem);
+                hasPull = true;
+              } else {
+                conflicts.push(key);
+              }
+            }
             else if (remoteItem?.deleted) merged.delete(key);
             continue;
           }
@@ -191,6 +193,11 @@ export function OwnerAutoSyncProvider() {
               const previous = baseline.records[key];
               push.push({ key, scope: previous.scope, kind: previous.kind, id: previous.id, branchId: previous.branchId, payload: null, deleted: true });
             }
+            continue;
+          }
+          if (remoteItem && !remoteItem.deleted && (recordKind === 'sales' || recordKind === 'cashShifts' || recordKind === 'stockShipments')) {
+            merged.set(key, remoteItem);
+            hasPull = true;
             continue;
           }
           conflicts.push(key);
@@ -217,12 +224,10 @@ export function OwnerAutoSyncProvider() {
         if (disposed) return;
         if (hasPull) {
           applyingRemote = true;
-          try { importCloudItems(merged, { unavailableSharedKinds: (['customers', 'suppliers'] as SharedRecordKind[]).filter((kind) => !sharedReady.has(kind)) }); }
+          try { importCloudItems(merged, { unavailableSharedKinds: (['customers', 'suppliers', 'priceGroups'] as SharedRecordKind[]).filter((kind) => !sharedReady.has(kind)) }); }
           finally { applyingRemote = false; }
         }
         const nextManifest = manifestFromItems(merged);
-        // Preserve prior baselines while a shared collection is unavailable,
-        // but do not baseline new local shared records until they reach Cloud.
         for (const key of Object.keys(nextManifest)) {
           const entry = nextManifest[key];
           if (entry.scope === 'shared' && !sharedReady.has(entry.kind as SharedRecordKind)) {
@@ -237,7 +242,7 @@ export function OwnerAutoSyncProvider() {
         for (const [key, item] of remoteItems) if (item.deleted && !nextManifest[key]) nextManifest[key] = { scope: item.scope, kind: item.kind, id: item.id, branchId: item.branchId, hash: DELETED_HASH };
         saveManifest(uid, nextManifest);
         const sharedWarning = sharedBlocked.size
-          ? ` Customer/Supplier (${[...sharedBlocked].join(', ')}) Sync ကို Firestore Rules ခွင့်မပြုသေးပါ။ Product / Stock / Sales Sync ကို ဆက်လုပ်နေပါတယ်။ Rules ပြင်ပြီး App ကို ပြန်ဖွင့်ပါ။`
+          ? ` Shared Data (${[...sharedBlocked].join(', ')}) Sync ကို Firestore Rules ခွင့်မပြုသေးပါ။ Product / Stock / Sales Sync ကို ဆက်လုပ်နေပါတယ်။ Rules ပြင်ပြီး App ကို ပြန်ဖွင့်ပါ။`
           : '';
         publishAutoSyncStatus(uid, { state: 'synced', message: `Owner Device Auto Sync အလုပ်လုပ်နေပါတယ်။${sharedWarning}`, savedAt: new Date().toISOString() });
       } catch (error) {
@@ -264,7 +269,7 @@ export function OwnerAutoSyncProvider() {
       if (disposed) return;
       const timerRef = kind === 'local' ? localTimer : remoteTimer;
       if (timerRef !== undefined) window.clearTimeout(timerRef);
-      const timer = window.setTimeout(() => void reconcile(), kind === 'local' ? 900 : 250);
+      const timer = window.setTimeout(() => void reconcile(), kind === 'local' ? 700 : 250);
       if (kind === 'local') localTimer = timer;
       else remoteTimer = timer;
     };
@@ -284,9 +289,6 @@ export function OwnerAutoSyncProvider() {
     const onShipmentCommitCompleted = (event: Event) => {
       const detail = (event as CustomEvent<{ uid?: string; records?: SyncItem[] }>).detail;
       if (detail?.uid !== uid || !Array.isArray(detail.records)) return;
-      // The dedicated transaction has already committed these exact records to
-      // Firestore. Feed them into the live reconciler and advance only their
-      // local baseline so Auto Sync will not try to write the same shipment again.
       detail.records.forEach((item) => remoteItems.set(item.key, item));
       const baseline = readManifest(uid);
       if (baseline) {
@@ -327,8 +329,6 @@ export function OwnerAutoSyncProvider() {
         const isConflict = error instanceof Error && error.name === 'SyncConflictError';
         const isNetwork = ['unavailable', 'deadline-exceeded', 'network-request-failed', 'cancelled'].includes(code)
           || (error instanceof Error && /network|offline|internet/i.test(error.message));
-        // Retry only after a network recovery. Conflicts/quota failures require
-        // an Owner review or a later explicit reload, not a tight retry loop.
         if (isNetwork) bootstrapAttempted = false;
         publishAutoSyncStatus(uid, {
           state: isConflict ? 'conflict' : isNetwork ? 'offline' : 'error',
@@ -354,7 +354,6 @@ export function OwnerAutoSyncProvider() {
     };
 
     const attachBranchCollection = (branchId: string, kind: BranchRecordKind) => {
-      // Enforce one active subscription per branch/collection key.
       if (branchUnsubscribers.get(branchId)?.has(kind)) return;
       const listenerKey = `branch:${branchId}:${kind}`;
       serverSnapshotSeen.delete(listenerKey);
@@ -363,8 +362,6 @@ export function OwnerAutoSyncProvider() {
       const branchHasBaseline = !!savedBaseline && Object.values(savedBaseline.records).some((entry) => entry.scope === 'branch' && entry.id === branchId);
       const existingCursor = bootstrapping || !branchHasBaseline ? null : readCollectionCursor(uid, 'branchRecord', branchId, kind);
       const isIncremental = incrementalBranchKinds.has(kind) && !!existingCursor;
-      // One-time migration for older devices without a cursor: the first server
-      // snapshot seeds the cursor; later app launches read only changed records.
       const listenedRef = isIncremental && existingCursor
         ? query(collectionRef, where('updatedAt', '>=', new Date(Date.parse(existingCursor) - 120_000).toISOString()))
         : collectionRef;
@@ -388,9 +385,6 @@ export function OwnerAutoSyncProvider() {
             return typeof updatedAt === 'string' && updatedAt > max ? updatedAt : max;
           }, existingCursor || '');
           if (maxUpdatedAt) saveCollectionCursor(uid, 'branchRecord', branchId, kind, maxUpdatedAt);
-        }
-        if (!snapshot.metadata.fromCache && changes.length > 0) {
-          console.info('[Minimart Sync Snapshot]', { branchId, collection: kind, mode: isIncremental ? 'incremental' : 'initial-full', changedDocs: changes.length, snapshotDocsInQuery: snapshot.size });
         }
         markReady(listenerKey, snapshot.metadata.fromCache, snapshot.metadata.hasPendingWrites);
       }, (error) => {
@@ -423,8 +417,6 @@ export function OwnerAutoSyncProvider() {
       const removed = branchIds.filter((id) => !next.has(id));
       const added = nextIds.filter((id) => !previous.has(id));
 
-      // Keep existing branch listeners alive. A new/removed branch should only
-      // attach/detach that branch's 15 listeners, not restart every branch.
       for (const branchId of removed) {
         const listeners = branchUnsubscribers.get(branchId);
         listeners?.forEach((unsubscribe, kind) => {
@@ -441,34 +433,18 @@ export function OwnerAutoSyncProvider() {
       for (const branchId of added) {
         branchRecordKinds.forEach((kind) => attachBranchCollection(branchId, kind));
       }
-      const branchCountChanged = previous.size !== next.size;
       branchIds = nextIds;
-      // Mark the branch-list query ready only after branchIds and their listeners
-      // are current; otherwise readiness can briefly pass with an empty branch list.
       markReady('branches', snapshot.metadata.fromCache, snapshot.metadata.hasPendingWrites);
-      if (!snapshot.metadata.fromCache && branchCountChanged) {
-        console.info('[Minimart Sync Listener Plan]', {
-          origin: window.location.origin,
-          branchCount: nextIds.length,
-          branchCollectionListeners: nextIds.length * branchRecordKinds.length,
-          fixedListeners: 4,
-          totalListenerSubscriptions: 4 + nextIds.length * branchRecordKinds.length,
-        });
-      }
       if (bootstrapping) tryBootstrapFromSnapshots();
       else if (isReady()) scheduleReconcile('remote');
     }, (error) => publishAutoSyncStatus(uid, { state: error.code === 'unavailable' ? 'offline' : 'error', message: error.message || 'Branch List Listener error.' }));
     unsubscribers.push(unsubscribeBranches);
 
     const attachSharedCollection = (kind: SharedRecordKind) => {
-      // Shared records also have exactly one active subscription per device.
       if (sharedUnsubscribers.has(kind)) return;
       const listenerKey = `shared:${kind}`;
       serverSnapshotSeen.delete(listenerKey);
       const ref = collection(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'shared', kind, 'records');
-      // Reuse the prior manifest timestamp only when this shared kind was
-      // already part of the device baseline. If it was previously denied, do
-      // one full read after Rules are fixed so older shared records are not missed.
       const priorManifest = bootstrapping ? null : readManifest(uid);
       const hasSharedBaseline = !!priorManifest && Object.values(priorManifest.records)
         .some((entry) => entry.scope === 'shared' && entry.kind === kind);
@@ -509,7 +485,7 @@ export function OwnerAutoSyncProvider() {
           sharedBlocked.add(kind);
           publishAutoSyncStatus(uid, {
             state: 'connecting',
-            message: `Customer/Supplier (${kind}) Cloud Rules မပြည့်စုံသေးပါ။ Product / Stock / Sales Auto Sync ကို ဆက်လုပ်နေပြီး Shared Data ကို ခေတ္တကျော်ထားပါတယ်။ Firebase Console မှ firestore.rules ကို Publish လုပ်ပြီး App ကို ပြန်ဖွင့်ပါ။`,
+            message: `Shared Data (${kind}) Cloud Rules မပြည့်စုံသေးပါ။ Product / Stock / Sales Auto Sync ကို ဆက်လုပ်နေပြီး Shared Data ကို ခေတ္တကျော်ထားပါတယ်။`,
           });
           if (bootstrapping) tryBootstrapFromSnapshots();
           else if (isReady()) scheduleReconcile('remote');
@@ -538,20 +514,17 @@ export function OwnerAutoSyncProvider() {
     }, (error) => publishAutoSyncStatus(uid, { state: error.code === 'unavailable' ? 'offline' : 'error', message: error.message || 'Settings Listener error.' }));
     unsubscribers.push(unsubscribeMeta);
 
-    // Ignore UI-only Zustand updates (cart typing, active tab, selected branch,
-    // modal state). Only business records included in buildLocalItems can
-    // trigger a Cloud reconciliation.
     const localSyncFields = [
-      'branches', 'categories', 'products', 'sales', 'expenses', 'cashierSettlements', 'heldItems',
+      'branches', 'categories', 'products', 'sales', 'expenses', 'cashierSettlements',
       'customerPayments', 'purchases', 'supplierPayments', 'purchaseReturns',
-      'stockBatches', 'stockReceipts', 'stockTransfers', 'stockShipments', 'stockUnitRegistries', 'cashShifts',
-      'cashMovements', 'activityLogs', 'branchFinanceLedgerEntries', 'cashierAdvanceReconciliations', 'branchFinanceReconciliations', 'customers', 'suppliers', 'settings', 'ownerProfile',
+      'stockBatches', 'stockReceipts', 'stockTransfers', 'stockShipments', 'cashShifts',
+      'cashMovements', 'branchFinanceLedgerEntries', 'cashierAdvanceReconciliations', 'branchFinanceReconciliations', 'customers', 'suppliers', 'priceGroups', 'settings', 'ownerProfile',
     ] as const;
     const unsubscribeStore = usePosStore.subscribe((state, previousState) => {
       if (applyingRemote || shipmentCommitInProgress || !isReady()) return;
       const businessDataChanged = localSyncFields.some((field) => state[field] !== previousState[field]);
       if (businessDataChanged) {
-        publishAutoSyncStatus(uid, { state: 'connecting', message: 'ပစ္စည်း/ကုန်ပို့ ပြောင်းလဲမှုကို Firebase Cloud သို့ Sync လုပ်နေပါတယ်။ Cashier က လက်ခံနိုင်ရန် Sync ပြီးဆုံးသည်အထိ စောင့်ပါ။' });
+        publishAutoSyncStatus(uid, { state: 'connecting', message: 'ပြောင်းလဲမှုကို Firebase Cloud သို့ Sync လုပ်နေပါတယ်။' });
         scheduleReconcile('local');
       }
     });
@@ -562,9 +535,6 @@ export function OwnerAutoSyncProvider() {
       const now = Date.now();
       if (now - lastIncrementalRefreshAt < 30_000) return;
       lastIncrementalRefreshAt = now;
-      // Re-open historical queries from the newest saved cursor after reconnect
-      // or a long background period. This prevents a stale query window from
-      // replaying every document changed since the app was first opened.
       branchUnsubscribers.forEach((listeners, branchId) => {
         for (const kind of incrementalBranchKinds) {
           const oldUnsubscribe = listeners.get(kind);
@@ -572,7 +542,6 @@ export function OwnerAutoSyncProvider() {
           listeners.delete(kind);
           ready.delete(`branch:${branchId}:${kind}`);
           pendingWrites.delete(`branch:${branchId}:${kind}`);
-          // Attach even when the old listener was detached by the offline handler.
           attachBranchCollection(branchId, kind);
         }
       });
@@ -596,8 +565,6 @@ export function OwnerAutoSyncProvider() {
       lastIncrementalRefreshAt = 0;
       ready.clear();
       pendingWrites.clear();
-      // Detach delta queries while offline; on reconnect they are recreated from
-      // the latest cursor rather than retaining an old wide query window.
       branchUnsubscribers.forEach((listeners, branchId) => {
         for (const kind of incrementalBranchKinds) {
           listeners.get(kind)?.();
@@ -617,10 +584,6 @@ export function OwnerAutoSyncProvider() {
         hiddenSince = Date.now();
         return;
       }
-      // Do not tear down and recreate every delta listener on ordinary tab
-      // switches. Firestore already maintains active listeners while online.
-      // Refresh only after a long background period where an old query window
-      // could otherwise replay a large history range after reconnect.
       if (document.visibilityState === 'visible' && hiddenSince !== null) {
         const hiddenFor = Date.now() - hiddenSince;
         hiddenSince = null;
@@ -657,4 +620,3 @@ export function OwnerAutoSyncProvider() {
 
   return null;
 }
-

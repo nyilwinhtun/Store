@@ -1,39 +1,31 @@
-# Documentation Index — Minimart POS v3.2.0
+# Minimart POS Documentation
 
-Project Root ထဲမှာ Markdown ဖိုင်တွေ မရောနေစေရန် စာတမ်းများကို အမျိုးအစားအလိုက် ခွဲထားသည်။
+Documentation ကို အုပ်စုလိုက် စုစည်းထားသည်။ Root Folder ထဲတွင် Core Project Files များသာ ထားရန် ရည်ရွယ်ထားသည်။
 
-## လက်ရှိ Version
+| Folder | ပါဝင်သောအကြောင်းအရာ |
+|---|---|
+| `setup/` | Start Here၊ Installation၊ Firebase Project Setup |
+| `architecture/` | Multi-Branch၊ Shared Pricing၊ System Design |
+| `test-plans/` | Release တစ်ခုချင်းအတွက် Manual QA / Regression Test |
+| `firebase/` | Firestore Rules၊ Auth၊ Cloud Sync၊ Data Usage |
+| `operations/` | Stock Transfer၊ Finance၊ Cashier Operations |
+| `releases/` | Version History၊ Release Notes၊ Feature Changes |
+| `design/` | Branding / Visual Guideline |
+| `hardware/` | Receipt Printer နှင့် Device Integration |
+| `legal/` | Third-party Notices နှင့် License Information |
+| `reference/` | အခြား Reference Notes |
 
-- [Preview 4 — Standalone Login Changelog](current/V3.2.0-PREVIEW-4-LOGIN-CHANGELOG-MY.md)
+## Current release
 
-- [v3.2.0 Login & Project Organization](current/V3.2.0-LOGIN-AND-PROJECT-ORGANIZATION-MY.md)
-
-- [v3.2.0 Pre-Release Audit](current/V3.2.0-PRE-RELEASE-AUDIT-MY.md)
-- [Preview 1 — Barcode Unit Changelog](current/V3.2.0-PREVIEW-1-CHANGELOG-MY.md)
-- [Preview 2 — Changelog](current/V3.2.0-PREVIEW-2-CHANGELOG-MY.md)
-- [Preview 3 — Start Here](current/V3.2.0-PREVIEW-3-START-HERE-MY.md)
-- [Preview 3 — Changelog](current/V3.2.0-PREVIEW-3-CHANGELOG-MY.md)
-
-## Testing & Release Gate
-
-- [Standalone Login Regression Test](testing/V3.2.0-LOGIN-REGRESSION-TEST-PLAN-MY.md)
-
-- [Barcode Unit Test Plan](testing/V3.2.0-BARCODE-UNIT-PREVIEW-TEST-PLAN-MY.md)
-- [Preview 2 Test Plan](testing/V3.2.0-PREVIEW-2-TEST-PLAN-MY.md)
-- [Preview 3 Test Plan](testing/V3.2.0-PREVIEW-3-TEST-PLAN-MY.md)
-- [Preview 3 Release Gate](testing/V3.2.0-PREVIEW-3-RELEASE-GATE-MY.md)
-
-## Previous Releases
-
-- [v3.1.x Release Notes](releases/v3.1/)
-- [v3.0 Archive](archive/v3.0/)
-- [v2.8–v2.9 Archive](archive/v2.8-v2.9/)
-
-## Technical Reference
-
-- [Firebase Setup & Rules](reference/firebase/)
-- [Cloud Sync Notes](reference/cloud-sync/)
-- [Stock & Branch Transfer](reference/stock/)
-- [Branding](reference/branding/)
-- [Hardware / Printer](reference/hardware/)
-- [Third-party Notices](reference/legal/)
+- [v3.2.5 Start Here](setup/V3.2.5-START-HERE-MY.md)
+- [v3.2.5 Release Notes](releases/V3.2.5-DATA-INTEGRITY-OFFLINE-RELIABILITY-MY.md)
+- [v3.2.5 Data Integrity Test Plan](test-plans/V3.2.5-DATA-INTEGRITY-TEST-PLAN-MY.md)
+- [v3.2.5 Firestore Rules Update](firebase/V3.2.5-FIRESTORE-RULES-UPDATE-MY.md)
+- [v3.2.4 Start Here](setup/V3.2.4-START-HERE-MY.md)
+- [v3.2.4 Release Notes](releases/V3.2.4-PERFORMANCE-AND-PRODUCTION-READINESS-MY.md)
+- [v3.2.4 Performance QA](test-plans/V3.2.4-PERFORMANCE-AND-PRODUCTION-QA-MY.md)
+- [v3.2.3 Start Here](setup/V3.2.3-START-HERE-MY.md)
+- [v3.2.3 Firebase Security Deployment](firebase/V3.2.3-SECURITY-DEPLOYMENT-MY.md)
+- [v3.2.3 Release Notes](releases/V3.2.3-FIREBASE-SECURITY-AND-RELEASE-QA-MY.md)
+- [v3.2.3 Security QA Test Plan](test-plans/V3.2.3-FIREBASE-SECURITY-QA-MY.md)
+- [v3.2.2 Account Access Security](firebase/ACCOUNT-ACCESS-SECURITY-MY.md)

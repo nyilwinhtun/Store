@@ -5,8 +5,11 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    // Dedicated Minimart Production project. Keep the configured Owner UID pinned.
-    function isConfiguredOwner(businessId) {
+    // Bootstrap permission is limited to creating the first fixed Business
+    // document. It must never grant ongoing Owner access to branches, members,
+    // products, finance, or shared data. Ongoing Owner access is based only on
+    // businesses/{businessId}.ownerUid.
+    function isInitialBusinessBootstrapper(businessId) {
       return signedIn()
         && businessId == 'store-mini-main'
         && request.auth.uid == 'LjZX15uSeehtIbyL4SqO1HcyLyC2';
@@ -27,41 +30,75 @@ service cloud.firestore {
     function salePath(businessId, branchId, saleId) {
       return /databases/$(database)/documents/businesses/$(businessId)/branches/$(branchId)/sales/$(saleId);
     }
+
     function isBusinessOwner(businessId) {
-      return isConfiguredOwner(businessId)
+      // Keep the authentication check before any Rules document lookup so
+      // anonymous requests do not trigger unnecessary dependent reads.
+      return signedIn()
         && exists(businessPath(businessId))
         && get(businessPath(businessId)).data.ownerUid == request.auth.uid
-        && get(businessPath(businessId)).data.active != false;
+        && get(businessPath(businessId)).data.get('active', true) != false;
     }
 
     function isOwner(businessId) {
+      // Never use the bootstrap UID as a permanent Owner fallback.
       return isBusinessOwner(businessId);
     }
 
-    function isActiveMember(businessId) {
-      return signedIn()
-        && exists(memberPath(businessId, request.auth.uid))
-        && get(memberPath(businessId, request.auth.uid)).data.uid == request.auth.uid
-        && get(memberPath(businessId, request.auth.uid)).data.status == 'active';
+    function isActiveBranch(businessId, branchId) {
+      let path = branchPath(businessId, branchId);
+      // Check existence before reading fields so a missing Branch is a clean
+      // deny rather than a null-value Rules evaluation error.
+      return exists(path)
+        && get(path).data.payload is map
+        && get(path).data.payload.status == 'active';
     }
 
-    function isCashierForBranch(businessId, branchId) {
-      return isActiveMember(businessId)
+    function isCashierAssignedToBranch(businessId, branchId) {
+      // Avoid a dependent Member lookup until the request is authenticated.
+      return signedIn()
+        && request.auth.token.email is string
+        && exists(memberPath(businessId, request.auth.uid))
+        && get(memberPath(businessId, request.auth.uid)).data.uid == request.auth.uid
+        && get(memberPath(businessId, request.auth.uid)).data.email == request.auth.token.email
+        && get(memberPath(businessId, request.auth.uid)).data.status == 'active'
         && get(memberPath(businessId, request.auth.uid)).data.role == 'cashier'
         && get(memberPath(businessId, request.auth.uid)).data.branchIds is list
         && get(memberPath(businessId, request.auth.uid)).data.branchIds.size() == 1
+        && get(memberPath(businessId, request.auth.uid)).data.branchIds[0] is string
         && get(memberPath(businessId, request.auth.uid)).data.branchIds[0] == branchId;
     }
 
+    function isActiveMember(businessId) {
+      // Email, UID, role, status and the one active Branch are all checked.
+      // Short-circuiting keeps unauthenticated requests from reading the Member.
+      return signedIn()
+        && request.auth.token.email is string
+        && exists(memberPath(businessId, request.auth.uid))
+        && get(memberPath(businessId, request.auth.uid)).data.uid == request.auth.uid
+        && get(memberPath(businessId, request.auth.uid)).data.email == request.auth.token.email
+        && get(memberPath(businessId, request.auth.uid)).data.role == 'cashier'
+        && get(memberPath(businessId, request.auth.uid)).data.status == 'active'
+        && get(memberPath(businessId, request.auth.uid)).data.branchIds is list
+        && get(memberPath(businessId, request.auth.uid)).data.branchIds.size() == 1
+        && get(memberPath(businessId, request.auth.uid)).data.branchIds[0] is string
+        && isActiveBranch(businessId, get(memberPath(businessId, request.auth.uid)).data.branchIds[0]);
+    }
+
+    function isCashierForBranch(businessId, branchId) {
+      return isCashierAssignedToBranch(businessId, branchId)
+        && isActiveBranch(businessId, branchId);
+    }
 
     function branchHasConfiguredKPay(businessId, branchId) {
-      return exists(branchPath(businessId, branchId))
-        && get(branchPath(businessId, branchId)).data.payload is map
-        && get(branchPath(businessId, branchId)).data.payload.settings is map
-        && get(branchPath(businessId, branchId)).data.payload.settings.kpayAccountName is string
-        && get(branchPath(businessId, branchId)).data.payload.settings.kpayAccountName.size() > 0
-        && get(branchPath(businessId, branchId)).data.payload.settings.kpayAccountNumber is string
-        && get(branchPath(businessId, branchId)).data.payload.settings.kpayAccountNumber.size() > 0;
+      let branchDoc = get(branchPath(businessId, branchId));
+      return branchDoc != null
+        && branchDoc.data.payload is map
+        && branchDoc.data.payload.settings is map
+        && branchDoc.data.payload.settings.kpayAccountName is string
+        && branchDoc.data.payload.settings.kpayAccountName.size() > 0
+        && branchDoc.data.payload.settings.kpayAccountNumber is string
+        && branchDoc.data.payload.settings.kpayAccountNumber.size() > 0;
     }
 
     function isStockReceiverForBranch(businessId, branchId) {
@@ -96,230 +133,10 @@ service cloud.firestore {
         && request.resource.data.payload.receivedItems.size() == resource.data.payload.items.size();
     }
 
-    // Exact-match Branch Shipment completion is restricted to a receiver assigned
-    // to the destination branch. Product/Batch writes must reference the same
-    // approved shipment and a specific immutable line/allocation in that shipment.
-    function validStockShipmentAutoCompleteUpdate(businessId, branchId) {
-      let payload = request.resource.data.payload;
-      return isStockReceiverForBranch(businessId, branchId)
-        && resource.data.scope == 'branchRecord'
-        && resource.data.kind == 'stockShipments'
-        && resource.data.branchId == branchId
-        && resource.data.deleted != true
-        && resource.data.payload is map
-        && resource.data.payload.status == 'dispatched'
-        && request.resource.data.scope == 'branchRecord'
-        && request.resource.data.kind == 'stockShipments'
-        && request.resource.data.branchId == branchId
-        && request.resource.data.deleted == false
-        && request.resource.data.updatedBy == request.auth.uid
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['payload', 'updatedAt', 'updatedBy'])
-        && payload.diff(resource.data.payload).affectedKeys().hasOnly([
-          'status', 'receivedAt', 'receivedByUid', 'receivedByEmail', 'receivedByName', 'receiverNote',
-          'receivedItems', 'approvedAt', 'approvedByUid', 'approvedByEmail', 'approvedByName',
-          'approvalNote', 'completionMode', 'autoCompletedAt', 'autoCompletedByUid', 'autoCompletionPlan'
-        ])
-        && payload.status == 'approved'
-        && payload.toBranchId == branchId
-        && payload.completionMode == 'auto'
-        && payload.autoCompletedByUid == request.auth.uid
-        && payload.autoCompletedAt is string
-        && payload.receivedByUid == request.auth.uid
-        && payload.receivedAt is string
-        && payload.approvedByUid == request.auth.uid
-        && payload.approvedAt is string
-        && payload.items == resource.data.payload.items
-        && payload.items is list
-        && payload.items.size() > 0
-        && payload.items.size() <= 50
-        && payload.receivedItems is list
-        && payload.receivedItems.size() == payload.items.size()
-        && payload.autoCompletionPlan is list
-        && payload.autoCompletionPlan.size() == payload.items.size();
-    }
-
-    function validStockShipmentProductCreate(businessId, branchId, productId) {
-      let shipmentId = request.resource.data.sourceShipmentId;
-      let lineIndex = request.resource.data.sourceShipmentLineIndex;
-      let shipmentPath = /databases/$(database)/documents/businesses/$(businessId)/branches/$(branchId)/stockShipments/$(shipmentId);
-      let shipment = getAfter(shipmentPath).data;
-      let payload = shipment.payload;
-      let line = payload.items[lineIndex];
-      let receipt = payload.receivedItems[lineIndex];
-      let plan = payload.autoCompletionPlan[lineIndex];
-      let product = request.resource.data.payload;
-      return isStockReceiverForBranch(businessId, branchId)
-        && shipmentId is string
-        && lineIndex is int
-        && existsAfter(shipmentPath)
-        && shipment.kind == 'stockShipments'
-        && shipment.branchId == branchId
-        && payload.status == 'approved'
-        && payload.completionMode == 'auto'
-        && payload.autoCompletedByUid == request.auth.uid
-        && payload.toBranchId == branchId
-        && lineIndex >= 0 && lineIndex < payload.items.size()
-        && line.sourceProductId == receipt.sourceProductId
-        && plan.sourceProductId == line.sourceProductId
-        && plan.destinationProductId == productId
-        && plan.destinationStockBefore == 0
-        && plan.destinationStockAfter >= line.quantity - 0.000001
-        && plan.destinationStockAfter <= line.quantity + 0.000001
-        && plan.destinationBatchIds is list
-        && plan.destinationBatchIds.size() == line.batchAllocations.size()
-        && receipt.receivedQuantity == line.quantity
-        && receipt.damagedQuantity == 0
-        && request.resource.data.keys().hasOnly([
-          'scope', 'kind', 'branchId', 'payload', 'deleted', 'updatedAt', 'updatedBy',
-          'sourceShipmentId', 'sourceShipmentLineIndex'
-        ])
-        && request.resource.data.scope == 'branchRecord'
-        && request.resource.data.kind == 'products'
-        && request.resource.data.branchId == branchId
-        && request.resource.data.deleted == false
-        && request.resource.data.updatedBy == request.auth.uid
-        && request.resource.data.sourceShipmentId == shipmentId
-        && request.resource.data.sourceShipmentLineIndex == lineIndex
-        && product is map
-        && product.id == productId
-        && product.branchId == branchId
-        && product.stock == line.quantity
-        && product.name == line.productName
-        && product.sku == line.sku
-        && product.barcode == line.barcode
-        && product.costPrice == line.costPrice
-        && product.retailPrice == line.retailPrice
-        && product.wholesalePrice == line.wholesalePrice
-        && product.lowStockAt == line.lowStockAt
-        && product.unit == line.unit
-        && product.quantityMode == line.quantityMode;
-    }
-
-    function validStockShipmentProductUpdate(businessId, branchId, productId) {
-      let shipmentId = request.resource.data.sourceShipmentId;
-      let lineIndex = request.resource.data.sourceShipmentLineIndex;
-      let shipmentPath = /databases/$(database)/documents/businesses/$(businessId)/branches/$(branchId)/stockShipments/$(shipmentId);
-      let shipment = getAfter(shipmentPath).data;
-      let payload = shipment.payload;
-      let line = payload.items[lineIndex];
-      let receipt = payload.receivedItems[lineIndex];
-      let plan = payload.autoCompletionPlan[lineIndex];
-      let product = request.resource.data.payload;
-      let previous = resource.data.payload;
-      return isStockReceiverForBranch(businessId, branchId)
-        && resource.data.scope == 'branchRecord'
-        && resource.data.kind == 'products'
-        && resource.data.branchId == branchId
-        && resource.data.deleted != true
-        && shipmentId is string
-        && lineIndex is int
-        && existsAfter(shipmentPath)
-        && shipment.kind == 'stockShipments'
-        && shipment.branchId == branchId
-        && payload.status == 'approved'
-        && payload.completionMode == 'auto'
-        && payload.autoCompletedByUid == request.auth.uid
-        && payload.toBranchId == branchId
-        && lineIndex >= 0 && lineIndex < payload.items.size()
-        && line.sourceProductId == receipt.sourceProductId
-        && plan.sourceProductId == line.sourceProductId
-        && plan.destinationProductId == productId
-        && plan.destinationStockBefore == previous.stock
-        && plan.destinationStockAfter >= previous.stock + line.quantity - 0.000001
-        && plan.destinationStockAfter <= previous.stock + line.quantity + 0.000001
-        && plan.destinationBatchIds is list
-        && plan.destinationBatchIds.size() == line.batchAllocations.size()
-        && receipt.receivedQuantity == line.quantity
-        && receipt.damagedQuantity == 0
-        && request.resource.data.keys().hasOnly([
-          'scope', 'kind', 'branchId', 'payload', 'deleted', 'updatedAt', 'updatedBy',
-          'sourceShipmentId', 'sourceShipmentLineIndex'
-        ])
-        && request.resource.data.scope == 'branchRecord'
-        && request.resource.data.kind == 'products'
-        && request.resource.data.branchId == branchId
-        && request.resource.data.deleted == false
-        && request.resource.data.updatedBy == request.auth.uid
-        && request.resource.data.sourceShipmentId == shipmentId
-        && request.resource.data.sourceShipmentLineIndex == lineIndex
-        && request.resource.data.payload.diff(previous).affectedKeys().hasOnly([
-          'stock', 'name', 'sku', 'barcode', 'category', 'costPrice', 'retailPrice',
-          'wholesalePrice', 'lowStockAt', 'unit', 'quantityMode'
-        ])
-        && product.id == productId
-        && product.branchId == branchId
-        && product.stock == plan.destinationStockAfter
-        && product.name == line.productName
-        && product.sku == (line.sku != '' ? line.sku : previous.sku)
-        && product.barcode == (line.barcode != '' ? line.barcode : (previous.barcode is string ? previous.barcode : ''))
-        && product.category == (line.category != '' ? line.category : previous.category)
-        && product.costPrice >= (((previous.stock * previous.costPrice) + (line.quantity * line.costPrice)) / plan.destinationStockAfter) - 0.000001
-        && product.costPrice <= (((previous.stock * previous.costPrice) + (line.quantity * line.costPrice)) / plan.destinationStockAfter) + 0.000001
-        && product.retailPrice == line.retailPrice
-        && product.wholesalePrice == line.wholesalePrice
-        && product.lowStockAt == line.lowStockAt
-        && product.unit == line.unit
-        && product.quantityMode == line.quantityMode;
-    }
-
-    function validStockShipmentBatchCreate(businessId, branchId, batchId) {
-      let shipmentId = request.resource.data.sourceShipmentId;
-      let lineIndex = request.resource.data.sourceShipmentLineIndex;
-      let batchIndex = request.resource.data.sourceShipmentBatchIndex;
-      let shipmentPath = /databases/$(database)/documents/businesses/$(businessId)/branches/$(branchId)/stockShipments/$(shipmentId);
-      let shipment = getAfter(shipmentPath).data;
-      let payload = shipment.payload;
-      let line = payload.items[lineIndex];
-      let receipt = payload.receivedItems[lineIndex];
-      let plan = payload.autoCompletionPlan[lineIndex];
-      let allocation = line.batchAllocations[batchIndex];
-      return isStockReceiverForBranch(businessId, branchId)
-        && shipmentId is string
-        && lineIndex is int
-        && batchIndex is int
-        && existsAfter(shipmentPath)
-        && shipment.kind == 'stockShipments'
-        && shipment.branchId == branchId
-        && payload.status == 'approved'
-        && payload.completionMode == 'auto'
-        && payload.autoCompletedByUid == request.auth.uid
-        && payload.toBranchId == branchId
-        && lineIndex >= 0 && lineIndex < payload.items.size()
-        && batchIndex >= 0 && batchIndex < line.batchAllocations.size()
-        && line.sourceProductId == receipt.sourceProductId
-        && receipt.receivedQuantity == line.quantity
-        && receipt.damagedQuantity == 0
-        && plan.sourceProductId == line.sourceProductId
-        && plan.destinationBatchIds[batchIndex] == batchId
-        && request.resource.data.payload.productId == plan.destinationProductId
-        && request.resource.data.keys().hasOnly([
-          'scope', 'kind', 'branchId', 'payload', 'deleted', 'updatedAt', 'updatedBy',
-          'sourceShipmentId', 'sourceShipmentLineIndex', 'sourceShipmentBatchIndex'
-        ])
-        && request.resource.data.scope == 'branchRecord'
-        && request.resource.data.kind == 'stockBatches'
-        && request.resource.data.branchId == branchId
-        && request.resource.data.deleted == false
-        && request.resource.data.updatedBy == request.auth.uid
-        && request.resource.data.sourceShipmentId == shipmentId
-        && request.resource.data.sourceShipmentLineIndex == lineIndex
-        && request.resource.data.sourceShipmentBatchIndex == batchIndex
-        && request.resource.data.payload is map
-        && request.resource.data.payload.id == batchId
-        && request.resource.data.payload.branchId == branchId
-        && request.resource.data.payload.productId == plan.destinationProductId
-        && request.resource.data.payload.stockReceiptId == shipmentId
-        && request.resource.data.payload.quantity >= allocation.quantity - 0.000001
-        && request.resource.data.payload.quantity <= allocation.quantity + 0.000001
-        && request.resource.data.payload.unitCost == allocation.unitCost
-        && request.resource.data.payload.expiryDate == allocation.expiryDate
-        && request.resource.data.payload.purchaseId == allocation.purchaseId
-        && request.resource.data.payload.supplierId == allocation.supplierId;
-    }
-
     function validCashierSaleAuditCreate(businessId, branchId, eventId) {
       let saleId = request.resource.data.saleId;
       let linkedSale = salePath(businessId, branchId, saleId);
+      let afterSale = getAfter(linkedSale);
       return isCashierForBranch(businessId, branchId)
         && request.resource.data.keys().hasOnly([
           'id', 'eventType', 'branchId', 'saleId', 'receiptNo', 'actorUid',
@@ -335,15 +152,16 @@ service cloud.firestore {
         && request.resource.data.occurredAt is string
         && request.resource.data.total is number
         && !exists(linkedSale)
-        && existsAfter(linkedSale)
-        && getAfter(linkedSale).data.kind == 'sales'
-        && getAfter(linkedSale).data.branchId == branchId
-        && getAfter(linkedSale).data.payload.createdByUid == request.auth.uid
-        && getAfter(linkedSale).data.payload.status == 'completed';
+        && afterSale != null
+        && afterSale.data.kind == 'sales'
+        && afterSale.data.branchId == branchId
+        && afterSale.data.payload.createdByUid == request.auth.uid
+        && afterSale.data.payload.status == 'completed';
     }
 
     function validOwnerVoidAuditCreate(businessId, branchId, eventId) {
       let linkedSale = salePath(businessId, branchId, request.resource.data.saleId);
+      let afterSale = getAfter(linkedSale);
       return isOwner(businessId)
         && request.resource.data.keys().hasOnly([
           'id', 'eventType', 'branchId', 'saleId', 'receiptNo', 'actorUid',
@@ -357,14 +175,13 @@ service cloud.firestore {
         && request.resource.data.reason is string
         && request.resource.data.reason.size() >= 3
         && exists(linkedSale)
-        && existsAfter(linkedSale)
-        && getAfter(linkedSale).data.payload.status == 'voided'
-        && getAfter(linkedSale).data.payload.voidedByUid == request.auth.uid
-        && getAfter(linkedSale).data.payload.voidReason == request.resource.data.reason;
+        && afterSale != null
+        && afterSale.data.payload.status == 'voided'
+        && afterSale.data.payload.voidedByUid == request.auth.uid
+        && afterSale.data.payload.voidReason == request.resource.data.reason;
     }
 
-
-    function validCashierMember(memberId) {
+    function validCashierMember(businessId, memberId) {
       return request.resource.data.keys().hasOnly([
           'uid', 'email', 'displayName', 'role', 'branchIds',
           'status', 'createdAt', 'updatedAt', 'createdBy', 'canReceiveStock'
@@ -376,11 +193,14 @@ service cloud.firestore {
         && request.resource.data.status == 'active'
         && request.resource.data.branchIds is list
         && request.resource.data.branchIds.size() == 1
+        && request.resource.data.branchIds[0] is string
+        && isActiveBranch(businessId, request.resource.data.branchIds[0])
         && request.resource.data.createdBy == request.auth.uid
         && (!request.resource.data.keys().hasAny(['canReceiveStock']) || request.resource.data.canReceiveStock is bool);
     }
 
     function validCashierSaleCreate(businessId, branchId, saleId) {
+      let payload = request.resource.data.payload;
       return isCashierForBranch(businessId, branchId)
         && request.resource.data.keys().hasOnly([
           'scope', 'kind', 'branchId', 'deleted', 'updatedAt', 'updatedBy', 'payload'
@@ -391,35 +211,72 @@ service cloud.firestore {
         && request.resource.data.deleted == false
         && request.resource.data.updatedBy == request.auth.uid
         && request.resource.data.updatedAt is string
-        && request.resource.data.payload is map
-        && request.resource.data.payload.id == saleId
-        && request.resource.data.payload.branchId == branchId
-        && request.resource.data.payload.createdByUid == request.auth.uid
-        && request.resource.data.payload.status == 'completed'
-        && request.resource.data.payload.receiptNo is string
-        && request.resource.data.payload.items is list
-        && request.resource.data.payload.items.size() > 0
-        && request.resource.data.payload.total is number
-        && request.resource.data.payload.total >= 0
-        && request.resource.data.payload.paymentMethod in ['Cash', 'KPay', 'Credit']
-        && (request.resource.data.payload.paymentMethod != 'KPay'
-          || (request.resource.data.payload.kpayTransactionReference is string
-            && request.resource.data.payload.kpayTransactionReference.size() > 0
+        && payload is map
+        && payload.id == saleId
+        && payload.branchId == branchId
+        && payload.createdByUid == request.auth.uid
+        && payload.status == 'completed'
+        && payload.receiptNo is string
+        && payload.items is list
+        && payload.items.size() > 0
+        && payload.total is number
+        && payload.total >= 0
+        && payload.paymentMethod in ['Cash', 'KPay', 'Credit']
+        && (payload.paymentMethod != 'KPay'
+          || (payload.kpayTransactionReference is string
+            && payload.kpayTransactionReference.size() > 0
             && branchHasConfiguredKPay(businessId, branchId)))
-        && request.resource.data.payload.productDeltas is map
-        && request.resource.data.payload.productDeltas.keys().size() > 0
-        && request.resource.data.payload.stockLines is list
-        && request.resource.data.payload.stockLines.size() == request.resource.data.payload.productDeltas.keys().size()
-        && request.resource.data.payload.batchDeltas is map
-        && request.resource.data.payload.batchLines is list
-        && request.resource.data.payload.batchLines.size() == request.resource.data.payload.batchDeltas.keys().size()
-        && request.resource.data.payload.cashierSyncVersion == 1;
+        && payload.productDeltas is map
+        && payload.productDeltas.keys().size() > 0
+        && payload.stockLines is list
+        && payload.stockLines.size() == payload.productDeltas.keys().size()
+        && (
+          (payload.cashierSyncVersion == 1
+            && (!payload.keys().hasAny(['batchDeltas']) || payload.batchDeltas is map)
+            && (!payload.keys().hasAny(['batchLines']) || payload.batchLines is list))
+          || (payload.cashierSyncVersion == 2
+            && payload.batchDeltas is map
+            && payload.batchDeltas.keys().size() >= payload.productDeltas.keys().size()
+            && payload.batchLines is list
+            && payload.batchLines.size() == payload.batchDeltas.keys().size())
+        );
     }
 
-    // A Cashier may only reduce stock as part of the same atomic transaction
-    // that creates a new Sale. A replay cannot decrement stock a second time.
-    // Cashier expense records are reports of spending already made.
-    // Owner approval/acknowledgement is not required.
+    // Allows a Cashier to flag their own completed sale with a Void Request for the Owner.
+    function validCashierSaleVoidRequest(businessId, branchId) {
+      return isCashierForBranch(businessId, branchId)
+        && resource.data.kind == 'sales'
+        && resource.data.branchId == branchId
+        && resource.data.deleted != true
+        && resource.data.payload.createdByUid == request.auth.uid
+        && resource.data.payload.status == 'completed'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['payload', 'updatedAt', 'updatedBy'])
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.payload.diff(resource.data.payload).affectedKeys().hasOnly([
+          'voidRequested', 'voidRequestReason', 'voidRequestedAt', 'voidRequestedByUid', 'voidRequestedByName'
+        ])
+        && request.resource.data.payload.voidRequested == true
+        && request.resource.data.payload.voidRequestReason is string
+        && request.resource.data.payload.voidRequestReason.size() >= 2;
+    }
+
+    // Allows a Cashier to record a Customer Credit payment on an open Credit invoice.
+    function validCashierCreditSalePaymentUpdate(businessId, branchId) {
+      return isCashierForBranch(businessId, branchId)
+        && resource.data.kind == 'sales'
+        && resource.data.branchId == branchId
+        && resource.data.deleted != true
+        && resource.data.payload.paymentMethod == 'Credit'
+        && resource.data.payload.status == 'completed'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['payload', 'updatedAt', 'updatedBy'])
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.payload.diff(resource.data.payload).affectedKeys().hasOnly(['paidAmount', 'dueAmount'])
+        && request.resource.data.payload.paidAmount is number
+        && request.resource.data.payload.dueAmount is number
+        && request.resource.data.payload.paidAmount >= 0
+        && request.resource.data.payload.dueAmount >= 0;
+    }
+
     function validCashierExpenseCreate(businessId, branchId, expenseId) {
       let payload = request.resource.data.payload;
       return isCashierForBranch(businessId, branchId)
@@ -463,9 +320,24 @@ service cloud.firestore {
         && payload.updatedByUid == request.auth.uid;
     }
 
+    function validCashierBranchRecordWrite(businessId, branchId, collectionName, recordId) {
+      let payload = request.resource.data.payload;
+      return isCashierForBranch(businessId, branchId)
+        && collectionName in ['cashShifts', 'cashMovements', 'customerPayments']
+        && request.resource.data.scope == 'branchRecord'
+        && request.resource.data.kind == collectionName
+        && request.resource.data.branchId == branchId
+        && request.resource.data.deleted == false
+        && request.resource.data.updatedBy == request.auth.uid
+        && payload is map
+        && payload.id == recordId
+        && payload.branchId == branchId;
+    }
+
     function linkedProductStockReduction(businessId, branchId, productId) {
       let saleId = request.resource.data.sourceSaleId;
       let linkedSale = salePath(businessId, branchId, saleId);
+      let afterSale = getAfter(linkedSale);
       let reduction = resource.data.payload.stock - request.resource.data.payload.stock;
       return isCashierForBranch(businessId, branchId)
         && resource.data.kind == 'products'
@@ -486,21 +358,21 @@ service cloud.firestore {
         && reduction > 0
         && request.resource.data.payload.stock >= 0
         && !exists(linkedSale)
-        && existsAfter(linkedSale)
-        && getAfter(linkedSale).data.kind == 'sales'
-        && getAfter(linkedSale).data.branchId == branchId
-        && getAfter(linkedSale).data.updatedBy == request.auth.uid
-        && getAfter(linkedSale).data.payload.createdByUid == request.auth.uid
-        && getAfter(linkedSale).data.payload.status == 'completed'
-        && getAfter(linkedSale).data.payload.productDeltas[productId] == reduction
-        && getAfter(linkedSale).data.payload.stockLines.hasAny([
-          { 'productId': productId, 'quantity': reduction }
-        ]);
+        && afterSale != null
+        && afterSale.data.kind == 'sales'
+        && afterSale.data.branchId == branchId
+        && afterSale.data.updatedBy == request.auth.uid
+        && afterSale.data.payload.createdByUid == request.auth.uid
+        && afterSale.data.payload.status == 'completed'
+        && afterSale.data.payload.productDeltas[productId] == reduction
+        && afterSale.data.payload.stockLines is list
+        && afterSale.data.payload.stockLines.hasAny([{'productId': productId, 'quantity': reduction}]);
     }
 
     function linkedBatchStockReduction(businessId, branchId, batchId) {
       let saleId = request.resource.data.sourceSaleId;
       let linkedSale = salePath(businessId, branchId, saleId);
+      let afterSale = getAfter(linkedSale);
       let reduction = resource.data.payload.quantity - request.resource.data.payload.quantity;
       return isCashierForBranch(businessId, branchId)
         && resource.data.kind == 'stockBatches'
@@ -521,61 +393,121 @@ service cloud.firestore {
         && reduction > 0
         && request.resource.data.payload.quantity >= 0
         && !exists(linkedSale)
-        && existsAfter(linkedSale)
-        && getAfter(linkedSale).data.kind == 'sales'
-        && getAfter(linkedSale).data.branchId == branchId
-        && getAfter(linkedSale).data.updatedBy == request.auth.uid
-        && getAfter(linkedSale).data.payload.createdByUid == request.auth.uid
-        && getAfter(linkedSale).data.payload.status == 'completed'
-        && getAfter(linkedSale).data.payload.batchDeltas[batchId] == reduction
-        && getAfter(linkedSale).data.payload.batchLines.hasAny([
-          { 'batchId': batchId, 'quantity': reduction }
-        ]);
+        && afterSale != null
+        && afterSale.data.kind == 'sales'
+        && afterSale.data.branchId == branchId
+        && afterSale.data.updatedBy == request.auth.uid
+        && afterSale.data.payload.createdByUid == request.auth.uid
+        && afterSale.data.payload.status == 'completed'
+        && afterSale.data.payload.batchDeltas[batchId] == reduction
+        && afterSale.data.payload.batchLines is list
+        && afterSale.data.payload.batchLines.hasAny([{
+          'batchId': batchId,
+          'productId': resource.data.payload.productId,
+          'quantity': reduction
+        }]);
     }
 
-    // Cashier may mark registered barcode units sold only in the same
-    // transaction that creates the linked Sale for this exact Branch.
-    function linkedStockUnitSaleUpdate(businessId, branchId, registryId) {
-      let saleId = request.resource.data.sourceSaleId;
-      let linkedSale = salePath(businessId, branchId, saleId);
-      return isCashierForBranch(businessId, branchId)
-        && resource.data.kind == 'stockUnitRegistries'
-        && resource.data.branchId == branchId
-        && resource.data.deleted != true
-        && resource.data.payload is map
-        && request.resource.data.scope == 'branchRecord'
-        && request.resource.data.kind == 'stockUnitRegistries'
-        && request.resource.data.branchId == branchId
+    function sharedPriceGroupPath(businessId, groupId) {
+      return /databases/$(database)/documents/businesses/$(businessId)/shared/priceGroups/records/$(groupId);
+    }
+
+    function validSharedPriceGroupWrite(recordId) {
+      let payload = request.resource.data.payload;
+      return request.resource.data.keys().hasOnly(['scope', 'kind', 'payload', 'deleted', 'updatedAt', 'updatedBy'])
+        && request.resource.data.scope == 'shared'
+        && request.resource.data.kind == 'priceGroups'
         && request.resource.data.deleted == false
+        && request.resource.data.updatedAt is string
         && request.resource.data.updatedBy == request.auth.uid
-        && request.resource.data.sourceSaleId is string
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'payload', 'updatedAt', 'updatedBy', 'sourceSaleId'
-        ])
-        && request.resource.data.payload is map
-        && request.resource.data.payload.diff(resource.data.payload).affectedKeys().hasOnly([
-          'units', 'updatedAt', 'updatedByUid'
-        ])
-        && request.resource.data.payload.productId == resource.data.payload.productId
-        && request.resource.data.payload.branchId == branchId
-        && request.resource.data.payload.units is list
-        && resource.data.payload.units is list
-        && request.resource.data.payload.units.size() == resource.data.payload.units.size()
-        && !exists(linkedSale)
-        && existsAfter(linkedSale)
-        && getAfter(linkedSale).data.kind == 'sales'
-        && getAfter(linkedSale).data.branchId == branchId
-        && getAfter(linkedSale).data.updatedBy == request.auth.uid
-        && getAfter(linkedSale).data.payload.createdByUid == request.auth.uid
-        && getAfter(linkedSale).data.payload.status == 'completed'
-        && getAfter(linkedSale).data.payload.stockUnitRegistryIds is list
-        && getAfter(linkedSale).data.payload.stockUnitRegistryIds.hasAny([registryId]);
+        && payload is map
+        && payload.keys().hasAll(['id', 'name', 'retailPrice', 'wholesalePrice', 'currency', 'version', 'status', 'membersByBranch', 'createdAt', 'updatedAt'])
+        && payload.keys().hasOnly(['id', 'name', 'retailPrice', 'wholesalePrice', 'currency', 'version', 'status', 'membersByBranch', 'createdAt', 'updatedAt', 'updatedByUid'])
+        && payload.id == recordId
+        && payload.name is string
+        && payload.name.size() > 0
+        && payload.name.size() <= 120
+        && payload.retailPrice is number
+        && payload.retailPrice > 0
+        && payload.wholesalePrice is number
+        && payload.wholesalePrice >= 0
+        && payload.currency == 'MMK'
+        && payload.version is int
+        && payload.version >= 1
+        && payload.status in ['active', 'archived']
+        && payload.membersByBranch is map
+        && ((payload.status == 'active' && payload.membersByBranch.keys().size() >= 2)
+          || (payload.status == 'archived' && payload.membersByBranch.keys().size() == 0))
+        && payload.createdAt is string
+        && payload.updatedAt is string
+        && (!('updatedByUid' in payload) || payload.updatedByUid == request.auth.uid);
+    }
+
+    // Only validate the group document when a Product's shared-price fields change.
+    // Ordinary stock/cost updates therefore do not add an extra Rules document lookup.
+    function validProductSharedPriceMirror(businessId, branchId, recordId) {
+      let payload = request.resource.data.payload;
+      let groupPath = sharedPriceGroupPath(businessId, payload.priceGroupId);
+      let group = getAfter(groupPath).data;
+      return payload.priceGroupId is string
+        && payload.priceVersion is int
+        && existsAfter(groupPath)
+        && group.deleted == false
+        && group.scope == 'shared'
+        && group.kind == 'priceGroups'
+        && group.payload.id == payload.priceGroupId
+        && group.payload.status == 'active'
+        && group.payload.membersByBranch[branchId] == recordId
+        && group.payload.retailPrice == payload.retailPrice
+        && group.payload.wholesalePrice == payload.wholesalePrice
+        && group.payload.version == payload.priceVersion;
+    }
+
+    function validProductSharedPriceUnlink(businessId, branchId, recordId) {
+      let oldGroupId = resource.data.payload.priceGroupId;
+      let groupPath = sharedPriceGroupPath(businessId, oldGroupId);
+      let group = getAfter(groupPath).data;
+      let oldPayload = resource.data.payload;
+      let nextPayload = request.resource.data.payload;
+      return oldGroupId is string
+        && existsAfter(groupPath)
+        && group.scope == 'shared'
+        && group.kind == 'priceGroups'
+        && !(branchId in group.payload.membersByBranch.keys())
+        // Unlink retains the last shared selling price as the new standalone price.
+        && nextPayload.retailPrice == oldPayload.retailPrice
+        && nextPayload.wholesalePrice == oldPayload.wholesalePrice
+        && !('priceVersion' in nextPayload);
+    }
+
+    function validProductSharedPriceUpdate(businessId, branchId, recordId) {
+      let nextPayload = request.resource.data.payload;
+      let oldPayload = resource.data.payload;
+      let priceFieldsChanged = nextPayload.diff(oldPayload).affectedKeys().hasAny(['priceGroupId', 'priceVersion', 'retailPrice', 'wholesalePrice']);
+      return !priceFieldsChanged
+        || ('priceGroupId' in nextPayload
+          && validProductSharedPriceMirror(businessId, branchId, recordId)
+          && (!('priceGroupId' in oldPayload) || oldPayload.priceGroupId == nextPayload.priceGroupId
+            || validProductSharedPriceUnlink(businessId, branchId, recordId)))
+        || (!('priceGroupId' in nextPayload)
+          && (!('priceGroupId' in oldPayload) || validProductSharedPriceUnlink(businessId, branchId, recordId)));
+    }
+
+    function validProductSharedPriceCreate(businessId, branchId, recordId) {
+      return !('priceGroupId' in request.resource.data.payload)
+        || validProductSharedPriceMirror(businessId, branchId, recordId);
+    }
+
+    function validLinkedProductDelete(businessId, branchId, recordId) {
+      return !('priceGroupId' in resource.data.payload)
+        || validProductSharedPriceUnlink(businessId, branchId, recordId);
     }
 
     function validCashierCustomerCreate(businessId, recordId) {
       let branchId = request.resource.data.branchId;
       let saleId = request.resource.data.sourceSaleId;
       let linkedSale = salePath(businessId, branchId, saleId);
+      let afterSale = getAfter(linkedSale);
       return isCashierForBranch(businessId, branchId)
         && request.resource.data.keys().hasOnly([
           'scope', 'kind', 'branchId', 'payload', 'updatedAt', 'updatedBy', 'sourceSaleId'
@@ -585,25 +517,32 @@ service cloud.firestore {
         && request.resource.data.payload is map
         && request.resource.data.payload.id == recordId
         && request.resource.data.updatedBy == request.auth.uid
-        && request.resource.data.sourceSaleId is string
-        && !exists(linkedSale)
-        && existsAfter(linkedSale)
-        && getAfter(linkedSale).data.kind == 'sales'
-        && getAfter(linkedSale).data.updatedBy == request.auth.uid
-        && getAfter(linkedSale).data.payload.createdByUid == request.auth.uid
-        && getAfter(linkedSale).data.payload.paymentMethod == 'Credit'
-        && getAfter(linkedSale).data.payload.customerId == recordId
-        && getAfter(linkedSale).data.payload.customerSnapshot.id == recordId;
+        && (
+          !(request.resource.data.keys().hasAny(['sourceSaleId']))
+          || (
+            request.resource.data.sourceSaleId is string
+            && !exists(linkedSale)
+            && afterSale != null
+            && afterSale.data.kind == 'sales'
+            && afterSale.data.updatedBy == request.auth.uid
+            && afterSale.data.payload.createdByUid == request.auth.uid
+            && afterSale.data.payload.paymentMethod == 'Credit'
+            && afterSale.data.payload.customerId == recordId
+          )
+        );
     }
 
     match /businesses/{businessId} {
-      allow get: if isBusinessOwner(businessId) || isActiveMember(businessId);
+      allow get: if isOwner(businessId) || isActiveMember(businessId);
       allow list: if false;
 
-      allow create: if isConfiguredOwner(businessId)
+      // This production workspace is pre-provisioned. The pinned bootstrap UID
+      // may initialize only the fixed Business document. After creation, all
+      // Owner access is derived exclusively from the immutable ownerUid field.
+      allow create: if isInitialBusinessBootstrapper(businessId)
         && request.resource.data.ownerUid == request.auth.uid
         && request.resource.data.active == true;
-      allow update: if isConfiguredOwner(businessId)
+      allow update: if isOwner(businessId)
         && resource.data.ownerUid == request.auth.uid
         && request.resource.data.ownerUid == resource.data.ownerUid;
       allow delete: if false;
@@ -611,7 +550,7 @@ service cloud.firestore {
       match /members/{memberId} {
         allow get: if (signedIn() && request.auth.uid == memberId) || isOwner(businessId);
         allow list: if isOwner(businessId);
-        allow create: if isOwner(businessId) && validCashierMember(memberId);
+        allow create: if isOwner(businessId) && validCashierMember(businessId, memberId);
         allow update: if isOwner(businessId)
           && resource.data.role == 'cashier'
           && request.resource.data.role == 'cashier'
@@ -621,19 +560,25 @@ service cloud.firestore {
           ])
           && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['canReceiveStock']) || request.resource.data.canReceiveStock is bool)
           && request.resource.data.branchIds is list
-          && request.resource.data.branchIds.size() == 1;
+          && request.resource.data.branchIds.size() == 1
+          && request.resource.data.branchIds[0] is string
+          && isActiveBranch(businessId, request.resource.data.branchIds[0])
+          && request.resource.data.status in ['active', 'disabled'];
         allow delete: if isOwner(businessId) && resource.data.role == 'cashier';
       }
 
       match /branches/{branchId} {
-        allow get: if isOwner(businessId) || isCashierForBranch(businessId, branchId);
+        allow get: if isOwner(businessId)
+          || (isCashierAssignedToBranch(businessId, branchId)
+            && resource.data.payload is map
+            && resource.data.payload.status == 'active');
         allow list: if isOwner(businessId);
         allow create, update, delete: if isOwner(businessId);
 
         match /{collectionName}/{recordId} {
           allow get: if isOwner(businessId)
             || (isCashierForBranch(businessId, branchId)
-              && (collectionName in ['categories', 'products', 'stockBatches', 'stockUnitRegistries']
+              && (collectionName in ['categories', 'products', 'stockBatches', 'cashShifts', 'cashMovements', 'customerPayments']
                 || (collectionName == 'stockShipments' && isStockReceiverForBranch(businessId, branchId))
                 || (collectionName == 'expenses'
                   && (!exists(/databases/$(database)/documents/businesses/$(businessId)/branches/$(branchId)/expenses/$(recordId))
@@ -642,41 +587,43 @@ service cloud.firestore {
                   && resource.data.payload.cashierUid == request.auth.uid)
                 || (collectionName == 'sales'
                   && (!exists(salePath(businessId, branchId, recordId))
-                    || (resource.data.payload.createdByUid == request.auth.uid
-                      && resource.data.payload.branchId == branchId)))
+                    || resource.data.payload.branchId == branchId))
                 || (collectionName == 'auditEvents'
                   && (!exists(/databases/$(database)/documents/businesses/$(businessId)/branches/$(branchId)/auditEvents/$(recordId))
                     || resource.data.actorUid == request.auth.uid))));
 
           allow list: if isOwner(businessId)
             || (isCashierForBranch(businessId, branchId)
-              && (collectionName in ['categories', 'products', 'stockBatches', 'stockUnitRegistries']
+              && (collectionName in ['categories', 'products', 'stockBatches', 'cashShifts', 'cashMovements', 'customerPayments']
                 || (collectionName == 'stockShipments' && isStockReceiverForBranch(businessId, branchId))
                 || (collectionName == 'expenses'
-                  && request.query.limit <= 100
+                  && request.query.limit <= 500
                   && resource.data.payload.createdByUid == request.auth.uid)
                 || (collectionName == 'cashierSettlements'
-                  && request.query.limit <= 100
+                  && request.query.limit <= 500
                   && resource.data.payload.cashierUid == request.auth.uid)
                 || (collectionName == 'sales'
-                  && request.query.limit <= 100
+                  && request.query.limit <= 500
                   && resource.data.payload.createdByUid == request.auth.uid)));
 
-          allow create: if (isOwner(businessId) && collectionName != 'auditEvents')
+          allow create: if (isOwner(businessId) && collectionName != 'auditEvents'
+              && (collectionName != 'products' || validProductSharedPriceCreate(businessId, branchId, recordId)))
             || (collectionName == 'sales' && validCashierSaleCreate(businessId, branchId, recordId))
             || (collectionName == 'expenses' && validCashierExpenseCreate(businessId, branchId, recordId))
-            || (collectionName == 'products' && validStockShipmentProductCreate(businessId, branchId, recordId))
-            || (collectionName == 'stockBatches' && validStockShipmentBatchCreate(businessId, branchId, recordId))
+            || validCashierBranchRecordWrite(businessId, branchId, collectionName, recordId)
             || (collectionName == 'auditEvents' && (validCashierSaleAuditCreate(businessId, branchId, recordId)
               || validOwnerVoidAuditCreate(businessId, branchId, recordId)));
 
-          allow update: if (isOwner(businessId) && collectionName != 'auditEvents' && collectionName != 'branchFinanceReconciliations')
-            || (collectionName == 'stockShipments' && (validStockShipmentReceiptUpdate(businessId, branchId) || validStockShipmentAutoCompleteUpdate(businessId, branchId)))
-            || (collectionName == 'products' && (linkedProductStockReduction(businessId, branchId, recordId) || validStockShipmentProductUpdate(businessId, branchId, recordId)))
+          allow update: if (isOwner(businessId) && collectionName != 'auditEvents' && collectionName != 'branchFinanceReconciliations'
+              && (collectionName != 'products' || validProductSharedPriceUpdate(businessId, branchId, recordId)))
+            || (collectionName == 'stockShipments' && validStockShipmentReceiptUpdate(businessId, branchId))
+            || (collectionName == 'products' && linkedProductStockReduction(businessId, branchId, recordId))
             || (collectionName == 'stockBatches' && linkedBatchStockReduction(businessId, branchId, recordId))
-            || (collectionName == 'stockUnitRegistries' && linkedStockUnitSaleUpdate(businessId, branchId, recordId));
+            || (collectionName == 'sales' && (validCashierSaleVoidRequest(businessId, branchId) || validCashierCreditSalePaymentUpdate(businessId, branchId)))
+            || (collectionName == 'cashShifts' && validCashierBranchRecordWrite(businessId, branchId, collectionName, recordId));
 
-          allow delete: if isOwner(businessId) && collectionName != 'auditEvents' && collectionName != 'branchFinanceReconciliations';
+          allow delete: if isOwner(businessId) && collectionName != 'auditEvents' && collectionName != 'branchFinanceReconciliations'
+            && (collectionName != 'products' || validLinkedProductDelete(businessId, branchId, recordId));
         }
       }
 
@@ -685,11 +632,17 @@ service cloud.firestore {
       }
 
       match /shared/{collectionName}/records/{recordId} {
-        allow get: if isOwner(businessId) || isActiveMember(businessId);
-        allow list: if isOwner(businessId);
-        allow create: if isOwner(businessId)
+        // Price Group master records are Owner-only. Cashiers receive the effective
+        // retail/wholesale price through their assigned Branch Product documents.
+        allow get: if isOwner(businessId)
+          || (collectionName != 'priceGroups' && isActiveMember(businessId));
+        allow list: if isOwner(businessId) || (isActiveMember(businessId) && collectionName == 'customers');
+        allow create: if (isOwner(businessId)
+            && (collectionName != 'priceGroups' || validSharedPriceGroupWrite(recordId)))
           || (collectionName == 'customers' && validCashierCustomerCreate(businessId, recordId));
-        allow update, delete: if isOwner(businessId);
+        allow update: if isOwner(businessId)
+          && (collectionName != 'priceGroups' || validSharedPriceGroupWrite(recordId));
+        allow delete: if isOwner(businessId) && collectionName != 'priceGroups';
       }
 
       match /meta/{metaId} {

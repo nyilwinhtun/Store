@@ -99,6 +99,7 @@ export function CashierSettlementManagementPage({ settlements, expenses, branchI
     expense.branchId === branchId
     && expense.createdByUid === selectedCashierUid
     && expense.fundedBy === 'cashier-personal'
+    && expense.approvalStatus !== 'pending' && expense.approvalStatus !== 'rejected'
     && !expense.reimbursedBySettlementId
     && !settlements.some((entry) => entry.relatedExpenseId === expense.id && entry.status === 'paid')
   ).sort((a, b) => b.date.localeCompare(a.date)), [expenses, branchId, selectedCashierUid, settlements]);

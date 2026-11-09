@@ -1,8 +1,8 @@
-import { useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Archive, ArchiveRestore, CheckCircle2, Plus, Store, Tag, Pencil, ShieldCheck } from 'lucide-react';
-import { usePosStore } from '../store/usePosStore';
+import { DEFAULT_CASHIER_EXPENSE_APPROVAL_LIMIT, usePosStore } from '../store/usePosStore';
 
-export function BranchManagementPage({ authorize, notify }: { authorize: (action: string) => boolean; notify: (message: string) => void }) {
+export function BranchManagementPage({ authorize, notify, onOpenBranch }: { authorize: (action: string) => boolean; notify: (message: string) => void; onOpenBranch: (branchId: string) => void }) {
   const branches = usePosStore((state) => state.branches);
   const activeBranchId = usePosStore((state) => state.activeBranchId);
   const allCategories = usePosStore((state) => state.categories);
@@ -23,6 +23,11 @@ export function BranchManagementPage({ authorize, notify }: { authorize: (action
   const [branchAddress, setBranchAddress] = useState('');
   const [branchPhone, setBranchPhone] = useState('');
   const [categoryName, setCategoryName] = useState('');
+  const [expenseApprovalLimit, setExpenseApprovalLimit] = useState(String(currentBranch?.settings.cashierExpenseApprovalLimit ?? DEFAULT_CASHIER_EXPENSE_APPROVAL_LIMIT));
+
+  useEffect(() => {
+    setExpenseApprovalLimit(String(currentBranch?.settings.cashierExpenseApprovalLimit ?? DEFAULT_CASHIER_EXPENSE_APPROVAL_LIMIT));
+  }, [currentBranch?.id, currentBranch?.settings.cashierExpenseApprovalLimit]);
 
   const categoryUsage = useMemo(() => {
     const counts = new Map<string, number>();
@@ -125,13 +130,29 @@ export function BranchManagementPage({ authorize, notify }: { authorize: (action
           {branches.map((branch) => <div className={`branch-list-item ${branch.id === activeBranchId ? 'branch-current' : ''}`} key={branch.id}>
             <div className="branch-list-icon"><Store size={18} /></div>
             <div className="branch-list-info"><strong>{branch.name}</strong><small>{branch.code} · {branch.address || 'လိပ်စာ မဖြည့်ရသေး'}</small><div className="branch-list-tags">{branch.isDefault && <span className="tag">Default</span>}<span className={`tag ${branch.status === 'active' ? 'tag-success' : 'tag-warn'}`}>{branch.status === 'active' ? 'Active' : 'Archived'}</span>{branch.id === activeBranchId && <span className="tag tag-success">လက်ရှိ</span>}</div></div>
-            <div className="branch-list-actions">{branch.status === 'active' && <button className="small-action" type="button" onClick={() => renameBranch(branch.id, branch.name)} title="ဆိုင်အမည်ပြင်ရန်"><Pencil size={14} /></button>}{!branch.isDefault && branch.status === 'active' && branch.id !== activeBranchId && <button className="small-action danger-action" type="button" onClick={() => archive(branch.id, branch.name)} title="Archive"><Archive size={14} /></button>}{branch.status === 'archived' && <button className="small-action" type="button" onClick={() => restore(branch.id, branch.name)} title="ပြန်ဖွင့်ရန်"><ArchiveRestore size={14} /></button>}</div>
+            <div className="branch-list-actions">{branch.status === 'active' && <button className="small-action branch-open-action" type="button" onClick={() => onOpenBranch(branch.id)} title="ဒီဆိုင် Dashboard ဖွင့်ရန်">ဖွင့်ရန်</button>}{branch.status === 'active' && <button className="small-action" type="button" onClick={() => renameBranch(branch.id, branch.name)} title="ဆိုင်အမည်ပြင်ရန်"><Pencil size={14} /></button>}{!branch.isDefault && branch.status === 'active' && branch.id !== activeBranchId && <button className="small-action danger-action" type="button" onClick={() => archive(branch.id, branch.name)} title="Archive"><Archive size={14} /></button>}{branch.status === 'archived' && <button className="small-action" type="button" onClick={() => restore(branch.id, branch.name)} title="ပြန်ဖွင့်ရန်"><ArchiveRestore size={14} /></button>}</div>
           </div>)}
         </div>
         {activeBranches.length === 1 && <div className="backup-warning"><Store size={17} /><span>လက်ရှိ Single-Store Mode ဖြစ်ပါတယ်။ ဆိုင်ခွဲထပ်ဖန်တီးမှ Branch Selector မှာ ရွေးချယ်စရာ ပေါ်လာပါမယ်။</span></div>}
         {currentBranch && <div className="ledger-balance"><span>လက်ရှိဆိုင်</span><strong>{currentBranch.name}</strong></div>}
       </div>
     </div>
+
+    {currentBranch && <form className="panel form-panel" onSubmit={(event) => {
+      event.preventDefault();
+      if (!authorize('Cashier Expense Approval Limit ပြင်ဆင်ရန်')) return;
+      const value = Number(expenseApprovalLimit);
+      if (!Number.isSafeInteger(value) || value < 0) { notify('Approval Limit ကို 0 သို့မဟုတ် အပေါင်း ပြည့်ကိန်းဖြင့် ထည့်ပါ။'); return; }
+      updateBranch(activeBranchId, { settings: { cashierExpenseApprovalLimit: value } });
+      notify(`Cashier Expense Approval Limit ကို ${value.toLocaleString('en-US')} MMK အဖြစ် သိမ်းပြီးပါပြီ။`);
+    }}>
+      <div className="panel-heading"><div className="panel-icon"><ShieldCheck size={18} /></div><div><h3>Cashier အသုံးစရိတ် Approval သတ်မှတ်ချက်</h3><p>{currentBranch.name} အတွက် တစ်ကြိမ်စာ အသုံးစရိတ် Limit သတ်မှတ်ပါ။</p></div></div>
+      <label>Owner Approval မလိုဘဲ Cashier ကိုယ်တိုင် မှတ်တမ်းတင်နိုင်သည့် အများဆုံးပမာဏ (MMK)
+        <input type="number" min="0" step="1" inputMode="numeric" required value={expenseApprovalLimit} onChange={(event) => setExpenseApprovalLimit(event.target.value)} />
+      </label>
+      <small className="field-hint">Limit ထက် မကျော်သော အသုံးစရိတ်ကို Cashier က မှတ်တမ်းတင်နိုင်ပါတယ်။ Limit ကျော်လျှင် Owner ခွင့်ပြုချက် မရမချင်း ဆိုင်ငွေ (Cash / KPay) ကို မသုံးရပါ။ 0 ထားလျှင် အသုံးစရိတ်အားလုံး Owner Approval လိုအပ်ပါမယ်။ Default သတ်မှတ်ချက်မှာ 50,000 MMK ဖြစ်ပါတယ်။</small>
+      <button className="button button-primary" type="submit">Approval Limit သိမ်းဆည်းရန်</button>
+    </form>}
 
     <div className="panel form-panel">
       <div className="panel-heading"><div className="panel-icon"><Tag size={18} /></div><div><h3>လက်ရှိဆိုင်၏ Category များ</h3><p>Category တစ်ခုကို ဆိုင်တစ်ဆိုင်အတွင်းသာ အသုံးပြုပါမယ်။</p></div></div>

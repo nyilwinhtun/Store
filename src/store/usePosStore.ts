@@ -2,10 +2,15 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { cleanQuantity, formatQuantity, inferQuantityMode, isValidQuantity, quantityModeForProduct, summarizeQuantities, type QuantityMode } from '../lib/quantity';
 import { normalizeBarcode } from '../lib/barcode';
+import { persistentStateStorage, writePosStateDurably } from '../lib/persistentStateStorage';
 import type { BranchFinanceLedgerEntry, BranchFinanceLedgerEntryInput, BranchFinanceReconciliationInput, BranchFinanceReconciliationRecord, CashierAdvanceReconciliationInput, CashierAdvanceReconciliationRecord, CashierExpenseFields, CashierSettlementRecord } from '../types/finance';
 
+/** Stable Zustand persistence key; also used by durable checkout flush. */
+const POS_PERSIST_STORAGE_KEY = 'minimart-pos-data-v1';
+
 export type PriceMode = 'retail' | 'wholesale';
-export type BranchSettings = { storeName: string; currency: string; receiptFooter: string; receiptHeader?: string; kpayAccountName?: string; kpayAccountNumber?: string; kpayAccountLabel?: string; cashLedgerOpeningBalance?: number; kpayLedgerOpeningBalance?: number; financeLedgerStartDate?: string; /** Legacy setting retained for old backups; expense submissions are reporting-only and do not require approval. */ cashierExpenseApprovalLimit?: number };
+export const DEFAULT_CASHIER_EXPENSE_APPROVAL_LIMIT = 50000;
+export type BranchSettings = { storeName: string; currency: string; receiptFooter: string; receiptHeader?: string; kpayAccountName?: string; kpayAccountNumber?: string; kpayAccountLabel?: string; cashLedgerOpeningBalance?: number; kpayLedgerOpeningBalance?: number; financeLedgerStartDate?: string; /** Per-expense threshold above which a Cashier must obtain Owner approval before spending branch funds. */ cashierExpenseApprovalLimit?: number };
 export type Branch = { id: string; name: string; code: string; address: string; phone: string; ownerName?: string; email?: string; logoUrl?: string; bannerUrl?: string; status: 'active' | 'archived'; isDefault: boolean; createdAt: string; updatedAt: string; settings: BranchSettings };
 export type OwnerProfile = { displayName: string; phone: string; photoUrl: string; updatedAt?: string };
 export type Category = { id: string; branchId: string; name: string; color: string; isActive: boolean; createdAt: string };
@@ -13,7 +18,7 @@ export const DEFAULT_BRANCH_ID = 'branch-main';
 export const DEFAULT_CATEGORY_NAMES = ['အထွေထွေ', 'အစားအသောက်', 'အဖျော်ယမကာ', 'အိမ်သုံးပစ္စည်း', 'ကိုယ်ရေးကိုယ်တာ', 'အခြား'];
 export type BatchAllocation = { batchId: string; quantity: number };
 export type StockUnitStatus = 'in_stock' | 'reserved' | 'in_transit' | 'pending_approval' | 'sold' | 'damaged' | 'missing' | 'returned' | 'written_off';
-export type StockUnitBarcodeSource = 'purchased_sticker' | 'manufacturer_serial' | 'app_generated';
+export type StockUnitBarcodeSource = 'manufacturer_serial' | 'app_generated';
 export type StockUnit = {
   id: string;
   barcode: string;
@@ -24,10 +29,6 @@ export type StockUnit = {
   registeredByName?: string;
   batchId?: string;
   note?: string;
-  saleId?: string;
-  soldAt?: string;
-  soldByUid?: string;
-  lastSaleId?: string;
 };
 /** Chunked registry records per Product + Branch; each record stores up to 250 physical units. */
 export type StockUnitRegistry = {
@@ -50,6 +51,9 @@ export type StockUnitRegistrationInput = {
 export type StockUnitRegistrationResult = { ok: true; created: number; remainingUnregistered: number } | { ok: false; message: string };
 export type Product = {
   branchId?: string;
+  /** Explicit owner-approved shared retail/wholesale price link. */
+  priceGroupId?: string;
+  priceVersion?: number;
   id: string;
   name: string;
   sku: string;
@@ -66,6 +70,23 @@ export type Product = {
   image?: string;
   createdAt: string;
 };
+
+export type SharedPriceGroup = {
+  id: string;
+  name: string;
+  retailPrice: number;
+  wholesalePrice: number;
+  currency: string;
+  version: number;
+  status: 'active' | 'archived';
+  createdAt: string;
+  updatedAt: string;
+  updatedByUid?: string;
+  /** Branch ID -> Product ID membership map; one Product per Branch. */
+  membersByBranch: Record<string, string>;
+};
+export type SharedPriceProductRef = { branchId: string; productId: string };
+
 export type CartItem = {
   productId: string;
   name: string;
@@ -79,8 +100,9 @@ export type CartItem = {
   unit?: string;
   quantityMode?: QuantityMode;
   batchAllocations?: BatchAllocation[];
-  /** One selected physical sticker per unit when this product uses unit-level barcode tracking. */
-  stockUnitSelections?: Array<{ unitId: string; barcode: string; registryId: string }>;
+  /** Shared price metadata snapshot for audit; historical unitPrice remains authoritative. */
+  priceGroupId?: string;
+  priceVersion?: number;
 };
 export type Sale = {
   branchId?: string;
@@ -104,6 +126,11 @@ export type Sale = {
   total: number;
   profit: number;
   status: 'completed' | 'voided';
+  voidRequested?: boolean;
+  voidRequestReason?: string;
+  voidRequestedAt?: string;
+  voidRequestedByUid?: string;
+  voidRequestedByName?: string;
   voidReason?: string;
   voidedAt?: string;
   voidedByUid?: string;
@@ -114,6 +141,9 @@ export type Sale = {
   createdByName?: string;
   /** Customer snapshot used to safely create a shared customer during a Cashier credit sale. */
   customerSnapshot?: Customer;
+  /** Local-only Cloud queue state; deliberately removed from Firestore Sale payloads. */
+  cloudSyncStatus?: 'pending' | 'synced';
+  cloudSyncError?: string;
 };
 export type Expense = CashierExpenseFields & {
   branchId?: string;
@@ -200,10 +230,6 @@ export type StockBatch = {
   purchaseId: string;
   supplierId: string;
   stockReceiptId?: string;
-  /** Provenance for a branch shipment auto-completion transaction. */
-  sourceShipmentId?: string;
-  sourceShipmentLineIndex?: number;
-  sourceShipmentBatchIndex?: number;
   quantity: number;
   receivedAt: string;
   expiryDate: string;
@@ -370,11 +396,6 @@ export type BranchStockShipment = {
   totalQuantity: number;
   note: string;
   status: 'dispatched' | 'received' | 'approved' | 'cancelled';
-  completionMode?: 'owner' | 'auto';
-  autoCompletedAt?: string;
-  autoCompletedByUid?: string;
-  /** Per-line destination writes committed atomically with an exact-match receipt. */
-  autoCompletionPlan?: Array<{ sourceProductId: string; destinationProductId: string; destinationStockBefore: number; destinationStockAfter: number; destinationBatchIds: string[] }>;
   receivedItems?: Array<{ sourceProductId: string; receivedQuantity: number; damagedQuantity: number; note?: string }>;
   receivedAt?: string;
   receivedByUid?: string;
@@ -439,6 +460,7 @@ export type StoreSettings = {
   currency: string;
   adminPin: string;
   receiptFooter: string;
+  maxCashierDiscountPercent?: number;
 };
 
 type PosState = {
@@ -446,6 +468,7 @@ type PosState = {
   activeBranchId: string;
   categories: Category[];
   products: Product[];
+  priceGroups: SharedPriceGroup[];
   sales: Sale[];
   expenses: Expense[];
   cashierSettlements: CashierSettlementRecord[];
@@ -478,12 +501,18 @@ type PosState = {
   updateCategory: (id: string, name: string, color?: string) => void;
   archiveCategory: (id: string) => void;
   restoreCategory: (id: string) => boolean;
-  addProduct: (product: Omit<Product, 'id' | 'createdAt'>) => boolean;
-  updateProduct: (id: string, changes: Partial<Omit<Product, 'id' | 'createdAt'>>) => void;
-  deleteProduct: (id: string) => void;
+  addProduct: (product: Omit<Product, 'id' | 'createdAt' | 'priceGroupId' | 'priceVersion'>) => boolean;
+  createSharedPriceGroup: (input: { name: string; retailPrice: number; wholesalePrice: number; products: SharedPriceProductRef[]; actorUid?: string }) => string | null;
+  updateSharedPriceGroup: (id: string, changes: { name?: string; retailPrice: number; wholesalePrice: number; actorUid?: string }) => boolean;
+  attachProductsToSharedPriceGroup: (id: string, products: SharedPriceProductRef[], actorUid?: string) => boolean;
+  unlinkProductFromSharedPriceGroup: (branchId: string, productId: string, actorUid?: string) => boolean;
+  updateProduct: (id: string, changes: Partial<Omit<Product, 'id' | 'createdAt' | 'priceGroupId' | 'priceVersion'>>) => void;
+  deleteProduct: (id: string) => boolean;
   adjustStock: (id: string, quantity: number) => boolean;
   addSale: (sale: Sale) => Sale | null;
+  updateSaleCloudSyncStatus: (id: string, branchId: string, status: 'pending' | 'synced', error?: string) => void;
   voidSale: (id: string, reason: string, actor: { uid: string; email: string; name: string }, voidedAt?: string) => boolean;
+  requestSaleVoid: (id: string, reason: string, actor: { uid: string; name: string }) => boolean;
   addExpense: (expense: Omit<Expense, 'id'> & { id?: string }) => Expense;
   updateExpense: (id: string, changes: Partial<Expense>) => void;
   deleteExpense: (id: string) => void;
@@ -505,7 +534,7 @@ type PosState = {
   reverseStockTransfer: (input: { transferId: string; actor?: StockTransferActor; note: string }) => StockTransferReversalResult;
   dispatchBranchStockShipment: (input: { fromBranchId?: string; toBranchId: string; items: BranchShipmentDraftItem[]; note?: string; requestId?: string; actor?: StockTransferActor }) => BranchShipmentDispatchResult;
   confirmBranchStockShipmentReceipt: (input: { shipmentId: string; receivedItems: BranchShipmentReceiptInput[]; actor?: StockTransferActor; note?: string }) => boolean;
-  approveBranchStockShipment: (input: { shipmentId: string; actor?: StockTransferActor; note?: string; autoComplete?: boolean }) => boolean;
+  approveBranchStockShipment: (input: { shipmentId: string; actor?: StockTransferActor; note?: string }) => boolean;
   registerStockUnits: (input: StockUnitRegistrationInput) => StockUnitRegistrationResult;
   cancelBranchStockShipment: (input: { shipmentId: string; actor?: StockTransferActor; note: string }) => boolean;
   addSupplierPayment: (payment: Omit<SupplierPayment, 'id'>) => boolean;
@@ -519,7 +548,7 @@ type PosState = {
   removeHeldItem: (productId: string) => void;
   updateSettings: (changes: Partial<StoreSettings>) => void;
   updateOwnerProfile: (changes: Partial<OwnerProfile>) => void;
-  importData: (data: Partial<Pick<PosState, 'branches' | 'activeBranchId' | 'categories' | 'products' | 'sales' | 'expenses' | 'cashierSettlements' | 'branchFinanceLedgerEntries' | 'cashierAdvanceReconciliations' | 'branchFinanceReconciliations' | 'heldItems' | 'customers' | 'suppliers' | 'customerPayments' | 'purchases' | 'supplierPayments' | 'purchaseReturns' | 'stockBatches' | 'stockReceipts' | 'stockTransfers' | 'stockShipments' | 'stockUnitRegistries' | 'cashShifts' | 'cashMovements' | 'activityLogs' | 'ownerProfile' | 'settings'>>) => void;
+  importData: (data: Partial<Pick<PosState, 'branches' | 'activeBranchId' | 'categories' | 'products' | 'priceGroups' | 'sales' | 'expenses' | 'cashierSettlements' | 'branchFinanceLedgerEntries' | 'cashierAdvanceReconciliations' | 'branchFinanceReconciliations' | 'heldItems' | 'customers' | 'suppliers' | 'customerPayments' | 'purchases' | 'supplierPayments' | 'purchaseReturns' | 'stockBatches' | 'stockReceipts' | 'stockTransfers' | 'stockShipments' | 'stockUnitRegistries' | 'cashShifts' | 'cashMovements' | 'activityLogs' | 'ownerProfile' | 'settings'>>) => void;
   clearAllData: () => void;
 };
 
@@ -541,6 +570,7 @@ const defaultSettings: StoreSettings = {
   currency: 'MMK',
   adminPin: '1234',
   receiptFooter: 'Thank you. Please come again!',
+  maxCashierDiscountPercent: 10,
 };
 const defaultOwnerProfile: OwnerProfile = { displayName: '', phone: '', photoUrl: '' };
 
@@ -558,7 +588,7 @@ export function normalizeOwnerProfile(value: unknown): OwnerProfile {
 }
 const newId = () => crypto.randomUUID();
 const epsilonForQuantity = () => 0.000001;
-const makeDefaultBranch = (settings: StoreSettings = defaultSettings): Branch => ({ id: DEFAULT_BRANCH_ID, name: settings.storeName || 'Main Store', code: 'MAIN', address: '', phone: '', bannerUrl: '', status: 'active', isDefault: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), settings: { storeName: settings.storeName || 'Main Store', currency: settings.currency || 'MMK', receiptFooter: settings.receiptFooter || defaultSettings.receiptFooter, receiptHeader: '', cashLedgerOpeningBalance: 0, kpayLedgerOpeningBalance: 0 } });
+const makeDefaultBranch = (settings: StoreSettings = defaultSettings): Branch => ({ id: DEFAULT_BRANCH_ID, name: settings.storeName || 'Main Store', code: 'MAIN', address: '', phone: '', bannerUrl: '', status: 'active', isDefault: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), settings: { storeName: settings.storeName || 'Main Store', currency: settings.currency || 'MMK', receiptFooter: settings.receiptFooter || defaultSettings.receiptFooter, receiptHeader: '', cashLedgerOpeningBalance: 0, kpayLedgerOpeningBalance: 0, cashierExpenseApprovalLimit: DEFAULT_CASHIER_EXPENSE_APPROVAL_LIMIT } });
 const makeDefaultCategories = (branchId: string, names: string[] = DEFAULT_CATEGORY_NAMES): Category[] => names.map((name, index) => ({ id: `${branchId}-cat-${index + 1}`, branchId, name, color: ['#0f766e', '#2563eb', '#d97706', '#7c3aed', '#db2777', '#64748b'][index % 6], isActive: true, createdAt: new Date().toISOString() }));
 const normalizedName = (value: string) => (value || '').trim().toLocaleLowerCase();
 const normalizedPhone = (value: string) => {
@@ -580,7 +610,7 @@ const isDuplicateSharedProfile = <T extends { name: string; phone: string; addre
 const makeAudit = (action: string, entity: string, description: string, entityId?: string, branchId = DEFAULT_BRANCH_ID): ActivityLog => ({
   id: newId(), branchId, at: new Date().toISOString(), actor: 'Local device user', action, entity, entityId, description,
 });
-const prependAudit = (logs: ActivityLog[], entry: ActivityLog) => [entry, ...logs].slice(0, 1000);
+const prependAudit = (logs: ActivityLog[], entry: ActivityLog) => [entry, ...logs].slice(0, 300);
 
 function removeBatchQuantity(batches: StockBatch[], productId: string, quantity: number, mode: QuantityMode = 'decimal'): StockBatch[] {
   let remaining = Math.max(0, quantity);
@@ -669,6 +699,10 @@ function migrateState(persisted: unknown, version: number): Partial<PosState> {
     activeBranchId,
     categories,
     products,
+    priceGroups: Array.isArray(old.priceGroups) ? (old.priceGroups as SharedPriceGroup[]).map((group) => {
+      const derivedMembers = Object.fromEntries(products.filter((product) => product.priceGroupId === group.id && product.branchId).map((product) => [product.branchId as string, product.id]));
+      return { ...group, membersByBranch: group.membersByBranch && typeof group.membersByBranch === 'object' ? group.membersByBranch : derivedMembers };
+    }) : [],
     sales,
     expenses: withBranch<Expense>(old.expenses),
     cashierSettlements: withBranch<CashierSettlementRecord>(old.cashierSettlements),
@@ -699,7 +733,7 @@ export const usePosStore = create<PosState>()(
   persist(
     (set, get) => ({
       branches: [makeDefaultBranch()], activeBranchId: DEFAULT_BRANCH_ID, categories: makeDefaultCategories(DEFAULT_BRANCH_ID),
-      products: [], sales: [], expenses: [], cashierSettlements: [], branchFinanceLedgerEntries: [], cashierAdvanceReconciliations: [], branchFinanceReconciliations: [], heldItems: [], customers: [], suppliers: [],
+      products: [], priceGroups: [], sales: [], expenses: [], cashierSettlements: [], branchFinanceLedgerEntries: [], cashierAdvanceReconciliations: [], branchFinanceReconciliations: [], heldItems: [], customers: [], suppliers: [],
       customerPayments: [], purchases: [], supplierPayments: [], purchaseReturns: [], stockBatches: [], stockReceipts: [], stockTransfers: [], stockShipments: [], stockUnitRegistries: [], cashShifts: [], cashMovements: [], activityLogs: [], ownerProfile: defaultOwnerProfile, settings: defaultSettings,
       addBranch: (input) => {
         const name = input.name.trim();
@@ -712,7 +746,7 @@ export const usePosStore = create<PosState>()(
           id, name, code: `BR-${String(current.branches.length + 1).padStart(2, '0')}`,
           address: (input.address || '').trim(), phone: (input.phone || '').trim(), ownerName: '', email: '', logoUrl: '', bannerUrl: '', status: 'active', isDefault: false,
           createdAt: now, updatedAt: now,
-          settings: { storeName: name, currency: current.settings.currency, receiptFooter: current.settings.receiptFooter, receiptHeader: '', cashLedgerOpeningBalance: 0, kpayLedgerOpeningBalance: 0 },
+          settings: { storeName: name, currency: current.settings.currency, receiptFooter: current.settings.receiptFooter, receiptHeader: '', cashLedgerOpeningBalance: 0, kpayLedgerOpeningBalance: 0, cashierExpenseApprovalLimit: DEFAULT_CASHIER_EXPENSE_APPROVAL_LIMIT },
         };
         set((state) => ({ branches: [...state.branches, branch], categories: [...state.categories, ...makeDefaultCategories(id)], activityLogs: prependAudit(state.activityLogs, makeAudit('BRANCH_CREATE', 'Branch', `ဆိုင်ခွဲအသစ် ဖန်တီးသည်: ${name}`, id, state.activeBranchId)) }));
         return id;
@@ -789,7 +823,7 @@ export const usePosStore = create<PosState>()(
             || (!!barcodeKey && (existingSku === barcodeKey || existingBarcode === barcodeKey));
         })) return false;
         const createdAt = new Date().toISOString();
-        const saved: Product = { ...product, quantityMode: product.quantityMode || inferQuantityMode(product.unit), branchId: state.activeBranchId, id: newId(), createdAt };
+        const saved: Product = { ...product, priceGroupId: undefined, priceVersion: undefined, quantityMode: product.quantityMode || inferQuantityMode(product.unit), branchId: state.activeBranchId, id: newId(), createdAt };
         if (!isValidQuantity(saved.stock, quantityModeForProduct(saved), true) || !isValidQuantity(saved.lowStockAt, quantityModeForProduct(saved), true)) return false;
         const openingBatch: StockBatch | null = saved.stock > 0 ? {
           id: newId(), branchId: state.activeBranchId, productId: saved.id, purchaseId: '', supplierId: '',
@@ -802,8 +836,101 @@ export const usePosStore = create<PosState>()(
         }));
         return true;
       },
+      createSharedPriceGroup: (input) => {
+        const state = get();
+        const name = input.name.trim();
+        const retailPrice = Number(input.retailPrice);
+        const wholesalePrice = Number(input.wholesalePrice);
+        const refs = Array.from(new Map(input.products.map((ref) => [`${ref.branchId}::${ref.productId}`, ref])).values());
+        const branchIds = new Set(refs.map((ref) => ref.branchId));
+        if (!name || !Number.isFinite(retailPrice) || retailPrice <= 0 || !Number.isFinite(wholesalePrice) || wholesalePrice < 0 || refs.length < 2 || branchIds.size < 2 || branchIds.size !== refs.length) return null;
+        const members = refs.map((ref) => state.products.find((product) => product.id === ref.productId && product.branchId === ref.branchId));
+        if (members.some((product) => !product || product.priceGroupId)) return null;
+        if (refs.some((ref) => !state.branches.some((branch) => branch.id === ref.branchId && branch.status === 'active'))) return null;
+        const id = newId();
+        const now = new Date().toISOString();
+        const group: SharedPriceGroup = { id, name, retailPrice, wholesalePrice, currency: 'MMK', version: 1, status: 'active', membersByBranch: Object.fromEntries(refs.map((ref) => [ref.branchId, ref.productId])), createdAt: now, updatedAt: now, updatedByUid: input.actorUid };
+        const refKeys = new Set(refs.map((ref) => `${ref.branchId}::${ref.productId}`));
+        set((current) => ({
+          priceGroups: [...current.priceGroups, group],
+          products: current.products.map((product) => refKeys.has(`${product.branchId}::${product.id}`)
+            ? { ...product, priceGroupId: id, priceVersion: 1, retailPrice, wholesalePrice }
+            : product),
+          activityLogs: prependAudit(current.activityLogs, makeAudit('SHARED_PRICE_GROUP_CREATE', 'Shared Price Group', `ဆိုင်ခွဲ ${branchIds.size} ခု၏ Product များကို ဈေးနှုန်းအုပ်စု ချိတ်ဆက်သည်: ${name}`, id, current.activeBranchId)),
+        }));
+        return id;
+      },
+      updateSharedPriceGroup: (id, changes) => {
+        const state = get();
+        const currentGroup = state.priceGroups.find((group) => group.id === id && group.status === 'active');
+        const retailPrice = Number(changes.retailPrice);
+        const wholesalePrice = Number(changes.wholesalePrice);
+        const name = changes.name?.trim() || currentGroup?.name || '';
+        if (!currentGroup || !name || !Number.isFinite(retailPrice) || retailPrice <= 0 || !Number.isFinite(wholesalePrice) || wholesalePrice < 0) return false;
+        const members = state.products.filter((product) => product.priceGroupId === id);
+        if (members.length < 2 || new Set(members.map((product) => product.branchId)).size !== members.length) return false;
+        const expectedMembers = Object.fromEntries(members.filter((product) => product.branchId).map((product) => [product.branchId as string, product.id]));
+        if (JSON.stringify(Object.entries(currentGroup.membersByBranch || {}).sort()) !== JSON.stringify(Object.entries(expectedMembers).sort())) return false;
+        const now = new Date().toISOString();
+        const sellingPriceChanged = retailPrice !== currentGroup.retailPrice || wholesalePrice !== currentGroup.wholesalePrice;
+        // Version tracks the selling-price snapshot only; renaming a group must
+        // not force open carts or offline sales into an unnecessary price review.
+        const nextVersion = Math.max(1, currentGroup.version || 1) + (sellingPriceChanged ? 1 : 0);
+        set((current) => ({
+          priceGroups: current.priceGroups.map((group) => group.id === id ? { ...group, name, retailPrice, wholesalePrice, version: nextVersion, updatedAt: now, updatedByUid: changes.actorUid } : group),
+          products: sellingPriceChanged
+            ? current.products.map((product) => product.priceGroupId === id ? { ...product, retailPrice, wholesalePrice, priceVersion: nextVersion } : product)
+            : current.products,
+          activityLogs: prependAudit(current.activityLogs, makeAudit('SHARED_PRICE_GROUP_UPDATE', 'Shared Price Group', `မျှဝေဈေးနှုန်းအုပ်စု ပြင်ဆင်သည်: ${name} · လက်လီ ${retailPrice} · လက်ကား ${wholesalePrice}`, id, current.activeBranchId)),
+        }));
+        return true;
+      },
+      attachProductsToSharedPriceGroup: (id, inputRefs, actorUid) => {
+        const state = get();
+        const group = state.priceGroups.find((entry) => entry.id === id && entry.status === 'active');
+        if (!group || !inputRefs.length) return false;
+        const refs = Array.from(new Map(inputRefs.map((ref) => [`${ref.branchId}::${ref.productId}`, ref])).values());
+        const existingBranches = new Set(state.products.filter((product) => product.priceGroupId === id).map((product) => product.branchId));
+        if (JSON.stringify([...Object.keys(group.membersByBranch || {}).sort()]) !== JSON.stringify([...existingBranches].filter((value): value is string => !!value).sort())) return false;
+        const newBranches = new Set(refs.map((ref) => ref.branchId));
+        if (refs.length !== inputRefs.length || [...newBranches].some((branchId) => existingBranches.has(branchId)) || newBranches.size !== refs.length) return false;
+        const members = refs.map((ref) => state.products.find((product) => product.id === ref.productId && product.branchId === ref.branchId));
+        if (members.some((product) => !product || product.priceGroupId)) return false;
+        if (refs.some((ref) => !state.branches.some((branch) => branch.id === ref.branchId && branch.status === 'active'))) return false;
+        const refKeys = new Set(refs.map((ref) => `${ref.branchId}::${ref.productId}`));
+        const now = new Date().toISOString();
+        set((current) => ({
+          products: current.products.map((product) => refKeys.has(`${product.branchId}::${product.id}`)
+            ? { ...product, priceGroupId: id, priceVersion: group.version, retailPrice: group.retailPrice, wholesalePrice: group.wholesalePrice }
+            : product),
+          priceGroups: current.priceGroups.map((entry) => entry.id === id ? { ...entry, membersByBranch: { ...(entry.membersByBranch || {}), ...Object.fromEntries(refs.map((ref) => [ref.branchId, ref.productId])) }, updatedAt: now, updatedByUid: actorUid } : entry),
+          activityLogs: prependAudit(current.activityLogs, makeAudit('SHARED_PRICE_GROUP_ATTACH', 'Shared Price Group', `ပစ္စည်း ${refs.length} မျိုးကို ${group.name} ဈေးနှုန်းအုပ်စုသို့ ချိတ်ဆက်သည်။`, id, current.activeBranchId)),
+        }));
+        return true;
+      },
+      unlinkProductFromSharedPriceGroup: (branchId, productId, actorUid) => {
+        const state = get();
+        const target = state.products.find((product) => product.id === productId && product.branchId === branchId && !!product.priceGroupId);
+        if (!target?.priceGroupId) return false;
+        const group = state.priceGroups.find((entry) => entry.id === target.priceGroupId);
+        if (!group) return false;
+        const remainingMembers = state.products.filter((product) => product.priceGroupId === target.priceGroupId && !(product.id === productId && product.branchId === branchId));
+        const shouldArchiveGroup = remainingMembers.length < 2 || new Set(remainingMembers.map((product) => product.branchId)).size < 2;
+        set((current) => ({
+          products: current.products.map((product) => {
+            const isTarget = product.priceGroupId === target.priceGroupId && (shouldArchiveGroup || (product.id === productId && product.branchId === branchId));
+            if (!isTarget) return product;
+            const { priceGroupId: _priceGroupId, priceVersion: _priceVersion, ...standalone } = product;
+            return standalone;
+          }),
+          priceGroups: current.priceGroups.map((entry) => entry.id === target.priceGroupId ? { ...entry, membersByBranch: shouldArchiveGroup ? {} : Object.fromEntries(Object.entries(entry.membersByBranch || {}).filter(([memberBranchId]) => memberBranchId !== branchId)), status: shouldArchiveGroup ? 'archived' : entry.status, updatedAt: new Date().toISOString(), updatedByUid: actorUid } : entry),
+          activityLogs: prependAudit(current.activityLogs, makeAudit('SHARED_PRICE_GROUP_UNLINK', 'Shared Price Group', `${target.name} ကို ${group?.name || 'Price Group'} မှ ချိတ်ဆက်မှုဖြုတ်သည်။${shouldArchiveGroup ? ' ကျန် Product တစ်မျိုးတည်းဖြစ်သွားသောကြောင့် Group ကို Archive လုပ်သည်။' : ''}`, productId, branchId)),
+        }));
+        return true;
+      },
       updateProduct: (id, changes) => set((state) => {
         const current = state.products.find((product) => product.id === id && product.branchId === state.activeBranchId);
+        if (current?.priceGroupId && ((changes.retailPrice !== undefined && changes.retailPrice !== current.retailPrice) || (changes.wholesalePrice !== undefined && changes.wholesalePrice !== current.wholesalePrice))) return state;
         const barcodeKey = changes.barcode !== undefined ? normalizeBarcode(changes.barcode) : normalizeBarcode(current?.barcode);
         const skuKey = changes.sku !== undefined ? normalizeBarcode(changes.sku) : normalizeBarcode(current?.sku);
         if (state.products.some((product) => {
@@ -813,12 +940,9 @@ export const usePosStore = create<PosState>()(
           return (!!barcodeKey && (existingBarcode === barcodeKey || existingSku === barcodeKey))
             || (!!skuKey && (existingBarcode === skuKey || existingSku === skuKey));
         })) return state;
-        const unitTracked = !!current && state.stockUnitRegistries.some((registry) => registry.branchId === state.activeBranchId && registry.productId === id && registry.units.length > 0);
         const nextUnit = changes.unit || current?.unit || 'ခု';
         const nextMode = changes.quantityMode || current?.quantityMode || inferQuantityMode(nextUnit);
-        const requestedStock = typeof changes.stock === 'number' && Number.isFinite(changes.stock) ? Math.max(0, changes.stock) : current?.stock;
-        if (unitTracked && current && (requestedStock !== undefined && Math.abs(requestedStock - current.stock) > 1e-8 || changes.quantityMode !== undefined && changes.quantityMode !== quantityModeForProduct(current))) return state;
-        const nextStock = unitTracked ? current?.stock : requestedStock;
+        const nextStock = typeof changes.stock === 'number' && Number.isFinite(changes.stock) ? Math.max(0, changes.stock) : current?.stock;
         const stockWasChanged = !!current && nextStock !== undefined && Math.abs(nextStock - current.stock) > 1e-8;
         const quantityModeWasChanged = !!current && changes.quantityMode !== undefined && changes.quantityMode !== quantityModeForProduct(current);
         if (nextStock !== undefined && (stockWasChanged || quantityModeWasChanged) && !isValidQuantity(nextStock, nextMode, true)) return state;
@@ -838,21 +962,23 @@ export const usePosStore = create<PosState>()(
           activityLogs: changed ? prependAudit(state.activityLogs, makeAudit('UPDATE', 'Product', `ပစ္စည်းအချက်အလက် ပြင်ဆင်သည်: ${changed.name}`, id, state.activeBranchId)) : state.activityLogs,
         };
       }),
-      deleteProduct: (id) => set((state) => {
+      deleteProduct: (id) => {
+        const state = get();
         const target = state.products.find((product) => product.id === id && product.branchId === state.activeBranchId);
-        if (state.stockUnitRegistries.some((registry) => registry.branchId === state.activeBranchId && registry.productId === id && registry.units.length > 0)) return state;
-        return {
-          products: state.products.filter((product) => !(product.id === id && product.branchId === state.activeBranchId)),
-          heldItems: state.heldItems.filter((item) => !(item.productId === id && item.branchId === state.activeBranchId)),
-          stockBatches: state.stockBatches.filter((batch) => !(batch.productId === id && batch.branchId === state.activeBranchId)),
-          activityLogs: prependAudit(state.activityLogs, makeAudit('DELETE', 'Product', `ပစ္စည်းဖျက်သည်: ${target?.name || id}`, id, state.activeBranchId)),
-        };
-      }),
+        if (!target || target.priceGroupId) return false;
+        set((current) => ({
+          products: current.products.filter((product) => !(product.id === id && product.branchId === current.activeBranchId)),
+          heldItems: current.heldItems.filter((item) => !(item.productId === id && item.branchId === current.activeBranchId)),
+          stockBatches: current.stockBatches.filter((batch) => !(batch.productId === id && batch.branchId === current.activeBranchId)),
+          activityLogs: prependAudit(current.activityLogs, makeAudit('DELETE', 'Product', `ပစ္စည်းဖျက်သည်: ${target.name}`, id, current.activeBranchId)),
+        }));
+        return true;
+      },
       adjustStock: (id, quantity) => {
         const state = get();
         if (!Number.isFinite(quantity) || quantity === 0) return false;
         const target = state.products.find((product) => product.id === id && product.branchId === state.activeBranchId);
-        if (!target || state.stockUnitRegistries.some((registry) => registry.branchId === state.activeBranchId && registry.productId === id && registry.units.length > 0) || !isValidQuantity(Math.abs(quantity), 'decimal') || !isValidQuantity(target.stock + quantity, quantityModeForProduct(target), true) || target.stock + quantity < 0) return false;
+        if (!target || !isValidQuantity(Math.abs(quantity), 'decimal') || !isValidQuantity(target.stock + quantity, quantityModeForProduct(target), true) || target.stock + quantity < 0) return false;
         const receivedAt = new Date().toISOString();
         const nextStock = cleanQuantity(target.stock + quantity, quantityModeForProduct(target));
         const stockBatches = quantity < 0
@@ -871,17 +997,7 @@ export const usePosStore = create<PosState>()(
         const branchId = state.activeBranchId;
         const invalidSaleItem = sale.items.find((item) => {
           const product = state.products.find((entry) => entry.id === item.productId && entry.branchId === branchId);
-          if (!product || !isValidQuantity(item.quantity, quantityModeForProduct(product)) || product.stock < item.quantity) return true;
-          const tracked = state.stockUnitRegistries.some((entry) => entry.branchId === branchId && entry.productId === product.id && entry.units.length > 0);
-          if (!tracked) return false;
-          const selections = item.stockUnitSelections || [];
-          if (quantityModeForProduct(product) !== 'whole' || selections.length !== item.quantity) return true;
-          if (new Set(selections.map((selection) => selection.unitId)).size !== selections.length) return true;
-          return selections.some((selection) => {
-            const registry = state.stockUnitRegistries.find((entry) => entry.id === selection.registryId && entry.branchId === branchId && entry.productId === product.id);
-            const unit = registry?.units.find((entry) => entry.id === selection.unitId && normalizeBarcode(entry.barcode) === normalizeBarcode(selection.barcode));
-            return !unit || unit.status !== 'in_stock';
-          });
+          return !product || !isValidQuantity(item.quantity, quantityModeForProduct(product)) || product.stock < item.quantity;
         });
         if (invalidSaleItem) return state;
         if (sale.paymentMethod === 'KPay') {
@@ -905,6 +1021,7 @@ export const usePosStore = create<PosState>()(
         const stockBatches = state.stockBatches.map((batch) => ({ ...batch }));
         const currentDate = new Date();
         const currentDay = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}-${String(currentDate.getDate()).padStart(2, '0')}`;
+        let batchAllocationIncomplete = false;
         const saleItems = sale.items.map((item) => {
           let remaining = item.quantity;
           const allocations: BatchAllocation[] = [];
@@ -912,7 +1029,7 @@ export const usePosStore = create<PosState>()(
             .filter((batch) => batch.branchId === branchId && batch.productId === item.productId && batch.quantity > 0 && (!batch.expiryDate || batch.expiryDate >= currentDay))
             .sort((a, b) => (a.expiryDate || '9999-12-31').localeCompare(b.expiryDate || '9999-12-31'));
           for (const batch of candidates) {
-            if (remaining <= 0) break;
+            if (remaining <= 0.000001) break;
             const take = Math.min(batch.quantity, remaining);
             if (take > 0) {
               batch.quantity = cleanQuantity(batch.quantity - take, quantityModeForProduct(state.products.find((product) => product.id === item.productId && product.branchId === branchId)!));
@@ -920,28 +1037,17 @@ export const usePosStore = create<PosState>()(
               remaining -= take;
             }
           }
+          if (remaining > 0.000001) batchAllocationIncomplete = true;
           return { ...item, ...(allocations.length ? { batchAllocations: allocations } : {}) };
         });
+        if (batchAllocationIncomplete) return state;
         const paidAmount = sale.paymentMethod === 'Cash' || sale.paymentMethod === 'KPay' ? sale.total : Math.max(0, Math.min(sale.total, sale.paidAmount ?? 0));
         const dueAmount = sale.paymentMethod === 'Cash' || sale.paymentMethod === 'KPay' ? 0 : Math.max(0, sale.total - paidAmount);
         const saleToSave: Sale = { ...sale, branchId, customerId, paidAmount, dueAmount, items: saleItems, ...(customerSnapshot ? { customerSnapshot } : {}) };
-        const unitSelectionsByRegistry = new Map<string, Set<string>>();
-        for (const item of saleToSave.items) for (const selection of item.stockUnitSelections || []) {
-          const ids = unitSelectionsByRegistry.get(selection.registryId) || new Set<string>();
-          ids.add(selection.unitId); unitSelectionsByRegistry.set(selection.registryId, ids);
-        }
-        const stockUnitRegistries = state.stockUnitRegistries.map((registry) => {
-          const selectedIds = unitSelectionsByRegistry.get(registry.id);
-          if (!selectedIds || registry.branchId !== branchId) return registry;
-          return { ...registry, updatedAt: saleToSave.date, units: registry.units.map((unit) => selectedIds.has(unit.id)
-            ? { ...unit, status: 'sold' as const, saleId: saleToSave.id, soldAt: saleToSave.date, soldByUid: saleToSave.createdByUid || '' }
-            : unit) };
-        });
         savedSale = saleToSave;
         return {
           customers,
           stockBatches,
-          stockUnitRegistries,
           sales: [saleToSave, ...state.sales],
           activityLogs: prependAudit(state.activityLogs, makeAudit('CHECKOUT', 'Sale', `Voucher ${saleToSave.receiptNo} · ${saleToSave.customer} · ${saleToSave.total} MMK`, saleToSave.id, state.activeBranchId)),
           products: state.products.map((product) => {
@@ -953,6 +1059,11 @@ export const usePosStore = create<PosState>()(
         });
         return savedSale;
       },
+      updateSaleCloudSyncStatus: (id, branchId, status, error) => set((state) => ({
+        sales: state.sales.map((sale) => sale.id === id && sale.branchId === branchId
+          ? { ...sale, cloudSyncStatus: status, cloudSyncError: error }
+          : sale),
+      })),
       voidSale: (id, reason, actor, voidedAt) => {
         let succeeded = false;
         set((state) => {
@@ -963,27 +1074,15 @@ export const usePosStore = create<PosState>()(
           if (!reason.trim() || (sale.paymentMethod === 'Credit' && (sale.paidAmount ?? 0) > 0)) return state;
           const allocations = sale.items.flatMap((item) => item.batchAllocations || []);
           const now = voidedAt || new Date().toISOString();
-          const updatedSale = { ...sale, status: 'voided' as const, dueAmount: 0, voidReason: reason.trim(), voidedAt: now, voidedByUid: actor.uid, voidedByEmail: actor.email, voidedByName: actor.name };
+          const updatedSale = { ...sale, status: 'voided' as const, voidRequested: false, dueAmount: 0, voidReason: reason.trim(), voidedAt: now, voidedByUid: actor.uid, voidedByEmail: actor.email, voidedByName: actor.name };
           const audit: ActivityLog = {
             id: newId(), branchId: state.activeBranchId, at: now, actor: actor.name || actor.email || 'Owner',
             actorUid: actor.uid, actorEmail: actor.email, action: 'SALE_VOID', entity: 'Sale', entityId: id,
             description: `Voucher ${sale.receiptNo} ကို ပယ်ဖျက်သည် · ${reason.trim()}`,
           };
           succeeded = true;
-          const returnedUnitIdsByRegistry = new Map<string, Set<string>>();
-          for (const item of sale.items) for (const selection of item.stockUnitSelections || []) {
-            const ids = returnedUnitIdsByRegistry.get(selection.registryId) || new Set<string>();
-            ids.add(selection.unitId); returnedUnitIdsByRegistry.set(selection.registryId, ids);
-          }
           return {
             sales: state.sales.map((entry) => entry.id === id && entry.branchId === state.activeBranchId ? updatedSale : entry),
-            stockUnitRegistries: state.stockUnitRegistries.map((registry) => {
-              const ids = returnedUnitIdsByRegistry.get(registry.id);
-              if (!ids || registry.branchId !== state.activeBranchId) return registry;
-              return { ...registry, updatedAt: now, units: registry.units.map((unit) => ids.has(unit.id) && unit.saleId === id
-                ? { ...unit, status: 'in_stock' as const, lastSaleId: id, saleId: undefined, soldAt: undefined, soldByUid: undefined }
-                : unit) };
-            }),
             activityLogs: prependAudit(state.activityLogs, audit),
             products: state.products.map((product) => {
               if (product.branchId !== state.activeBranchId) return product;
@@ -998,6 +1097,22 @@ export const usePosStore = create<PosState>()(
         });
         return succeeded;
       },
+      requestSaleVoid: (id, reason, actor) => {
+        let updated = false;
+        set((state) => {
+          const sale = state.sales.find((entry) => entry.id === id && entry.branchId === state.activeBranchId);
+          if (!sale || sale.status !== 'completed' || !reason.trim()) return state;
+          const now = new Date().toISOString();
+          updated = true;
+          return {
+            sales: state.sales.map((entry) => entry.id === id && entry.branchId === state.activeBranchId
+              ? { ...entry, voidRequested: true, voidRequestReason: reason.trim(), voidRequestedAt: now, voidRequestedByUid: actor.uid, voidRequestedByName: actor.name }
+              : entry),
+            activityLogs: prependAudit(state.activityLogs, makeAudit('SALE_VOID_REQUEST', 'Sale', `Voucher ${sale.receiptNo} အတွက် Void တောင်းဆိုသည် · ${reason.trim()}`, id, state.activeBranchId)),
+          };
+        });
+        return updated;
+      },
       addExpense: (expense) => {
         const state = get();
         const saved: Expense = { ...expense, branchId: state.activeBranchId, id: expense.id || newId() };
@@ -1007,7 +1122,22 @@ export const usePosStore = create<PosState>()(
       updateExpense: (id, changes) => set((state) => {
         const target = state.expenses.find((expense) => expense.id === id && expense.branchId === state.activeBranchId);
         if (!target) return state;
-        return { expenses: state.expenses.map((expense) => expense.id === id && expense.branchId === state.activeBranchId ? { ...expense, ...changes } : expense) };
+        const nextExpenses = state.expenses.map((expense) => expense.id === id && expense.branchId === state.activeBranchId ? { ...expense, ...changes } : expense);
+        const approvalChanged = typeof changes.approvalStatus === 'string' && changes.approvalStatus !== target.approvalStatus;
+        const activityLogs = approvalChanged
+          ? prependAudit(state.activityLogs, {
+            ...makeAudit(
+              changes.approvalStatus === 'approved' ? 'EXPENSE_APPROVE' : changes.approvalStatus === 'rejected' ? 'EXPENSE_REJECT' : 'EXPENSE_APPROVAL_UPDATE',
+              'Expense',
+              `${target.title} · ${target.amount.toLocaleString('en-US')} MMK · ${changes.approvalStatus}`,
+              id,
+              target.branchId,
+            ),
+            actor: changes.approvedByName || changes.reviewedByName || changes.updatedByUid || 'Local device user',
+            actorUid: changes.updatedByUid,
+          })
+          : state.activityLogs;
+        return { expenses: nextExpenses, activityLogs };
       }),
       deleteExpense: (id) => set((state) => { const target = state.expenses.find((expense) => expense.id === id && expense.branchId === state.activeBranchId); return { expenses: state.expenses.filter((expense) => !(expense.id === id && expense.branchId === state.activeBranchId)), activityLogs: prependAudit(state.activityLogs, makeAudit('DELETE', 'Expense', `အသုံးစရိတ်ဖျက်သည်: ${target?.title || id}`, id, state.activeBranchId)) }; }),
       addCashierSettlement: (input) => {
@@ -1027,6 +1157,7 @@ export const usePosStore = create<PosState>()(
         if (input.relatedExpenseId) {
           linkedExpense = state.expenses.find((entry) => entry.id === input.relatedExpenseId && entry.branchId === branchId);
           if (!linkedExpense || linkedExpense.createdByUid !== input.cashierUid
+            || linkedExpense.approvalStatus === 'pending' || linkedExpense.approvalStatus === 'rejected'
             || linkedExpense.fundedBy !== 'cashier-personal'
             || linkedExpense.reimbursedBySettlementId
             || linkedExpense.amount !== amount) return null;
@@ -1252,8 +1383,7 @@ export const usePosStore = create<PosState>()(
         const product = state.products.find((entry) => entry.id === purchase.productId && entry.branchId === state.activeBranchId);
         const quantity = Number(purchase.quantity);
         const unitCost = Number(purchase.unitCost);
-        if (!product || state.stockUnitRegistries.some((registry) => registry.branchId === state.activeBranchId && registry.productId === product.id && registry.units.length > 0)
-          || !isValidQuantity(quantity, quantityModeForProduct(product)) || !Number.isFinite(unitCost) || unitCost < 0) return state;
+        if (!product || !isValidQuantity(quantity, quantityModeForProduct(product)) || !Number.isFinite(unitCost) || unitCost < 0) return state;
         const id = newId();
         const date = new Date().toISOString();
         const requestedSupplierId = purchase.supplierId || 'general-supplier';
@@ -1339,7 +1469,6 @@ export const usePosStore = create<PosState>()(
             product = productUpdates.get(draft.productId || '') || state.products.find((entry) => entry.id === draft.productId && entry.branchId === branchId);
             if (!product) return null;
           }
-          if (state.stockUnitRegistries.some((registry) => registry.branchId === branchId && registry.productId === product!.id && registry.units.length > 0)) return null;
           if (!isValidQuantity(quantity, quantityModeForProduct(product))) return null;
 
           const previous = productUpdates.get(product.id) || product;
@@ -1351,8 +1480,8 @@ export const usePosStore = create<PosState>()(
             ...previous,
             stock: nextStock,
             costPrice: weightedCost,
-            ...(draft.retailPrice !== undefined ? { retailPrice: draft.retailPrice } : {}),
-            ...(draft.wholesalePrice !== undefined ? { wholesalePrice: draft.wholesalePrice } : {}),
+            ...(!previous.priceGroupId && draft.retailPrice !== undefined ? { retailPrice: draft.retailPrice } : {}),
+            ...(!previous.priceGroupId && draft.wholesalePrice !== undefined ? { wholesalePrice: draft.wholesalePrice } : {}),
           };
           productUpdates.set(product.id, updatedProduct);
           const line: StockReceiptLine = {
@@ -1424,7 +1553,6 @@ export const usePosStore = create<PosState>()(
           let product = barcodeMatches[0] || nameMatches[0];
           if (barcodeMatches[0] && (normalizedName(barcodeMatches[0].name) !== normalizedName(item.name) || normalizedName(barcodeMatches[0].unit || 'ခု') !== normalizedName(item.unit))) return null;
           if (product && item.barcode && product.barcode && normalizeBarcode(product.barcode) !== item.barcode) return null;
-          if (product && state.stockUnitRegistries.some((registry) => registry.branchId === hubBranch.id && registry.productId === product!.id && registry.units.length > 0)) return null;
           if (product && !isValidQuantity(item.quantity, quantityModeForProduct(product))) return null;
           if (!product && !isValidQuantity(item.quantity, inferQuantityMode(item.unit))) return null;
           if (!product) {
@@ -1496,12 +1624,6 @@ export const usePosStore = create<PosState>()(
           if (seenProducts.has(draft.sourceProductId)) return fail('ပစ္စည်းတစ်မျိုးကို Shipment တစ်ခုထဲမှာ ထပ်ထည့်ထားပါတယ်။ ထပ်နေတဲ့စာကြောင်းကို ဖယ်ပါ။');
           seenProducts.add(draft.sourceProductId);
           const source = products[sourceIndex];
-          const trackedBarcodeUnits = state.stockUnitRegistries
-            .filter((registry) => registry.branchId === sourceBranch.id && registry.productId === source.id)
-            .flatMap((registry) => registry.units);
-          if (trackedBarcodeUnits.length > 0) {
-            return fail(`${source.name}: ဒီပစ္စည်းမှာ Unique Barcode Unit Tracking အသုံးပြုထားပါတယ်။ Barcode တစ်ခုချင်း Branch Transfer လုပ်နိုင်တဲ့လုပ်ငန်းစဉ် မပြီးသေးတဲ့အတွက် Quantity-only Transfer ကို ယာယီပိတ်ထားပါတယ်။ Barcode မပျောက်စေရန် ဒီပစ္စည်းကို မပို့ပါနှင့်။`);
-          }
           const quantity = Number(draft.quantity);
           const mode = quantityModeForProduct(source);
           if (!Number.isFinite(quantity) || !isValidQuantity(quantity, mode) || quantity <= 0) {
@@ -1664,34 +1786,6 @@ export const usePosStore = create<PosState>()(
         const state = get();
         const shipment = state.stockShipments.find((entry) => entry.id === input.shipmentId);
         if (!shipment || shipment.status !== 'received' || !Array.isArray(shipment.receivedItems) || shipment.receivedItems.length !== shipment.items.length) return false;
-        // Never merge a legacy quantity-only shipment into a branch product already
-        // tracked by physical sticker units. That would create unbarcoded sellable stock.
-        for (const item of shipment.items) {
-          const destinationMatches = state.products.filter((product) =>
-            product.branchId === shipment.toBranchId &&
-            (
-              (
-                typeof item.sku === 'string' &&
-                item.sku.trim() !== '' &&
-                typeof product.sku === 'string' &&
-                product.sku.trim() !== '' &&
-                normalizedName(product.sku) === normalizedName(item.sku)
-              ) ||
-              (
-                typeof item.barcode === 'string' &&
-                item.barcode.trim() !== '' &&
-                typeof product.barcode === 'string' &&
-                product.barcode.trim() !== '' &&
-                normalizedName(product.barcode) === normalizedName(item.barcode)
-              ) ||
-              (
-                normalizedName(product.name) === normalizedName(item.productName) &&
-                normalizedName(product.unit || 'ခု') === normalizedName(item.unit || 'ခု')
-              )
-            )
-          );
-          if (destinationMatches.some((product) => state.stockUnitRegistries.some((registry) => registry.branchId === shipment.toBranchId && registry.productId === product.id && registry.units.length > 0))) return false;
-        }
         const destinationBranch = state.branches.find((branch) => branch.id === shipment.toBranchId && branch.status === 'active');
         if (!destinationBranch) return false;
         const products = state.products.map((product) => ({ ...product }));
@@ -1701,9 +1795,7 @@ export const usePosStore = create<PosState>()(
         const now = new Date().toISOString();
         const epsilon = 0.000001;
 
-        const autoCompletionPlan: NonNullable<BranchStockShipment['autoCompletionPlan']> = [];
-        for (let itemIndex = 0; itemIndex < shipment.items.length; itemIndex += 1) {
-          const item = shipment.items[itemIndex];
+        for (const item of shipment.items) {
           const received = shipment.receivedItems.find((entry) => entry.sourceProductId === item.sourceProductId);
           if (!received) return false;
           const quantityMode = item.quantityMode || inferQuantityMode(item.unit);
@@ -1713,7 +1805,6 @@ export const usePosStore = create<PosState>()(
             || received.damagedQuantity < 0 || received.damagedQuantity > received.receivedQuantity) return false;
           const acceptedQuantity = cleanQuantity(Math.max(0, received.receivedQuantity - received.damagedQuantity), quantityMode);
           if (acceptedQuantity <= epsilon) {
-            if (input.autoComplete) return false;
             approvedLines.push({ ...item, acceptedQuantity: 0 });
             continue;
           }
@@ -1752,7 +1843,6 @@ export const usePosStore = create<PosState>()(
               quantity: cleanQuantity(destinationUntracked, quantityMode), receivedAt: destination.createdAt || now, expiryDate: '', unitCost: Number(destination.costPrice) || 0,
             });
           }
-          const destinationStockBefore = previousStock;
           const newStock = cleanQuantity(previousStock + acceptedQuantity, quantityMode);
           const weightedCost = newStock > 0
             ? ((previousStock * (Number(destination.costPrice) || 0)) + (acceptedQuantity * item.costPrice)) / newStock
@@ -1760,41 +1850,27 @@ export const usePosStore = create<PosState>()(
           const updatedDestination: Product = {
             ...destination, name: item.productName, sku: item.sku || destination.sku || '', barcode: item.barcode || destination.barcode || '',
             category: item.category || destination.category, costPrice: weightedCost,
-            retailPrice: item.retailPrice, wholesalePrice: item.wholesalePrice, lowStockAt: item.lowStockAt,
-            stock: newStock, unit: item.unit, quantityMode,
+            ...(!destination.priceGroupId ? { retailPrice: item.retailPrice, wholesalePrice: item.wholesalePrice } : {}),
+            lowStockAt: item.lowStockAt, stock: newStock, unit: item.unit, quantityMode,
           };
           const productIndex = products.findIndex((product) => product.id === destination!.id && product.branchId === destinationBranch.id);
           if (productIndex >= 0) products[productIndex] = updatedDestination;
 
           let batchRemaining = acceptedQuantity;
-          const destinationBatchIds: string[] = [];
-          let allocationIndex = 0;
           for (const allocation of item.batchAllocations) {
             if (batchRemaining <= epsilon) break;
             const take = Math.min(allocation.quantity, batchRemaining);
             if (take <= epsilon) continue;
-            const destinationBatchId = newId();
             batches.push({
-              id: destinationBatchId, branchId: destinationBranch.id, productId: updatedDestination.id,
+              id: newId(), branchId: destinationBranch.id, productId: updatedDestination.id,
               purchaseId: allocation.purchaseId || '', supplierId: allocation.supplierId || '', stockReceiptId: shipment.id,
-              ...(input.autoComplete ? { sourceShipmentId: shipment.id, sourceShipmentLineIndex: itemIndex, sourceShipmentBatchIndex: allocationIndex } : {}),
               quantity: cleanQuantity(take, quantityMode), receivedAt: allocation.receivedAt || now,
               expiryDate: allocation.expiryDate || '', unitCost: allocation.unitCost,
             });
-            destinationBatchIds.push(destinationBatchId);
-            allocationIndex += 1;
             batchRemaining = Math.max(0, batchRemaining - take);
           }
           if (batchRemaining > epsilon) return false;
           approvedLines.push({ ...item, acceptedQuantity });
-          if (input.autoComplete) {
-            if (Math.abs(acceptedQuantity - item.quantity) > epsilon || Math.abs(destinationStockBefore + item.quantity - newStock) > epsilon
-              || destinationBatchIds.length !== item.batchAllocations.length) return false;
-            autoCompletionPlan.push({
-              sourceProductId: item.sourceProductId, destinationProductId: updatedDestination.id,
-              destinationStockBefore, destinationStockAfter: newStock, destinationBatchIds,
-            });
-          }
         }
 
         let committed = false;
@@ -1803,9 +1879,8 @@ export const usePosStore = create<PosState>()(
           if (!latest || latest.status !== 'received' || current.stockShipments.some((entry) => entry.id !== input.shipmentId && entry.shipmentNo === shipment.shipmentNo)) return current;
           committed = true;
           const approved: BranchStockShipment = {
-            ...latest, items: input.autoComplete ? latest.items : approvedLines, status: 'approved', approvedAt: now,
+            ...latest, items: approvedLines, status: 'approved', approvedAt: now,
             approvedByUid: input.actor?.uid || '', approvedByEmail: input.actor?.email || '', approvedByName: input.actor?.name || 'Owner', approvalNote: (input.note || '').trim(),
-            ...(input.autoComplete ? { completionMode: 'auto' as const, autoCompletedAt: now, autoCompletedByUid: input.actor?.uid || '', autoCompletionPlan } : { completionMode: 'owner' as const }),
           };
           return {
             products: products.map((product) => ({ ...product })), stockBatches: batches.map((batch) => ({ ...batch })), categories,
@@ -1828,7 +1903,6 @@ export const usePosStore = create<PosState>()(
         for (const item of shipment.items) {
           const productIndex = products.findIndex((product) => product.id === item.sourceProductId && product.branchId === shipment.fromBranchId);
           if (productIndex < 0) return false;
-          if (state.stockUnitRegistries.some((registry) => registry.branchId === shipment.fromBranchId && registry.productId === item.sourceProductId && registry.units.length > 0)) return false;
           const mode = item.quantityMode || inferQuantityMode(item.unit);
           products[productIndex] = { ...products[productIndex], stock: cleanQuantity(products[productIndex].stock + item.quantity, mode) };
           for (const allocation of item.batchAllocations) {
@@ -1895,9 +1969,6 @@ export const usePosStore = create<PosState>()(
 
           const source = products.find((product) => product.id === draft.sourceProductId && product.branchId === sourceBranch.id);
           if (!source || !isValidQuantity(quantity, quantityModeForProduct(source)) || source.stock + epsilon < quantity) return null;
-          const hasRegisteredUnits = state.stockUnitRegistries.some((registry) => registry.branchId === sourceBranch.id
-            && registry.productId === source.id && registry.units.length > 0);
-          if (hasRegisteredUnits) return null;
           const sourceStockBefore = source.stock;
           const sourceTrackedTotal = batches
             .filter((batch) => batch.branchId === sourceBranch.id && batch.productId === source.id)
@@ -2204,14 +2275,18 @@ export const usePosStore = create<PosState>()(
         const product = state.products.find((entry) => entry.id === input.productId && (entry.branchId || DEFAULT_BRANCH_ID) === branchId);
         if (!product) return { ok: false, message: 'ရွေးချယ်ထားသော Product ကို ဒီဆိုင်မှာ မတွေ့ပါ။' };
         if (quantityModeForProduct(product) !== 'whole' || !Number.isInteger(product.stock)) {
-          return { ok: false, message: 'ပစ္စည်းတစ်ခုချင်း Barcode စနစ်ကို ပြည့်ကိန်း Stock ပစ္စည်းများမှာသာ အသုံးပြုနိုင်ပါတယ်။' };
+          return { ok: false, message: 'Unit Barcode Registration ကို ပြည့်ကိန်း Stock ပစ္စည်းများမှာသာ အသုံးပြုနိုင်ပါတယ်။' };
         }
-        if (!Array.isArray(input.units) || input.units.length === 0 || input.units.length > 500) {
-          return { ok: false, message: 'တစ်ကြိမ်လျှင် Barcode ၁ ခုမှ ၅၀၀ ခုအထိ ထည့်နိုင်ပါတယ်။' };
-        }
+        if (!Array.isArray(input.units) || input.units.length === 0) return { ok: false, message: 'မှတ်ပုံတင်မည့် Barcode မရှိပါ။' };
         const productRegistries = state.stockUnitRegistries
           .filter((entry) => entry.branchId === branchId && entry.productId === product.id)
           .sort((a, b) => (a.chunkIndex ?? 0) - (b.chunkIndex ?? 0));
+        const existingInStock = productRegistries.flatMap((entry) => entry.units)
+          .filter((unit) => unit.status === 'in_stock' || unit.status === 'reserved').length;
+        const remaining = Math.max(0, Math.floor(product.stock) - existingInStock);
+        if (input.units.length > remaining) {
+          return { ok: false, message: `လက်ရှိ Stock မှာ Barcode အသစ်ထည့်နိုင်တာ ${remaining} ခုသာ ကျန်ပါတယ်။` };
+        }
         const allRegistered = state.stockUnitRegistries.flatMap((entry) => entry.units.map((unit) => normalizeBarcode(unit.barcode)));
         const usedCodes = new Set(allRegistered);
         const productCodes = new Set(state.products.flatMap((entry) => [normalizeBarcode(entry.barcode), normalizeBarcode(entry.sku)]).filter(Boolean));
@@ -2234,7 +2309,8 @@ export const usePosStore = create<PosState>()(
           ...(input.actorName ? { registeredByName: input.actorName } : {}),
           ...(entry.note?.trim() ? { note: entry.note.trim() } : {}),
         }));
-        // One accepted sticker is one newly received physical unit.
+        // Chunk registries by Product + Branch; never create one Firestore document per bottle.
+        // 250 units/document leaves ample headroom below Firestore's 1 MiB document limit.
         const maxUnitsPerRegistry = 250;
         const nextProductRegistries = productRegistries.map((entry) => ({ ...entry, units: [...entry.units] }));
         let cursor = 0;
@@ -2262,28 +2338,14 @@ export const usePosStore = create<PosState>()(
         }
         const productRegistryIds = new Set(productRegistries.map((entry) => entry.id));
         const nextRegistryIds = new Set(nextProductRegistries.map((entry) => entry.id));
-        const isFirstUnitRegistration = productRegistries.length === 0;
-        // Existing counted stock must be stickered one-for-one on the first
-        // registration; do not double-increase that opening quantity.
-        if (isFirstUnitRegistration && product.stock > 0 && newUnits.length !== product.stock) {
-          return { ok: false, message: `လက်ရှိ Stock ${product.stock} ခု ရှိနေပါတယ်။ ပထမဆုံး Barcode Registration မှာ ရှိပြီးသား Stock အရေအတွက်အတိုင်း Sticker အားလုံး Scan ဖတ်ပါ။ မဟုတ်ရင် လက်ကျန် Stock ကို အရင်စစ်ပြီး 0 ပြင်ပါ။` };
-        }
-        const receivedQuantity = isFirstUnitRegistration && product.stock > 0 ? 0 : newUnits.length;
-        const nextProduct = { ...product, stock: cleanQuantity(product.stock + receivedQuantity, quantityModeForProduct(product)) };
-        const stockBatch: StockBatch | null = receivedQuantity > 0 ? {
-          id: newId(), branchId, productId: product.id, purchaseId: '', supplierId: '',
-          quantity: receivedQuantity, receivedAt: now, expiryDate: '', unitCost: product.costPrice,
-        } : null;
         set((current) => ({
-          products: current.products.map((entry) => entry.id === product.id && (entry.branchId || DEFAULT_BRANCH_ID) === branchId ? nextProduct : entry),
-          stockBatches: stockBatch ? [stockBatch, ...current.stockBatches] : current.stockBatches,
           stockUnitRegistries: [
             ...current.stockUnitRegistries.filter((entry) => !productRegistryIds.has(entry.id) && !nextRegistryIds.has(entry.id)),
             ...nextProductRegistries,
           ],
-          activityLogs: prependAudit(current.activityLogs, makeAudit('STOCK_UNIT_REGISTER', 'Stock Unit', `${product.name} · Barcode Sticker ${newUnits.length} ခု Scan ဖတ်ပြီး Stock တိုးသည်`, product.id, branchId)),
+          activityLogs: prependAudit(current.activityLogs, makeAudit('STOCK_UNIT_REGISTER', 'Stock Unit', `${product.name} အတွက် Unit Barcode ${newUnits.length} ခု မှတ်ပုံတင်သည်`, product.id, branchId)),
         }));
-        return { ok: true, created: newUnits.length, remainingUnregistered: 0 };
+        return { ok: true, created: newUnits.length, remainingUnregistered: remaining - newUnits.length };
       },
       addSupplierPayment: (payment) => {
         const state = get();
@@ -2311,7 +2373,6 @@ export const usePosStore = create<PosState>()(
         const qty = Number(quantity);
         const productForReturn = state.products.find((entry) => entry.id === purchase?.productId && entry.branchId === state.activeBranchId);
         if (!purchase || !productForReturn || !isValidQuantity(qty, quantityModeForProduct(productForReturn))) return state;
-        if (state.stockUnitRegistries.some((registry) => registry.branchId === state.activeBranchId && registry.productId === productForReturn.id && registry.units.some((unit) => unit.status === 'in_stock' || unit.status === 'reserved'))) return state;
         const batch = state.stockBatches.find((entry) => entry.branchId === state.activeBranchId && entry.purchaseId === purchaseId && entry.productId === purchase.productId);
         const product = state.products.find((entry) => entry.id === purchase.productId && entry.branchId === state.activeBranchId);
         if (!batch || !product || qty > batch.quantity) return state;
@@ -2431,7 +2492,7 @@ export const usePosStore = create<PosState>()(
         }
         return {
           branches: nextBranches, activeBranchId: nextActiveBranchId, categories,
-          products: nextProducts, sales: nextSales, expenses: nextExpenses, cashierSettlements: nextCashierSettlements, branchFinanceLedgerEntries: nextBranchFinanceLedgerEntries, cashierAdvanceReconciliations: nextCashierAdvanceReconciliations, branchFinanceReconciliations: nextBranchFinanceReconciliations, heldItems: nextHeldItems,
+          products: nextProducts, priceGroups: Array.isArray(data.priceGroups) ? data.priceGroups : state.priceGroups, sales: nextSales, expenses: nextExpenses, cashierSettlements: nextCashierSettlements, branchFinanceLedgerEntries: nextBranchFinanceLedgerEntries, cashierAdvanceReconciliations: nextCashierAdvanceReconciliations, branchFinanceReconciliations: nextBranchFinanceReconciliations, heldItems: nextHeldItems,
           customers: Array.isArray(data.customers) ? data.customers : state.customers,
           suppliers: Array.isArray(data.suppliers) ? data.suppliers : state.suppliers,
           customerPayments: nextCustomerPayments, purchases: nextPurchases, supplierPayments: nextSupplierPayments,
@@ -2439,12 +2500,12 @@ export const usePosStore = create<PosState>()(
           cashMovements: nextCashMovements, activityLogs: nextActivityLogs, ownerProfile: data.ownerProfile ? normalizeOwnerProfile({ ...normalizeOwnerProfile(state.ownerProfile), ...data.ownerProfile }) : normalizeOwnerProfile(state.ownerProfile), settings,
         };
       }),
-      clearAllData: () => set({ branches: [makeDefaultBranch()], activeBranchId: DEFAULT_BRANCH_ID, categories: makeDefaultCategories(DEFAULT_BRANCH_ID), products: [], sales: [], expenses: [], cashierSettlements: [], branchFinanceLedgerEntries: [], cashierAdvanceReconciliations: [], branchFinanceReconciliations: [], heldItems: [], customers: [], suppliers: [], customerPayments: [], purchases: [], supplierPayments: [], purchaseReturns: [], stockBatches: [], stockReceipts: [], stockTransfers: [], stockShipments: [], stockUnitRegistries: [], cashShifts: [], cashMovements: [], activityLogs: [], ownerProfile: defaultOwnerProfile, settings: defaultSettings }),
+      clearAllData: () => set({ branches: [makeDefaultBranch()], activeBranchId: DEFAULT_BRANCH_ID, categories: makeDefaultCategories(DEFAULT_BRANCH_ID), products: [], sales: [], expenses: [], cashierSettlements: [], branchFinanceLedgerEntries: [], cashierAdvanceReconciliations: [], branchFinanceReconciliations: [], heldItems: [], customers: [], suppliers: [], customerPayments: [], purchases: [], supplierPayments: [], purchaseReturns: [], stockBatches: [], stockReceipts: [], stockTransfers: [], stockShipments: [], stockUnitRegistries: [], priceGroups: [], cashShifts: [], cashMovements: [], activityLogs: [], ownerProfile: defaultOwnerProfile, settings: defaultSettings }),
     }),
     {
-      name: 'minimart-pos-data-v1',
-      storage: createJSONStorage(() => localStorage),
-      version: 18,
+      name: POS_PERSIST_STORAGE_KEY,
+      storage: createJSONStorage(() => persistentStateStorage),
+      version: 20,
       migrate: migrateState,
       // Also normalize same-version or partially-written legacy snapshots on every hydration.
       merge: (persistedState, currentState) => {
@@ -2455,6 +2516,7 @@ export const usePosStore = create<PosState>()(
           ...currentState,
           ...persisted,
           products: Array.isArray(persisted.products) ? persisted.products.map((product) => ({ ...product, quantityMode: product.quantityMode || inferQuantityMode(product.unit) })) : currentState.products,
+        priceGroups: Array.isArray(persisted.priceGroups) ? persisted.priceGroups : currentState.priceGroups,
           stockUnitRegistries: Array.isArray(persisted.stockUnitRegistries) ? persisted.stockUnitRegistries : currentState.stockUnitRegistries,
           cashierSettlements: Array.isArray(persisted.cashierSettlements) ? persisted.cashierSettlements : currentState.cashierSettlements,
           branchFinanceLedgerEntries: Array.isArray(persisted.branchFinanceLedgerEntries) ? persisted.branchFinanceLedgerEntries : currentState.branchFinanceLedgerEntries,
@@ -2465,7 +2527,7 @@ export const usePosStore = create<PosState>()(
       },
       partialize: (state) => ({
         branches: state.branches, activeBranchId: state.activeBranchId, categories: state.categories,
-        products: state.products, sales: state.sales, expenses: state.expenses, cashierSettlements: state.cashierSettlements, branchFinanceLedgerEntries: state.branchFinanceLedgerEntries, cashierAdvanceReconciliations: state.cashierAdvanceReconciliations, branchFinanceReconciliations: state.branchFinanceReconciliations, heldItems: state.heldItems,
+        products: state.products, priceGroups: state.priceGroups, sales: state.sales, expenses: state.expenses, cashierSettlements: state.cashierSettlements, branchFinanceLedgerEntries: state.branchFinanceLedgerEntries, cashierAdvanceReconciliations: state.cashierAdvanceReconciliations, branchFinanceReconciliations: state.branchFinanceReconciliations, heldItems: state.heldItems,
         customers: state.customers, suppliers: state.suppliers, customerPayments: state.customerPayments,
         purchases: state.purchases, supplierPayments: state.supplierPayments, purchaseReturns: state.purchaseReturns, stockBatches: state.stockBatches, stockReceipts: state.stockReceipts, stockTransfers: state.stockTransfers, stockShipments: state.stockShipments, stockUnitRegistries: state.stockUnitRegistries, cashShifts: state.cashShifts,
         cashMovements: state.cashMovements, activityLogs: state.activityLogs, ownerProfile: state.ownerProfile, settings: state.settings,
@@ -2473,3 +2535,19 @@ export const usePosStore = create<PosState>()(
     },
   ),
 );
+
+
+/** Wait for the current persisted POS snapshot to reach browser storage. */
+export async function flushPosStorePersistence(): Promise<'indexeddb' | 'localstorage'> {
+  const options = usePosStore.persist.getOptions();
+  const currentState = usePosStore.getState();
+  const persistedState = options.partialize ? options.partialize(currentState) : currentState;
+  const serialized = JSON.stringify({ state: persistedState, version: options.version ?? 0 });
+  if (typeof serialized !== 'string') throw new Error('POS Data ကို JSON ပြောင်းမရပါ။');
+  // Zustand's PersistOptions types allow name to be undefined even though this
+  // store always configures a stable key. Fall back safely for strict TS builds.
+  const storageKey = typeof options.name === 'string' && options.name.trim()
+    ? options.name
+    : POS_PERSIST_STORAGE_KEY;
+  return writePosStateDurably(storageKey, serialized);
+}

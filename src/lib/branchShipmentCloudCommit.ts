@@ -15,7 +15,7 @@ export type BranchShipmentCloudCommitInput = {
   afterProducts: Product[];
   beforeBatches: StockBatch[];
   afterBatches: StockBatch[];
-  activityLogs: ActivityLog[];
+  activityLogs?: ActivityLog[];
 };
 
 export class BranchShipmentCloudCommitUnknownError extends Error {
@@ -30,8 +30,6 @@ const closeEnough = (a: unknown, b: unknown) =>
   Number.isFinite(Number(a)) && Number.isFinite(Number(b)) && Math.abs(Number(a) - Number(b)) <= 0.000001;
 
 function cleanForCloud<T>(value: T): T {
-  // Match the existing Auto Sync JSON-normalization behavior: omit undefined
-  // object fields before Firestore receives the record, and strip device-only images.
   const serialized = JSON.stringify(value, (key, child: unknown) => {
     if (typeof child === 'string' && ['logoUrl', 'bannerUrl', 'photoUrl', 'image'].includes(key)
       && (child.startsWith('local-image:') || child.startsWith('data:image/'))) return '';
@@ -54,7 +52,7 @@ function cloudRecord(item: SyncItem, uid: string) {
 
 function makeItem(kind: SyncItem['kind'], id: string, branchId: string, payload: unknown): SyncItem {
   return {
-    key: `branchRecord::${branchId}::${kind}::${id}`, 
+    key: `branchRecord::${branchId}::${kind}::${id}`,
     scope: 'branchRecord',
     kind,
     id,
@@ -88,8 +86,6 @@ function sameProductBefore(remote: Record<string, unknown>, before: Product): bo
 
 /**
  * Commit the dispatch-critical data directly to Firestore before reporting success.
- * This removes the fragile dependency on the app-wide Auto Sync status badge while
- * still ensuring that Source Stock and the destination Shipment are committed atomically.
  */
 export async function commitBranchShipmentToCloud(input: BranchShipmentCloudCommitInput): Promise<{ alreadyCommitted: boolean }> {
   const { uid, shipment } = input;
@@ -124,10 +120,7 @@ export async function commitBranchShipmentToCloud(input: BranchShipmentCloudComm
   const batchItems = changedBatches.map((batch) => makeItem('stockBatches', batch.id, shipment.fromBranchId, { ...batch, branchId: shipment.fromBranchId }));
   const shipmentPayload = { ...shipment, branchId: shipment.toBranchId };
   const shipmentItem = makeItem('stockShipments', shipment.id, shipment.toBranchId, shipmentPayload);
-  const auditItems = input.activityLogs
-    .filter((entry) => entry.branchId === shipment.fromBranchId && entry.entityId === shipment.id)
-    .map((entry) => makeItem('activityLogs', entry.id, shipment.fromBranchId, { ...entry, branchId: shipment.fromBranchId }));
-  const records = [...productItems, ...batchItems, shipmentItem, ...auditItems];
+  const records = [...productItems, ...batchItems, shipmentItem];
   if (records.length > 450) throw new Error('Shipment ထဲက Batch အပြောင်းအလဲများလွန်းနေပါတယ်။ ပစ္စည်းအမျိုးအစား/Batch အရေအတွက်ကို လျှော့ပြီး ပို့ပါ။');
 
   const shipmentPath = `businesses/${FIREBASE_BUSINESS_ID}/branches/${shipment.toBranchId}/stockShipments/${shipment.id}`;
@@ -145,7 +138,6 @@ export async function commitBranchShipmentToCloud(input: BranchShipmentCloudComm
         throw new Error('Shipment ID တူညီသော စာရင်း Cloud မှာ ရှိပြီးသားဖြစ်ပါတယ်။ History ကို စစ်ဆေးပါ။');
       }
 
-      // All transaction reads are completed before any writes.
       const [remoteProducts, remoteBatches] = await Promise.all([
         Promise.all(productRefs.map((ref) => transaction.get(ref))),
         Promise.all(batchRefs.map((ref) => transaction.get(ref))),
@@ -179,10 +171,6 @@ export async function commitBranchShipmentToCloud(input: BranchShipmentCloudComm
         ...cloudRecord(item, uid), updatedAt,
       }, { merge: true }));
       transaction.set(shipmentRef, { ...cloudRecord(shipmentItem, uid), updatedAt }, { merge: true });
-      auditItems.forEach((item) => {
-        const ref = doc(firestore, `businesses/${FIREBASE_BUSINESS_ID}/branches/${shipment.fromBranchId}/activityLogs/${item.id}`);
-        transaction.set(ref, { ...cloudRecord(item, uid), updatedAt }, { merge: true });
-      });
       return 'committed' as const;
     });
 
@@ -195,8 +183,6 @@ export async function commitBranchShipmentToCloud(input: BranchShipmentCloudComm
     const message = error instanceof Error ? error.message : String(error || '');
     const mayHaveLostCommitAcknowledgement = ['unavailable', 'deadline-exceeded', 'network-request-failed', 'cancelled', 'unknown'].includes(code)
       || /network|offline|internet|timed out|timeout|connection/i.test(message);
-    // Validation, stale-stock, and permission errors are definite failures;
-    // only transport/acknowledgement failures need a server-side verification.
     if (!mayHaveLostCommitAcknowledgement) throw error;
 
     try {

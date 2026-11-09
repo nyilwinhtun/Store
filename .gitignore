@@ -6,3 +6,14 @@ dist/
 .DS_Store
 *.log
 .vscode/
+
+# Firebase Cloud Functions compiled output
+/functions/lib/
+/functions/node_modules/
+
+# Firebase Emulator / CLI local state
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+firebase-export-*

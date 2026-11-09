@@ -54,7 +54,7 @@ export function CashManagementPage() {
       return sum + (sale.paidAmount || 0);
     }, 0);
     const creditCollection = payments.filter((payment) => afterOpen(payment.date) && (payment.paymentMethod || 'Cash') === 'Cash').reduce((sum, payment) => sum + payment.amount, 0);
-    const branchCashExpenses = expenses.filter((expense) => afterOpen(expense.date)).reduce((sum, expense) => sum + expense.amount, 0);
+    const branchCashExpenses = expenses.filter((expense) => expense.fundedBy === 'branch-cash' && expense.approvalStatus !== 'pending' && expense.approvalStatus !== 'rejected' && afterOpen(expense.date)).reduce((sum, expense) => sum + expense.amount, 0);
     const shiftMovements = movements.filter((movement) => movement.shiftId === activeShift.id);
     const cashIn = shiftMovements.filter((movement) => movement.direction === 'in').reduce((sum, movement) => sum + movement.amount, 0);
     const cashOut = shiftMovements.filter((movement) => movement.direction === 'out').reduce((sum, movement) => sum + movement.amount, 0);

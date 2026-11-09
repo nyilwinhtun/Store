@@ -14,13 +14,15 @@ function cloudSafeExpense(expense: Expense): Record<string, unknown> {
 
 export type ExpenseCloudSyncResult = {
   reviewStatus: 'submitted' | 'reviewed';
+  approvalStatus: 'pending' | 'not-required' | 'approved' | 'rejected';
   reviewedAt?: string;
   reviewedByUid?: string;
   reviewedByName?: string;
 };
 
-/** Create a Cashier expense report for spending already made. No approval or
- * owner acknowledgement is required. One document read is used for idempotency.
+/** Create a Cashier expense record or approval request. Expenses above the
+ * configured branch threshold are stored as pending until an Owner approves.
+ * One document read is used for idempotency.
  */
 export async function submitCashierExpenseToCloud(expense: Expense, uid: string, branchId: string): Promise<ExpenseCloudSyncResult> {
   if (!firestore || !firebaseAuth?.currentUser || firebaseAuth.currentUser.uid !== uid) {
@@ -45,6 +47,7 @@ export async function submitCashierExpenseToCloud(expense: Expense, uid: string,
         && existing?.amount === expense.amount) {
         return {
           reviewStatus: existing.reviewStatus === 'reviewed' ? 'reviewed' : 'submitted',
+          approvalStatus: existing.approvalStatus === 'pending' || existing.approvalStatus === 'approved' || existing.approvalStatus === 'rejected' ? existing.approvalStatus : 'not-required',
           ...(typeof existing.reviewedAt === 'string' ? { reviewedAt: existing.reviewedAt } : {}),
           ...(typeof existing.reviewedByUid === 'string' ? { reviewedByUid: existing.reviewedByUid } : {}),
           ...(typeof existing.reviewedByName === 'string' ? { reviewedByName: existing.reviewedByName } : {}),
@@ -55,7 +58,7 @@ export async function submitCashierExpenseToCloud(expense: Expense, uid: string,
 
     const payload = cloudSafeExpense({
       ...expense,
-      approvalStatus: 'not-required',
+      approvalStatus: expense.approvalStatus === 'pending' ? 'pending' : 'not-required',
       reviewStatus: 'submitted',
       submittedAt: expense.submittedAt || now,
       updatedAt: now,
@@ -65,7 +68,7 @@ export async function submitCashierExpenseToCloud(expense: Expense, uid: string,
       scope: 'branchRecord', kind: 'expenses', branchId, deleted: false,
       updatedAt: now, updatedBy: uid, payload,
     });
-    return { reviewStatus: 'submitted' };
+    return { reviewStatus: 'submitted', approvalStatus: expense.approvalStatus === 'pending' ? 'pending' : 'not-required' };
   });
   recordFirestoreActivity(uid, 'read', 'cashier-expense-idempotency-check', 1);
   recordFirestoreActivity(uid, 'write', 'cashier-expense-submit-report', 1);
@@ -87,7 +90,7 @@ export function flushPendingCashierExpenses(uid: string, branchId: string): Prom
       try {
         const result = await submitCashierExpenseToCloud(expense, uid, branchId);
         usePosStore.getState().updateExpense(expense.id, {
-          approvalStatus: 'not-required',
+          approvalStatus: result.approvalStatus,
           reviewStatus: result.reviewStatus,
           ...(result.reviewedAt ? { reviewedAt: result.reviewedAt } : {}),
           ...(result.reviewedByUid ? { reviewedByUid: result.reviewedByUid } : {}),

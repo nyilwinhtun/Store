@@ -184,7 +184,9 @@ export function AccessBootstrap() {
           }
 
           const data = memberSnapshot.data();
-          const role = data.role === 'owner' || data.role === 'cashier' ? data.role as BusinessRole : null;
+          // The Owner is authorized only by businesses/{businessId}.ownerUid above.
+          // A Member document can never grant the Owner role to another UID.
+          const role: BusinessRole | null = data.role === 'cashier' ? 'cashier' : null;
           const branchIds = Array.isArray(data.branchIds)
             ? data.branchIds.filter((value: unknown): value is string => typeof value === 'string')
             : [];
@@ -197,11 +199,12 @@ export function AccessBootstrap() {
             });
             return;
           }
-          if (typeof data.email === 'string' && user.email && data.email.toLowerCase() !== user.email.toLowerCase()) {
+          if (typeof data.email !== 'string' || !user.email
+            || data.email.trim().toLowerCase() !== user.email.trim().toLowerCase()) {
             setAccess({
               status: 'error', uid: user.uid, email: user.email || '',
               displayName: user.displayName || '', role: null, branchIds: [], canReceiveStock: false,
-              message: 'Member Document ရဲ့ email Field က လက်ရှိ Login Email နဲ့ မကိုက်ညီပါ။',
+              message: 'Member Document ရဲ့ Email မရှိပါ သို့မဟုတ် လက်ရှိ Firebase Login Email နဲ့ မကိုက်ညီပါ။',
             });
             return;
           }
@@ -213,13 +216,41 @@ export function AccessBootstrap() {
             });
             return;
           }
-          if (!role || (role === 'cashier' && branchIds.length !== 1)) {
+          if (role !== 'cashier' || branchIds.length !== 1) {
             setAccess({
               status: 'error', uid: user.uid, email: user.email || '',
               displayName: user.displayName || '', role: null, branchIds, canReceiveStock: false,
               message: role === 'cashier'
                 ? `Limited Cashier အတွက် Branch တစ်ခုတည်း သတ်မှတ်ထားရပါမယ်။ လက်ရှိ ${branchIds.length} ခု ရှိနေပါတယ်။ Owner ကို ဆက်သွယ်ပြီး Team Access မှာ Branch တစ်ခုတည်း ပြန်ရွေးပါ။`
                 : 'Member Role မမှန်ကန်ပါ။ Owner ကို ဆက်သွယ်ပါ။',
+            });
+            return;
+          }
+
+          // A Cashier must not enter an archived/missing Branch even when an old
+          // Membership document still contains that Branch ID.
+          const assignedBranchSnapshot = await readAccessDocument(
+            doc(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchIds[0]),
+            'Assigned Branch document read',
+          );
+          if (!isCurrent()) return;
+          if (!assignedBranchSnapshot.exists()) {
+            setAccess({
+              status: 'disabled', uid: user.uid, email: user.email || '',
+              displayName: user.displayName || '', role: 'cashier', branchIds, canReceiveStock: false,
+              message: 'တာဝန်ကျ Branch ကို မတွေ့ပါ။ Owner ထံမှ Branch Assignment ကို ပြန်စစ်ပါ။',
+            });
+            return;
+          }
+          const assignedBranchRecord = assignedBranchSnapshot.data();
+          const assignedBranch = assignedBranchRecord.payload && typeof assignedBranchRecord.payload === 'object'
+            ? assignedBranchRecord.payload as Record<string, unknown>
+            : assignedBranchRecord;
+          if (assignedBranch.status !== 'active') {
+            setAccess({
+              status: 'disabled', uid: user.uid, email: user.email || '',
+              displayName: user.displayName || '', role: 'cashier', branchIds, canReceiveStock: false,
+              message: 'တာဝန်ကျ Branch ကို ပိတ်ထားပါသည်။ Owner က Active Branch တစ်ခုသို့ ပြန်သတ်မှတ်ပေးရန် ဆက်သွယ်ပါ။',
             });
             return;
           }

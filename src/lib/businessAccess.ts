@@ -41,12 +41,14 @@ export const useBusinessAccess = create<BusinessAccessState>((set) => ({
 }));
 
 export function canUsePage(role: BusinessRole | null, page: string, canReceiveStock = false): boolean {
-  if (role !== 'cashier') return true;
-  // Limited Cashier: POS and own sales history. A separately assigned receiver
-  // can also access the receiving-only workflow for their one assigned branch.
-  return ['pos', 'sales', 'expenses', 'settlements'].includes(page) || (page === 'branchReceiving' && canReceiveStock);
+  if (role === 'owner') return true;
+  if (role !== 'cashier') return false;
+  // Cashier permissions: POS, own sales history, daily cash shift, customer credit collection,
+  // own expenses, and own settlement history. Stock Receivers can also inspect incoming shipments.
+  return ['pos', 'sales', 'cash', 'customers', 'expenses', 'settlements'].includes(page)
+    || (page === 'branchReceiving' && canReceiveStock);
 }
 
 export function canAccessBranch(role: BusinessRole | null, branchIds: string[], branchId: string): boolean {
-  return role !== 'cashier' || (branchIds.length === 1 && branchIds[0] === branchId);
+  return role === 'owner' || (role === 'cashier' && branchIds.length === 1 && branchIds[0] === branchId);
 }

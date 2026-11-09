@@ -103,6 +103,7 @@ export function AnalyticsPage({
     return ownerAllowed && branchAllowed && sale.status === 'completed' && key >= fromDate && key <= toDate;
   }), [sales, isOwner, viewerUid, branchFilter, activeBranchId, fromDate, toDate]);
   const scopedExpenses = useMemo(() => expenses.filter((expense) => {
+    if (expense.approvalStatus === 'pending' || expense.approvalStatus === 'rejected') return false;
     const ownerAllowed = isOwner || expense.createdByUid === viewerUid;
     const branchAllowed = branchFilter === 'all' ? true : (expense.branchId || activeBranchId) === branchFilter;
     const key = asDateKey(expense.date);

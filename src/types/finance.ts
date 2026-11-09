@@ -4,7 +4,7 @@ export type FinancePaymentMethod = 'cash' | 'kpay';
 
 export type CashierExpenseFundingSource = 'cashier-personal' | 'branch-cash' | 'branch-kpay';
 
-/** Legacy values remain readable. New cashier expenses are reporting-only and never require approval. */
+/** Cashier expenses above the branch threshold require an explicit Owner decision. */
 export type CashierExpenseApprovalStatus = 'not-required' | 'pending' | 'approved' | 'rejected';
 export type CashierExpenseReviewStatus = 'submitted' | 'reviewed';
 

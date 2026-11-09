@@ -1,5 +1,5 @@
 const CACHE_PREFIX = 'minimart-pos-';
-const CACHE_NAME = `${CACHE_PREFIX}v320-preview6-release-readiness`;
+const CACHE_NAME = `${CACHE_PREFIX}v324-performance-qa`;
 
 function scopedUrl(path) {
   return new URL(path, self.registration.scope).toString();
@@ -40,7 +40,8 @@ self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
     const keys = await caches.keys();
     // GitHub Pages project sites share one origin. Never delete another app's
-    // caches; only retire caches owned by this Minimart PWA.
+    // caches; only retire caches owned by this Minimart PWA. This cache update
+    // does not clear LocalStorage or IndexedDB business data.
     await Promise.all(keys
       .filter((key) => key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME)
       .map((key) => caches.delete(key)));
