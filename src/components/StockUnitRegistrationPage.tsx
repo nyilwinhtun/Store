@@ -64,7 +64,7 @@ export function StockUnitRegistrationPage({ notify }: { notify: (message: string
       units: pendingBarcodes.map((barcode) => ({ barcode, barcodeSource: 'purchased_sticker' as const })),
     });
     if (!result.ok) { notify(result.message); return; }
-    notify(`${result.created} ခု စာရင်းသွင်းပြီး Stock တိုးပြီးပါပြီ။`);
+    notify(`${result.created} ခုသော Sticker Barcode များကို လက်ရှိ Stock Unit များနှင့် မှတ်ပုံတင်ပြီးပါပြီ။ Product Stock အရေအတွက် မပြောင်းလဲပါ။`);
     setPendingBarcodes([]);
   };
 
@@ -72,10 +72,10 @@ export function StockUnitRegistrationPage({ notify }: { notify: (message: string
 
   return <section className="page-stack stock-unit-page">
     <div className="section-heading">
-      <div><h2>Barcode Sticker Scan ဖြင့် Stock ထည့်ရန်</h2><p>ဆိုင်က ဝယ်ထားတဲ့ Sticker ကို ပစ္စည်းတစ်ခုချင်းကပ်ပြီး Scan ဖတ်ပါ။ Scan တစ်ကြိမ် = Stock တစ်ခု တိုးပါမယ်။</p></div>
+      <div><h2>ရှိပြီးသား Stock အတွက် Barcode Sticker မှတ်ပုံတင်ရန်</h2><p>ဆိုင်က ဝယ်ထားတဲ့ Sticker ကို ပစ္စည်းတစ်ခုချင်းကပ်ပြီး Scan ဖတ်ပါ။ Scan တစ်ကြိမ် = လက်ရှိ Stock Unit တစ်ခုကို Barcode ဖြင့် ခွဲခြားမှတ်တမ်းတင်ခြင်း ဖြစ်ပါတယ်။</p></div>
       <span className="tag tag-success">Owner Only</span>
     </div>
-    <div className="analytics-note stock-unit-note"><ShieldCheck size={18}/><div><strong>ဆိုင်သုံး Barcode Sticker ကိုပဲ အသုံးပြုပါ</strong><p>App က Barcode အသစ်ထုတ်ပေးခြင်း၊ Label Print ထုတ်ခြင်း မလုပ်ပါ။ Product ကို အရင်ဖန်တီးပြီး ဈေးနှုန်းသတ်မှတ်ပါ။ ဒီနေရာမှာ Scan ဖတ်ထားတဲ့ Sticker တစ်ခုစီအတွက် Stock တစ်ခုတိုးပါမယ်။ Product အသစ်ဖန်တီးချိန် Stock ကို 0 ထားပြီး ဒီနေရာမှာ စာရင်းသွင်းပါ။</p></div></div>
+    <div className="analytics-note stock-unit-note"><ShieldCheck size={18}/><div><strong>ဆိုင်သုံး Barcode Sticker ကိုပဲ အသုံးပြုပါ</strong><p>App က Barcode အသစ်ထုတ်ပေးခြင်း၊ Label Print ထုတ်ခြင်း မလုပ်ပါ။ ပထမဦးစွာ Stock Receiving / Purchase မှာ Product Stock ကို လက်ခံသိမ်းဆည်းပါ။ ပြီးမှ ဒီနေရာမှာ Sticker တစ်ခုစီကို လက်ရှိ Stock Unit တစ်ခုစီနှင့် ချိတ်ဆက်ပါမယ်။ ဒီလုပ်ဆောင်ချက်က Product Stock အရေအတွက်ကို ထပ်မတိုးပါ။</p></div></div>
     <div className="panel stock-unit-panel">
       <div className="panel-heading"><div><h3>၁။ Product ရွေးချယ်ပါ</h3><p>လက်ရှိ Branch: {activeBranchId}</p></div><span className="subtle-count">{branchProducts.length} products</span></div>
       <div className="stock-unit-product-select">
@@ -102,13 +102,13 @@ export function StockUnitRegistrationPage({ notify }: { notify: (message: string
           </div>
           <div className="stock-unit-pending-heading"><strong>စာရင်းသွင်းမည့် ပစ္စည်းများ</strong><span>{pendingBarcodes.length} ခု</span></div>
           {pendingBarcodes.length ? <div className="stock-unit-pending-list">{pendingBarcodes.map((barcode) => <div key={barcode}><code>{barcode}</code><button className="icon-btn danger-icon" type="button" aria-label="ဖယ်ရှားရန်" onClick={() => setPendingBarcodes((items) => items.filter((item) => item !== barcode))}><Trash2 size={15}/></button></div>)}</div> : <div className="stock-unit-empty-hint">Sticker Barcode မ Scan ရသေးပါ။</div>}
-          <div className="stock-unit-actions"><span>Scan စာရင်းဝင်ပြီးမှ Stock တိုးပါမယ်။</span><button className="button button-primary" type="button" disabled={!pendingBarcodes.length} onClick={save}><Check size={16}/> Stock သိမ်းမယ် ({pendingBarcodes.length})</button></div>
+          <div className="stock-unit-actions"><span>Barcode Registry ထဲတွင်သာ မှတ်ပုံတင်မည်၊ Stock Qty မပြောင်းလဲပါ။</span><button className="button button-primary" type="button" disabled={!pendingBarcodes.length} onClick={save}><Check size={16}/> Barcode မှတ်ပုံတင်မယ် ({pendingBarcodes.length})</button></div>
         </div>
         <div className="panel stock-unit-registered-panel">
           <div className="panel-heading"><div><h3>၃။ Unit Barcode History</h3><p>ရောင်းပြီးသား Barcode များလည်း History အဖြစ် ကျန်ပါမယ်။</p></div><span className="subtle-count">{registeredUnits.length} units</span></div>
           {registeredUnits.length ? <div className="table-wrap"><table><thead><tr><th>Barcode</th><th>Status</th><th>မှတ်ပုံတင်ရက်</th></tr></thead><tbody>{registeredUnits.slice().sort((a,b) => b.registeredAt.localeCompare(a.registeredAt)).slice(0, 100).map((unit) => <tr key={unit.id}><td><code className="mono">{unit.barcode}</code></td><td><span className={`tag ${unit.status === 'in_stock' ? 'tag-success' : unit.status === 'sold' ? 'tag-warn' : ''}`}>{unit.status}</span></td><td>{new Date(unit.registeredAt).toLocaleString()}</td></tr>)}</tbody></table></div> : <div className="stock-unit-empty-hint">ဒီ Product အတွက် Barcode History မရှိသေးပါ။</div>}
         </div>
-      </> : <div className="empty-state"><Barcode size={28}/><strong>Product ရွေးချယ်ပါ</strong><p>Product နဲ့ ဈေးနှုန်းသတ်မှတ်ပြီးမှ Sticker Barcode တွေ ထည့်နိုင်ပါတယ်။</p></div>}
+      </> : <div className="empty-state"><Barcode size={28}/><strong>Product ရွေးချယ်ပါ</strong><p>Product ကို အရင်ဖန်တီးပြီး Stock Receiving မှာ ကုန်ဝင်စာရင်းတင်ပြီးမှ Sticker Barcode တွေ မှတ်ပုံတင်နိုင်ပါတယ်။</p></div>}
     </div>
     <BarcodeCameraScanner open={scannerOpen} onClose={() => setScannerOpen(false)} onDetected={(value) => { setScannerOpen(false); addPending(value); }} title="ဝယ်ထားတဲ့ Barcode Sticker Scan လုပ်ရန်"/>
   </section>;
