@@ -72,7 +72,7 @@ check('Queue read/migration and mutations share one serialized lock', /export as
 check('Offline queue fallback and deletion tombstones prevent stale records resurfacing', /FALLBACK_MARKER_PREFIX/.test(storageSource) && /REMOVED_MARKER_PREFIX/.test(storageSource) && /setRemovedMarker\(key, !\(indexedDbRemoved && localStorageRemoved\)\)/.test(storageSource));
 check('Cashier checkout requires complete Batch allocation coverage', /Math\.abs\(allocatedQuantity - soldQuantity\)/.test(saleSyncSource) && /batchAllocationIncomplete/.test(sourceText));
 check('Firestore Rules bind Batch deductions to the linked Sale', /batchLines\.hasAny/.test(rules) && /payload\.batchDeltas\[batchId\] == reduction/.test(rules) && /batchDeltas\.keys\(\)\.size\(\) >= payload\.productDeltas\.keys\(\)\.size\(\)/.test(rules));
-check('Rules Emulator suite contains 13 Security/Batch test cases', (rulesTests.match(/^test\(/gm) || []).length === 13 && /without Batch allocation coverage/.test(rulesTests));
+check('Rules Emulator suite contains at least 13 Security/Batch test cases', (rulesTests.match(/^test\(/gm) || []).length >= 13 && /without Batch allocation coverage/.test(rulesTests));
 
 for (const item of checks) {
   process.stdout.write(`${item.passed ? 'PASS' : 'FAIL'}  ${item.label}${item.detail ? ` — ${item.detail}` : ''}\n`);

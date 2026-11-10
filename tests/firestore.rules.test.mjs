@@ -291,3 +291,55 @@ test('Cashier cannot reduce a Batch by more than the linked Sale batchDeltas', a
   });
   await assertFails(batch.commit());
 });
+
+
+test('Cashier cannot directly increase Product/Batch stock or Auto Approve a Shipment outside the server callable', async () => {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await updateDoc(doc(db, `businesses/${BUSINESS_ID}/members/${CASHIER_UID}`), { canReceiveStock: true });
+    await setDoc(doc(db, `businesses/${BUSINESS_ID}/branches/branch-a/stockShipments/shipment-auto-test`), {
+      scope: 'branchRecord', kind: 'stockShipments', branchId: 'branch-a', deleted: false,
+      updatedAt: new Date().toISOString(), updatedBy: OWNER_UID,
+      payload: {
+        id: 'shipment-auto-test', branchId: 'branch-a', fromBranchId: 'branch-b', toBranchId: 'branch-a',
+        status: 'dispatched', items: [{ sourceProductId: 'source-product', quantity: 1, batchAllocations: [{ sourceBatchId: 'source-batch', quantity: 1 }] }],
+      },
+    });
+  });
+
+  const cashierDb = dbFor(CASHIER_UID, 'cashier@example.com');
+  const now = new Date().toISOString();
+  const productRef = doc(cashierDb, `businesses/${BUSINESS_ID}/branches/branch-a/products/product-a`);
+  const batchRef = doc(cashierDb, `businesses/${BUSINESS_ID}/branches/branch-a/stockBatches/batch-a`);
+  const shipmentRef = doc(cashierDb, `businesses/${BUSINESS_ID}/branches/branch-a/stockShipments/shipment-auto-test`);
+
+  await assertFails(updateDoc(productRef, {
+    payload: { id: 'product-a', branchId: 'branch-a', name: 'Product A', stock: 13 },
+    updatedAt: now, updatedBy: CASHIER_UID,
+    sourceShipmentId: 'shipment-auto-test', sourceShipmentLineIndex: 0,
+  }));
+  await assertFails(setDoc(doc(cashierDb, `businesses/${BUSINESS_ID}/branches/branch-a/products/new-shipment-product`), {
+    scope: 'branchRecord', kind: 'products', branchId: 'branch-a', deleted: false,
+    payload: { id: 'new-shipment-product', branchId: 'branch-a', name: 'Unauthorized Product', stock: 1 },
+    updatedAt: now, updatedBy: CASHIER_UID, sourceShipmentId: 'shipment-auto-test',
+  }));
+  await assertFails(updateDoc(batchRef, {
+    payload: { id: 'batch-a', branchId: 'branch-a', productId: 'product-a', quantity: 11, expiryDate: '2027-12-31' },
+    updatedAt: now, updatedBy: CASHIER_UID,
+    sourceShipmentId: 'shipment-auto-test', sourceShipmentLineIndex: 0, sourceShipmentBatchIndex: 0,
+  }));
+  await assertFails(setDoc(doc(cashierDb, `businesses/${BUSINESS_ID}/branches/branch-a/stockBatches/new-shipment-batch`), {
+    scope: 'branchRecord', kind: 'stockBatches', branchId: 'branch-a', deleted: false,
+    payload: { id: 'new-shipment-batch', branchId: 'branch-a', productId: 'product-a', quantity: 1 },
+    updatedAt: now, updatedBy: CASHIER_UID, sourceShipmentId: 'shipment-auto-test',
+  }));
+  await assertFails(updateDoc(shipmentRef, {
+    payload: {
+      id: 'shipment-auto-test', branchId: 'branch-a', fromBranchId: 'branch-b', toBranchId: 'branch-a',
+      status: 'approved', completionMode: 'auto', autoCompletedByUid: CASHIER_UID,
+      items: [{ sourceProductId: 'source-product', quantity: 1 }],
+      receivedItems: [{ sourceProductId: 'source-product', receivedQuantity: 1, damagedQuantity: 0 }],
+    },
+    updatedAt: now, updatedBy: CASHIER_UID,
+  }));
+});

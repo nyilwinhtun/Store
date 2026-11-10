@@ -1,21 +1,22 @@
-name: Deploy to GitHub Pages
+name: Minimart POS CI and GitHub Pages Deploy
 
 on:
   push:
+    branches: [main]
+  pull_request:
     branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
-  cancel-in-progress: true
+  group: minimart-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
+    name: Full QA (security, types, rules, functions, website)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -24,30 +25,38 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24.12.0
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            functions/package-lock.json
       - name: Setup Java for Firestore Emulator
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
-      - name: Install dependencies
-        run: npm install --no-audit --no-fund
-      - name: Install Cloud Functions dependencies
-        run: npm --prefix functions install --no-audit --no-fund
-      - name: Full QA (security, types, emulator rules, functions, build, bundle report)
+      - name: Install website dependencies from lockfile
+        run: npm ci --no-audit --no-fund
+      - name: Install Cloud Functions dependencies from lockfile
+        run: npm --prefix functions ci --no-audit --no-fund
+      - name: Full QA
         run: npm run qa
-      # Firebase project settings remain pinned in src/lib/firebase.ts.
-      # Do not inject alternate GitHub Variables here: that could silently
-      # deploy this build against a different Firebase project.
       - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3
         with:
           path: dist
+
   deploy:
+    name: Deploy GitHub Pages
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     needs: build
+    permissions:
+      pages: write
+      id-token: write
     steps:
       - name: Deploy
         id: deployment

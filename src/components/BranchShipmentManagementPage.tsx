@@ -322,7 +322,7 @@ export function BranchShipmentManagementPage({ authorize, notify }: { authorize:
   const exceptionCount = sortedShipments.filter((shipment) => shipment.status === 'received' && shipmentHasException(shipment)).length;
   return <section className="page-stack shipment-management">
     <div className="section-heading"><div><h2>Central Inventory · Branch Receiving</h2><p>Owner က ပစ္စည်းနဲ့ ဈေးနှုန်းသတ်မှတ်ပြီး ဆိုင်ခွဲသို့ စာရင်းလိုက် ပို့နိုင်ပါတယ်။</p></div><span className="tag tag-success">Owner Only</span></div>
-    <div className="shipment-info-banner"><PackagePlus size={19} /><div><strong>ပစ္စည်းပို့ခြင်းနှင့် လက်ခံခြင်း</strong><p>ပို့ပြီးချိန် Source Stock လျှော့မယ်။ Receiver က အမှန်တကယ်ရောက်ရှိမှုကို မှတ်တမ်းတင်မယ်။ အရေအတွက်ကိုက်ညီမှုနဲ့ Exception ကို သီးခြားခွဲပြမယ်။ လက်ရှိ Cloud Commit စည်းမျဉ်းအရ Destination Stock ထည့်သွင်းမှုမှာ Owner Commit ကို ဆက်လက်လိုအပ်နေသေးပါတယ်။</p></div></div>
+    <div className="shipment-info-banner"><PackagePlus size={19} /><div><strong>ပစ္စည်းပို့ခြင်းနှင့် လက်ခံခြင်း</strong><p>ပို့ပြီးချိန် Source Stock လျှော့မယ်။ Receiver က အမှန်တကယ်ရောက်ရှိမှုကို မှတ်တမ်းတင်မယ်။ အရေအတွက်ကိုက်ညီမှုနဲ့ Exception ကို သီးခြားခွဲပြမယ်။ အရေအတွက်အပြည့်၊ ပျက်စီးမှုမရှိပါက Cashier လက်ခံပြီးချင်း Server-side Auto Complete လုပ်မယ်။ ကွာခြားမှုရှိမှ Owner Review လိုအပ်ပါတယ်။</p></div></div>
 
     <div className="shipment-quick-stats">
       <div className="shipment-quick-stat"><small>လက်ခံရန်ကျန်</small><strong>{awaitingReceiptCount}</strong></div>
