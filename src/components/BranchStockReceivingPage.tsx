@@ -19,6 +19,8 @@ function normalizedKey(value: unknown): string {
 function canAutoCompleteLocally(shipment: BranchStockShipment): { ok: boolean; reason: string; hardBlock?: boolean } {
   const state = usePosStore.getState();
   const epsilon = 0.000001;
+  const plannedDestinationIds = new Set<string>();
+  const plannedIdentityKeys = new Set<string>();
   for (const item of shipment.items) {
     // Older shipments may predate explicit whole/decimal metadata. Keep those
     // on the established Owner Review route rather than guessing a Cloud rule value.
@@ -26,7 +28,8 @@ function canAutoCompleteLocally(shipment: BranchStockShipment): { ok: boolean; r
       return { ok: false, reason: `${item.productName}: ဒီ Shipment က Quantity Mode အချက်အလက်ဟောင်းဖြစ်လို့ Owner Review မှတစ်ဆင့် လက်ခံပါမယ်။` };
     }
     const allocationTotal = item.batchAllocations.reduce((sum, allocation) => sum + Math.max(0, Number(allocation.quantity) || 0), 0);
-    if (Math.abs(allocationTotal - item.quantity) > epsilon || item.batchAllocations.length === 0) {
+    if (Math.abs(allocationTotal - item.quantity) > epsilon || item.batchAllocations.length === 0
+      || item.batchAllocations.some((allocation) => !Number.isFinite(Number(allocation.quantity)) || allocation.quantity <= 0)) {
       return { ok: false, hardBlock: true, reason: `${item.productName}: ပို့ထားတဲ့ Batch ခွဲဝေစာရင်း မပြည့်စုံပါ။ Owner က Shipment ကို စစ်ဆေး/ပြင်ဆင်ရန်လိုပါတယ်။` };
     }
     const matches = state.products.filter((product) => product.branchId === shipment.toBranchId && (
@@ -36,6 +39,19 @@ function canAutoCompleteLocally(shipment: BranchStockShipment): { ok: boolean; r
     ));
     if (matches.length > 1) return { ok: false, hardBlock: true, reason: `${item.productName}: လက်ခံမည့်ဆိုင်မှာ ကိုက်ညီတဲ့ Product တစ်ခုထက်ပိုရှိပါတယ်။ Owner က Duplicate Product ကို အရင်ရှင်းပေးပါ။` };
     const destination = matches[0];
+    const identityKeys = [
+      item.barcode ? `barcode:${normalizedKey(item.barcode)}` : '',
+      item.sku ? `sku:${normalizedKey(item.sku)}` : '',
+      `name-unit:${normalizedKey(item.productName)}|${normalizedKey(item.unit || 'ခု')}`,
+    ].filter(Boolean);
+    if (identityKeys.some((key) => plannedIdentityKeys.has(key))) {
+      return { ok: false, hardBlock: true, reason: `${item.productName}: Shipment အတွင်း Product အမှတ်အသား ထပ်နေပါတယ်။ Owner က Product Mapping ကို အရင်ရှင်းပေးပါ။` };
+    }
+    identityKeys.forEach((key) => plannedIdentityKeys.add(key));
+    if (destination && plannedDestinationIds.has(destination.id)) {
+      return { ok: false, hardBlock: true, reason: `${item.productName}: Shipment ပစ္စည်းနှစ်မျိုးသည် Destination Product တစ်ခုတည်းသို့ ကိုက်ညီနေပါတယ်။ Owner က Product Mapping ကို အရင်ရှင်းပေးပါ။` };
+    }
+    if (destination) plannedDestinationIds.add(destination.id);
     if (!destination) {
       const hasCategory = state.categories.some((category) => category.branchId === shipment.toBranchId && category.isActive);
       if (!hasCategory) return { ok: false, reason: 'လက်ခံမည့်ဆိုင်မှာ Active Category မရှိသေးပါ။' };
@@ -142,7 +158,7 @@ function ShipmentReceiptCard({ shipment, notify }: { shipment: BranchStockShipme
           beforeProducts: beforeState.products.filter((product) => product.branchId === shipment.toBranchId && destinationProductIds.has(product.id)),
           afterProducts: afterState.products.filter((product) => product.branchId === shipment.toBranchId && destinationProductIds.has(product.id)),
           beforeBatches: beforeState.stockBatches.filter((batch) => batch.branchId === shipment.toBranchId && destinationProductIds.has(batch.productId)),
-          afterBatches: afterState.stockBatches.filter((batch) => batch.branchId === shipment.toBranchId && destinationProductIds.has(batch.productId)),
+          afterBatches: afterState.stockBatches.filter((batch) => batch.branchId === shipment.toBranchId && destinationProductIds.has(batch.productId) && batch.sourceShipmentId === shipment.id),
         });
         notify(result.alreadyCommitted
           ? `${shipment.shipmentNo} ကို Cloud မှာ Auto Complete ဖြစ်ပြီးသားဖြစ်ကြောင်း အတည်ပြုပြီးပါပြီ။`
@@ -219,7 +235,7 @@ function ShipmentReceiptCard({ shipment, notify }: { shipment: BranchStockShipme
       })}
     </div>
     {shipment.status === 'dispatched' && <div className="shipment-receive-footer"><label>လက်ခံမှုမှတ်ချက်<textarea rows={2} value={note} onChange={(event) => setNote(event.target.value)} placeholder="ပစ္စည်းအရေအတွက်၊ ပျက်စီးမှု စသည်..." /></label><button className="button button-primary" type="button" onClick={() => void receive()} disabled={busy}><ClipboardCheck size={16} /> {busy ? 'သိမ်းနေသည်...' : 'လက်ခံကြောင်း အတည်ပြုမယ်'}</button></div>}
-    {shipment.status === 'received' && <div className="shipment-status-note"><AlertCircle size={15} /> လက်ခံစာရင်းကို Owner ဆီ ပို့ပြီးပါပြီ။ Owner အတည်ပြုပြီးမှ ပစ္စည်း Stock ထဲ ဝင်ပါမယ်။</div>}
+    {shipment.status === 'received' && <div className="shipment-status-note"><AlertCircle size={15} /> လက်ခံမှုမှာ ကွာခြားချက်/ပျက်စီးမှုရှိပါတယ်။ Owner Review ပြီးမှ ပစ္စည်း Stock ထဲ ဝင်ပါမယ်။</div>}
     {shipment.status === 'approved' && <div className="shipment-status-note shipment-success"><CheckCircle2 size={15} /> {shipment.completionMode === 'auto' ? `ပုံမှန်လက်ခံမှုကို ${shipment.approvedByName || shipment.receivedByName || 'Cashier'} က အတည်ပြုပြီး Destination Stock ထဲ အလိုအလျောက်ဝင်သွားပါပြီ။` : `Owner က ${shipment.approvedByName || 'Owner'} မှ အတည်ပြုပြီးပါပြီ။`}</div>}
   </article>;
 }

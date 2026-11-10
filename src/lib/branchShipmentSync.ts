@@ -14,8 +14,9 @@ type SubmitReceiptInput = {
 };
 
 /**
- * Receiver-only acknowledgement. It never changes Product or Stock records.
- * Owner approval is the only step that adds destination stock.
+ * Receiver acknowledgement for partial/damaged or otherwise non-auto-eligible
+ * shipments. It never changes Product or Stock records. Exact-match receipts
+ * use the server-authoritative completeBranchStockShipment callable instead.
  */
 export async function submitBranchShipmentReceipt(input: SubmitReceiptInput): Promise<void> {
   if (!firestore) throw new Error('Firebase Firestore ကို မချိတ်ဆက်ထားပါ။');

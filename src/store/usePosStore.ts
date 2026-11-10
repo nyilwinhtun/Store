@@ -18,7 +18,7 @@ export const DEFAULT_BRANCH_ID = 'branch-main';
 export const DEFAULT_CATEGORY_NAMES = ['အထွေထွေ', 'အစားအသောက်', 'အဖျော်ယမကာ', 'အိမ်သုံးပစ္စည်း', 'ကိုယ်ရေးကိုယ်တာ', 'အခြား'];
 export type BatchAllocation = { batchId: string; quantity: number };
 export type StockUnitStatus = 'in_stock' | 'reserved' | 'in_transit' | 'pending_approval' | 'sold' | 'damaged' | 'missing' | 'returned' | 'written_off';
-export type StockUnitBarcodeSource = 'manufacturer_serial' | 'app_generated';
+export type StockUnitBarcodeSource = 'manufacturer_serial' | 'app_generated' | 'purchased_sticker';
 export type StockUnit = {
   id: string;
   barcode: string;
@@ -230,6 +230,10 @@ export type StockBatch = {
   purchaseId: string;
   supplierId: string;
   stockReceiptId?: string;
+  /** Server-audited link for branch shipment Auto Complete batches. */
+  sourceShipmentId?: string;
+  sourceShipmentLineIndex?: number;
+  sourceShipmentBatchIndex?: number;
   quantity: number;
   receivedAt: string;
   expiryDate: string;
@@ -378,6 +382,12 @@ export type BranchShipmentItem = {
   acceptedQuantity?: number;
   receiverNote?: string;
 };
+export type BranchShipmentAutoCompletionPlan = {
+  destinationProductId: string;
+  destinationStockBefore: number;
+  destinationStockAfter: number;
+  destinationBatchIds: string[];
+};
 export type BranchStockShipment = {
   id: string;
   /** Stored under the destination branch's stockShipments collection. */
@@ -396,6 +406,9 @@ export type BranchStockShipment = {
   totalQuantity: number;
   note: string;
   status: 'dispatched' | 'received' | 'approved' | 'cancelled';
+  completionMode?: 'owner' | 'auto';
+  autoCompletedByUid?: string;
+  autoCompletionPlan?: BranchShipmentAutoCompletionPlan[];
   receivedItems?: Array<{ sourceProductId: string; receivedQuantity: number; damagedQuantity: number; note?: string }>;
   receivedAt?: string;
   receivedByUid?: string;
@@ -534,7 +547,7 @@ type PosState = {
   reverseStockTransfer: (input: { transferId: string; actor?: StockTransferActor; note: string }) => StockTransferReversalResult;
   dispatchBranchStockShipment: (input: { fromBranchId?: string; toBranchId: string; items: BranchShipmentDraftItem[]; note?: string; requestId?: string; actor?: StockTransferActor }) => BranchShipmentDispatchResult;
   confirmBranchStockShipmentReceipt: (input: { shipmentId: string; receivedItems: BranchShipmentReceiptInput[]; actor?: StockTransferActor; note?: string }) => boolean;
-  approveBranchStockShipment: (input: { shipmentId: string; actor?: StockTransferActor; note?: string }) => boolean;
+  approveBranchStockShipment: (input: { shipmentId: string; actor?: StockTransferActor; note?: string; autoComplete?: boolean }) => boolean;
   registerStockUnits: (input: StockUnitRegistrationInput) => StockUnitRegistrationResult;
   cancelBranchStockShipment: (input: { shipmentId: string; actor?: StockTransferActor; note: string }) => boolean;
   addSupplierPayment: (payment: Omit<SupplierPayment, 'id'>) => boolean;
@@ -1792,8 +1805,20 @@ export const usePosStore = create<PosState>()(
         const batches = state.stockBatches.map((batch) => ({ ...batch }));
         const categories = state.categories.map((category) => ({ ...category }));
         const approvedLines: BranchShipmentItem[] = [];
+        const autoCompletionPlan: BranchShipmentAutoCompletionPlan[] = [];
+        const autoDestinationIds = new Set<string>();
         const now = new Date().toISOString();
         const epsilon = 0.000001;
+        if (input.autoComplete) {
+          if (!input.actor?.uid || shipment.receivedItems.length !== shipment.items.length
+            || shipment.items.some((item) => {
+              const received = shipment.receivedItems?.find((entry) => entry.sourceProductId === item.sourceProductId);
+              return !received || Math.abs(received.receivedQuantity - item.quantity) > epsilon || received.damagedQuantity !== 0
+                || !Array.isArray(item.batchAllocations) || item.batchAllocations.length === 0
+                || item.batchAllocations.some((allocation) => !Number.isFinite(Number(allocation.quantity)) || allocation.quantity <= 0)
+                || Math.abs(item.batchAllocations.reduce((sum, allocation) => sum + Number(allocation.quantity || 0), 0) - item.quantity) > epsilon;
+            })) return false;
+        }
 
         for (const item of shipment.items) {
           const received = shipment.receivedItems.find((entry) => entry.sourceProductId === item.sourceProductId);
@@ -1815,6 +1840,7 @@ export const usePosStore = create<PosState>()(
           ));
           if (destinationMatches.length > 1) return false;
           let destination = destinationMatches[0];
+          const createdDestination = !destination;
           if (destination && quantityModeForProduct(destination) !== quantityMode) return false;
           if (!destination) {
             let targetCategory = categories.find((category) => category.branchId === destinationBranch.id && category.isActive && normalizedName(category.name) === normalizedName(item.category))
@@ -1832,6 +1858,10 @@ export const usePosStore = create<PosState>()(
             products.push(destination);
           }
 
+          if (input.autoComplete) {
+            if (autoDestinationIds.has(destination.id)) return false;
+            autoDestinationIds.add(destination.id);
+          }
           const previousStock = Math.max(0, Number(destination.stock) || 0);
           const destinationTracked = batches.filter((batch) => batch.branchId === destinationBranch.id && batch.productId === destination!.id && Number(batch.quantity) > 0);
           const destinationTrackedTotal = destinationTracked.reduce((sum, batch) => sum + Math.max(0, Number(batch.quantity) || 0), 0);
@@ -1849,7 +1879,7 @@ export const usePosStore = create<PosState>()(
             : item.costPrice;
           const updatedDestination: Product = {
             ...destination, name: item.productName, sku: item.sku || destination.sku || '', barcode: item.barcode || destination.barcode || '',
-            category: item.category || destination.category, costPrice: weightedCost,
+            category: createdDestination ? destination.category : (item.category || destination.category), costPrice: weightedCost,
             ...(!destination.priceGroupId ? { retailPrice: item.retailPrice, wholesalePrice: item.wholesalePrice } : {}),
             lowStockAt: item.lowStockAt, stock: newStock, unit: item.unit, quantityMode,
           };
@@ -1857,19 +1887,36 @@ export const usePosStore = create<PosState>()(
           if (productIndex >= 0) products[productIndex] = updatedDestination;
 
           let batchRemaining = acceptedQuantity;
-          for (const allocation of item.batchAllocations) {
+          const destinationBatchIds: string[] = [];
+          for (let batchIndex = 0; batchIndex < item.batchAllocations.length; batchIndex += 1) {
+            const allocation = item.batchAllocations[batchIndex];
             if (batchRemaining <= epsilon) break;
             const take = Math.min(allocation.quantity, batchRemaining);
             if (take <= epsilon) continue;
+            const destinationBatchId = newId();
             batches.push({
-              id: newId(), branchId: destinationBranch.id, productId: updatedDestination.id,
+              id: destinationBatchId, branchId: destinationBranch.id, productId: updatedDestination.id,
               purchaseId: allocation.purchaseId || '', supplierId: allocation.supplierId || '', stockReceiptId: shipment.id,
+              ...(input.autoComplete ? {
+                sourceShipmentId: shipment.id,
+                sourceShipmentLineIndex: approvedLines.length,
+                sourceShipmentBatchIndex: destinationBatchIds.length,
+              } : {}),
               quantity: cleanQuantity(take, quantityMode), receivedAt: allocation.receivedAt || now,
               expiryDate: allocation.expiryDate || '', unitCost: allocation.unitCost,
             });
+            destinationBatchIds.push(destinationBatchId);
             batchRemaining = Math.max(0, batchRemaining - take);
           }
           if (batchRemaining > epsilon) return false;
+          if (input.autoComplete) {
+            autoCompletionPlan.push({
+              destinationProductId: updatedDestination.id,
+              destinationStockBefore: previousStock,
+              destinationStockAfter: newStock,
+              destinationBatchIds,
+            });
+          }
           approvedLines.push({ ...item, acceptedQuantity });
         }
 
@@ -1881,6 +1928,11 @@ export const usePosStore = create<PosState>()(
           const approved: BranchStockShipment = {
             ...latest, items: approvedLines, status: 'approved', approvedAt: now,
             approvedByUid: input.actor?.uid || '', approvedByEmail: input.actor?.email || '', approvedByName: input.actor?.name || 'Owner', approvalNote: (input.note || '').trim(),
+            ...(input.autoComplete ? {
+              completionMode: 'auto' as const,
+              autoCompletedByUid: input.actor?.uid || '',
+              autoCompletionPlan,
+            } : { completionMode: 'owner' as const }),
           };
           return {
             products: products.map((product) => ({ ...product })), stockBatches: batches.map((batch) => ({ ...batch })), categories,

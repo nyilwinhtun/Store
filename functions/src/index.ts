@@ -98,3 +98,7 @@ export const allowOnlyOwnerAndActiveCashiers = beforeUserSignedIn(
     }
   }
 );
+
+
+// Server-authoritative Cashier exact-match Branch Shipment Auto Complete.
+export { completeBranchStockShipment } from './branchShipment.js';
