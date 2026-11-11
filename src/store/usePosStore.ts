@@ -1565,7 +1565,11 @@ export const usePosStore = create<PosState>()(
           if (nameMatches.length > 1) return null;
           let product = barcodeMatches[0] || nameMatches[0];
           if (barcodeMatches[0] && (normalizedName(barcodeMatches[0].name) !== normalizedName(item.name) || normalizedName(barcodeMatches[0].unit || 'ခု') !== normalizedName(item.unit))) return null;
-          if (product && item.barcode && product.barcode && normalizeBarcode(product.barcode) !== item.barcode) return null;
+          const matchedProductBarcode = !!product && !!item.barcode && normalizeBarcode(product.barcode) === item.barcode;
+          const matchedProductSku = !!product && !!item.barcode && normalizeBarcode(product.sku) === item.barcode;
+          // A scanned SKU identifies the Product but must never overwrite its separate EAN/UPC Barcode.
+          // A name-only match with a different existing code is rejected instead of silently relinking it.
+          if (product && item.barcode && !matchedProductBarcode && !matchedProductSku && (product.barcode || product.sku)) return null;
           if (product && !isValidQuantity(item.quantity, quantityModeForProduct(product))) return null;
           if (!product && !isValidQuantity(item.quantity, inferQuantityMode(item.unit))) return null;
           if (!product) {
@@ -1575,7 +1579,8 @@ export const usePosStore = create<PosState>()(
               unit: item.unit, quantityMode: inferQuantityMode(item.unit), createdAt: receivedAt,
             };
             products.push(product);
-          } else if (item.barcode && !product.barcode) {
+          } else if (item.barcode && !product.barcode && !matchedProductSku) {
+            // Only add a new Product Barcode when the scanned value was not an existing SKU.
             product = { ...product, barcode: item.barcode };
           }
           const receivedUnitCost = Math.max(0, Number(product.costPrice) || 0);

@@ -30,7 +30,26 @@ export function StockReceivingPage({ notify }: { notify: (message: string) => vo
   const [cameraLineKey, setCameraLineKey] = useState<string | null>(null);
 
   const updateLine = (key: string, changes: Partial<IntakeLine>) => setLines((current) => current.map((line) => line.key === key ? { ...line, ...changes } : line));
-  const findLineProduct = (line: IntakeLine) => { const code = normalizeBarcode(line.barcode); return products.find((product) => (code && (normalizeBarcode(product.barcode) === code || normalizeBarcode(product.sku) === code)) || (product.name.trim().toLocaleLowerCase() === line.name.trim().toLocaleLowerCase() && (product.unit || 'ခု').trim().toLocaleLowerCase() === (line.unit || 'ခု').trim().toLocaleLowerCase())); };
+  const findBarcodeProduct = (rawCode: string) => {
+    const code = normalizeBarcode(rawCode);
+    if (!code) return undefined;
+    return products.find((product) => normalizeBarcode(product.barcode) === code || normalizeBarcode(product.sku) === code);
+  };
+  const findLineProduct = (line: IntakeLine) => {
+    const code = normalizeBarcode(line.barcode);
+    return (code ? findBarcodeProduct(code) : undefined)
+      || products.find((product) => product.name.trim().toLocaleLowerCase() === line.name.trim().toLocaleLowerCase()
+        && (product.unit || 'ခု').trim().toLocaleLowerCase() === (line.unit || 'ခု').trim().toLocaleLowerCase());
+  };
+  const applyScannedBarcode = (lineKey: string, rawCode: string) => {
+    const code = normalizeBarcode(rawCode);
+    if (!code) return;
+    const product = findBarcodeProduct(code);
+    updateLine(lineKey, { barcode: code, ...(product ? { name: product.name, unit: product.unit || 'ခု' } : {}) });
+    notify(product
+      ? `${product.name} ကို Barcode / SKU ဖြင့် တွေ့ရှိပါပြီ။ အရေအတွက်ကို စစ်ပြီး ကုန်ဝင်စာရင်းသိမ်းပါ။`
+      : `Barcode ${code} ကို ဖတ်ပြီးပါပြီ။ Product အသစ်ဖြစ်ပါက အမည်နဲ့ ယူနစ်ကို ဖြည့်ပါ။`);
+  };
   const lineMode = (line: IntakeLine) => { const existing = findLineProduct(line); return existing ? quantityModeForProduct(existing) : inferQuantityMode(line.unit); };
   const trackedUnits = summarizeQuantities(receipts.flatMap((receipt) => receipt.items.map((item) => ({ quantity: item.quantity, unit: item.unit || 'ခု' }))));
   const filteredReceipts = receipts.filter((receipt) => {
@@ -55,13 +74,8 @@ export function StockReceivingPage({ notify }: { notify: (message: string) => vo
   };
 
   const handleCameraDetected = (rawCode: string) => {
-    const code = normalizeBarcode(rawCode);
-    const product = products.find((entry) => normalizeBarcode(entry.barcode) === code || normalizeBarcode(entry.sku) === code);
-    if (cameraLineKey) {
-      updateLine(cameraLineKey, { barcode: code, ...(product ? { name: product.name, unit: product.unit || 'ခု' } : {}) });
-    }
+    if (cameraLineKey) applyScannedBarcode(cameraLineKey, rawCode);
     setCameraLineKey(null);
-    notify(product ? `${product.name} ကို Barcode ဖြင့် တွေ့ရှိပါပြီ။` : 'Barcode ဖတ်ပြီးပါပြီ။ Product အသစ်ဆို ပစ္စည်းအမည် ဖြည့်ပါ။');
   };
 
   return <section className="page-stack">
@@ -80,7 +94,7 @@ export function StockReceivingPage({ notify }: { notify: (message: string) => vo
     <div className="panel security-note"><Store size={18} /><div><strong>ကုန်အားလုံးကို အရင်ဆုံး {hubBranch?.name || 'အဓိကဆိုင်'} မှာပဲ လက်ခံမယ်</strong><p>လက်ရှိ Branch Selector မှာ ဘယ်ဆိုင်ကိုရွေးထားသည်ဖြစ်စေ ဒီစာမျက်နှာက ကုန်ရောက်စာရင်းကို အဓိကဆိုင်ထဲမှာသာ ထည့်ပါမယ်။ တခြားဆိုင်မှာ နေရာမရှိရင် အဲဒီဆိုင်အတွက် Product/Stock မဖန်တီးပါဘူး။ လိုအပ်လာမှ Owner က ကုန်လွှဲစာမျက်နှာကနေ လွှဲပေးနိုင်ပါတယ်။</p></div></div>
 
     <form className="panel form-panel stock-receiving-form" onSubmit={submit}>
-      <div className="panel-heading"><div className="panel-icon"><PackagePlus size={18} /></div><div><h3>ရောက်လာသော ပစ္စည်းများ ထည့်ရန်</h3><p>ပစ္စည်းအမည်၊ အရေအတွက်နဲ့ ယူနစ်သာ လိုအပ်ပါတယ်။</p></div></div>
+      <div className="panel-heading"><div className="panel-icon"><PackagePlus size={18} /></div><div><h3>ရောက်လာသော ပစ္စည်းများ ထည့်ရန်</h3><p>Barcode / SKU ကို Bluetooth သို့မဟုတ် USB Scanner ဖြင့် Scan ဖတ်ပြီး Product အချက်အလက်ကို အလိုအလျောက်ရှာနိုင်ပါတယ်။</p></div></div>
       <div className="form-grid">
         <label>ရောက်ရှိသည့်ရက်<input type="date" value={receivedDate} onChange={(event) => setReceivedDate(event.target.value)} required /></label>
         <label>မှတ်ချက် (မဖြစ်မနေ မဟုတ်)<input value={note} onChange={(event) => setNote(event.target.value)} placeholder="ဥပမာ - မနက်ပိုင်း ကုန်ရောက်" /></label>
@@ -96,11 +110,11 @@ export function StockReceivingPage({ notify }: { notify: (message: string) => vo
               const match = products.find((product) => product.name.trim().toLocaleLowerCase() === name.trim().toLocaleLowerCase());
               updateLine(line.key, { name, ...(match ? { unit: match.unit || 'ခု' } : {}) });
             }} placeholder="ဥပမာ - Coca Cola" /></label>
-            <label>Barcode (optional)<div className="barcode-field-control"><input value={line.barcode} onChange={(event) => { const barcode = event.target.value; const code = normalizeBarcode(barcode); const match = products.find((product) => normalizeBarcode(product.barcode) === code || (!product.barcode && normalizeBarcode(product.sku) === code)); updateLine(line.key, { barcode, ...(match ? { name: match.name, unit: match.unit || 'ခု' } : {}) }); }} placeholder="Bluetooth Scanner ဖြင့် ဖတ်ပါ" inputMode="text" onKeyDown={(event) => { if (event.key === 'Enter') event.preventDefault(); }} /><button className="button button-outline barcode-camera-button" type="button" onClick={() => setCameraLineKey(line.key)} title="Camera ဖြင့် Barcode ဖတ်ရန်"><Camera size={14} /> Scan</button></div></label>
+            <label>Barcode / SKU (optional)<div className="barcode-field-control"><input value={line.barcode} onChange={(event) => { const barcode = event.target.value; const match = findBarcodeProduct(barcode); updateLine(line.key, { barcode, ...(match ? { name: match.name, unit: match.unit || 'ခု' } : {}) }); }} placeholder="Bluetooth / USB Scanner ဖြင့် ဖတ်ပါ" inputMode="text" autoComplete="off" onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); applyScannedBarcode(line.key, line.barcode); } }} /><button className="button button-outline barcode-camera-button" type="button" onClick={() => setCameraLineKey(line.key)} title="Camera ဖြင့် Barcode ဖတ်ရန်"><Camera size={14} /> Scan</button></div></label>
             <label>အရေအတွက် *<input required type="number" min={quantityStep(lineMode(line))} step={quantityStep(lineMode(line))} value={line.quantity} onChange={(event) => updateLine(line.key, { quantity: event.target.value })} /></label>
             <label>ယူနစ်<input value={line.unit} onChange={(event) => updateLine(line.key, { unit: event.target.value })} placeholder="ခု / ဘူး / ထုပ် / အိတ်" /></label>
           </div>
-          <small className="field-hint">ဒီအမည်နဲ့ ယူနစ်တူ Product အဓိကဆိုင်မှာရှိပြီးသားဆို Stock ကို ထပ်တိုးမယ်။ မရှိသေးရင် Product အသစ် ဖန်တီးမယ်။</small>
+          <small className="field-hint">Barcode / SKU ရှိပြီးသား Product ကို Scan လုပ်ပါက အမည်နဲ့ ယူနစ်ကို အလိုအလျောက်ဖြည့်ပေးပါမယ်။ မရှိသေးတဲ့ Barcode ဖြစ်ပါက Product အမည်နဲ့ ယူနစ်ဖြည့်ပြီး သိမ်းပါ။</small>
         </div>)}
       </div>
       <div className="receiving-total-row"><div><small>ကုန်ရောက်အရေအတွက် စုစုပေါင်း</small><strong>{summarizeQuantities(lines.filter((line) => line.name.trim()).map((line) => ({ quantity: Number(line.quantity) || 0, unit: line.unit || 'ခု', quantityMode: lineMode(line) })))}</strong></div><div><small>ပစ္စည်းအမျိုးအစား</small><strong>{lines.filter((line) => line.name.trim()).length} မျိုး</strong></div></div>
