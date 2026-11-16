@@ -5,6 +5,7 @@ import { firebaseAuth } from '../lib/firebase';
 import { BRANCH_SHIPMENT_CLOUD_COMMIT_CANCELLED, BRANCH_SHIPMENT_CLOUD_COMMIT_STARTED, commitBranchShipmentToCloud, BranchShipmentCloudCommitUnknownError } from '../lib/branchShipmentCloudCommit';
 import { AUTO_SYNC_STATUS_EVENT, readAutoSyncStatus, type AutoSyncStatus } from '../lib/autoSyncStatus';
 import { formatQuantity, isValidQuantity, quantityMin, quantityModeForProduct, summarizeQuantities } from '../lib/quantity';
+import { UNIT_TRANSFER_UNSUPPORTED_MESSAGE, productIsUnitTracked } from '../lib/unitTracking';
 import { usePosStore, type BranchShipmentDraftItem, type BranchStockShipment, type Product, type StockBatch } from '../store/usePosStore';
 
 const dateLabel = (value: string) => new Date(value).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -90,6 +91,7 @@ export function BranchShipmentManagementPage({ authorize, notify }: { authorize:
   const branches = usePosStore((state) => state.branches);
   const products = usePosStore((state) => state.products);
   const stockBatches = usePosStore((state) => state.stockBatches);
+  const stockUnitRegistries = usePosStore((state) => state.stockUnitRegistries);
   const shipments = usePosStore((state) => state.stockShipments);
   const dispatchShipment = usePosStore((state) => state.dispatchBranchStockShipment);
   const approveShipment = usePosStore((state) => state.approveBranchStockShipment);
@@ -205,6 +207,10 @@ export function BranchShipmentManagementPage({ authorize, notify }: { authorize:
       if (used.has(line.productId)) { notify('ပစ္စည်းတစ်မျိုးကို စာရင်းထဲ ထပ်မထည့်ပါနဲ့။'); return; }
       used.add(line.productId);
       const product = sourceProducts.find((entry) => entry.id === line.productId);
+      if (product && sourceBranch && productIsUnitTracked(product, stockUnitRegistries, sourceBranch.id)) {
+        notify(`${product.name}: ${UNIT_TRANSFER_UNSUPPORTED_MESSAGE}`);
+        return;
+      }
       const quantity = Number(line.quantity);
       if (!product || !isValidQuantity(quantity, quantityModeForProduct(product)) || quantity <= 0 || quantity > product.stock) {
         notify(`${product?.name || 'ပစ္စည်း'} ရဲ့ ပို့မည့်အရေအတွက်ကို ပြန်စစ်ပါ။ လက်ရှိ Stock ထက် ပိုပို့လို့မရပါ။`);
@@ -281,6 +287,11 @@ export function BranchShipmentManagementPage({ authorize, notify }: { authorize:
 
   const approve = (shipment: BranchStockShipment) => {
     if (busy || shipment.status !== 'received' || !authorize('ပစ္စည်းရောက်ရှိမှု အတည်ပြုရန်')) return;
+    const hasUnitTrackedItem = shipment.items.some((item) => {
+      const sourceProduct = products.find((product) => product.id === item.sourceProductId && product.branchId === shipment.fromBranchId);
+      return productIsUnitTracked(sourceProduct || { id: item.sourceProductId }, stockUnitRegistries, shipment.fromBranchId);
+    });
+    if (hasUnitTrackedItem) { notify(UNIT_TRANSFER_UNSUPPORTED_MESSAGE); return; }
     const invalidReceipt = shipment.items.some((item) => {
       const received = shipment.receivedItems?.find((entry) => entry.sourceProductId === item.sourceProductId);
       const mode = item.quantityMode || item.unit;

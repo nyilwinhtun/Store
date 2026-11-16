@@ -36,5 +36,6 @@ export function OwnerAutoSyncStatus({ userUid }: { userUid: string }) {
     <small>{status.message}</small>
     {status.savedAt && <small>နောက်ဆုံး Auto Sync: {new Date(status.savedAt).toLocaleString()}</small>}
     {status.state === 'conflict' && <small>အကြံပြုချက်: Backup ထုတ်ပြီး Owner Device နှစ်ခုမှာ ပြင်ထားတဲ့ Record ကို စစ်ဆေးပါ။ ထို့နောက် Manual Sync လုပ်ပါ။</small>}
+    {status.state === 'conflict' && !!status.conflictKeys?.length && <small>Record: {status.conflictKeys.map((key) => key.split('::').filter(Boolean).slice(-2).join(' / ')).join(', ')}</small>}
   </div>;
 }

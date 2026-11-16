@@ -17,3 +17,13 @@ firebase-debug.log
 firestore-debug.log
 ui-debug.log
 firebase-export-*
+
+# Transpiled test helpers
+/.qa-build/
+
+# Cloudflare Wrangler local state
+**/.wrangler/
+**/.dev.vars
+
+# Owner-created local Staging Worker config
+experiments/cloudflare-workers-spark-poc/wrangler.staging.toml

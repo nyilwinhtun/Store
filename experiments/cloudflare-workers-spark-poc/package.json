@@ -1,0 +1,16 @@
+{
+  "name": "minimart-spark-sales-poc",
+  "private": true,
+  "version": "0.0.0-poc",
+  "type": "module",
+  "description": "Isolated Cloudflare Workers Free + Firestore REST POC for Cashier sale commit (no Firebase Blaze / Cloud Functions).",
+  "scripts": {
+    "test": "node --test --test-concurrency=1 test/runtime-config.test.mjs test/security-hardening.test.mjs test/scenarios.test.mjs test/adjustment-scenarios.test.mjs",
+    "test:adjustments": "node --test --test-concurrency=1 test/adjustment-scenarios.test.mjs",
+    "bench:cpu": "node test/cpu-bench.mjs",
+    "bench:workerd": "node test/workerd-bench.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

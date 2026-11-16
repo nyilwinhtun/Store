@@ -1,0 +1,29 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "sales",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "payload.createdByUid", "order": "ASCENDING" },
+        { "fieldPath": "payload.date", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "expenses",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "payload.createdByUid", "order": "ASCENDING" },
+        { "fieldPath": "payload.date", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "cashierSettlements",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "payload.cashierUid", "order": "ASCENDING" },
+        { "fieldPath": "payload.createdAt", "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

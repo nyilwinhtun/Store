@@ -7,21 +7,16 @@ import { useBusinessAccess } from '../lib/businessAccess';
 import { usePosStore, type Branch } from '../store/usePosStore';
 import { OwnerAutoSyncStatus } from './OwnerAutoSyncStatus';
 import { clearFirestoreDiagnostics, FIRESTORE_DIAGNOSTICS_EVENT, readFirestoreDiagnostics, type FirestoreDiagnosticsSummary, recordFirestoreActivity } from '../lib/firestoreDiagnostics';
+import { mergeActivityLogs } from '../lib/activityLogPolicy';
+import { isManifestSupersededByReset } from '../lib/syncSafety';
+import { preloadManifest, readManifest, saveManifest } from '../lib/syncManifestStorage';
+import { branchRecordKinds, sharedRecordKinds } from '../lib/syncTypes';
+import type { BranchRecordKind, CloudRead, ManifestEntry, SharedRecordKind, SyncItem, SyncKind, SyncManifest, SyncScope } from '../lib/syncTypes';
 
-export type BranchRecordKind = 'categories' | 'products' | 'sales' | 'expenses' | 'cashierSettlements' | 'heldItems' | 'customerPayments' | 'purchases' | 'supplierPayments' | 'purchaseReturns' | 'stockBatches' | 'stockReceipts' | 'stockTransfers' | 'stockShipments' | 'stockUnitRegistries' | 'cashShifts' | 'cashMovements' | 'activityLogs' | 'branchFinanceLedgerEntries' | 'cashierAdvanceReconciliations' | 'branchFinanceReconciliations';
-export type SharedRecordKind = 'customers' | 'suppliers';
-export type SyncScope = 'branch' | 'branchRecord' | 'shared' | 'meta';
-export type SyncKind = BranchRecordKind | SharedRecordKind | 'branches' | 'settings';
-export type SyncItem = { key: string; scope: SyncScope; kind: SyncKind; id: string; branchId?: string; payload: unknown; deleted?: boolean };
-export type ManifestEntry = { scope: SyncScope; kind: SyncKind; id: string; branchId?: string; hash: string };
-export type SyncManifest = { version: 2; businessId: string; savedAt: string; records: Record<string, ManifestEntry> };
-export type CloudRead = { items: Map<string, SyncItem>; unavailableSharedKinds: SharedRecordKind[] };
+export * from '../lib/syncTypes';
 
-export const branchRecordKinds: BranchRecordKind[] = ['categories', 'products', 'sales', 'expenses', 'cashierSettlements', 'heldItems', 'customerPayments', 'purchases', 'supplierPayments', 'purchaseReturns', 'stockBatches', 'stockReceipts', 'stockTransfers', 'stockShipments', 'stockUnitRegistries', 'cashShifts', 'cashMovements', 'activityLogs', 'branchFinanceLedgerEntries', 'cashierAdvanceReconciliations', 'branchFinanceReconciliations'];
-export const sharedRecordKinds: SharedRecordKind[] = ['customers', 'suppliers'];
 const DELETED_HASH = '__MINIMART_DELETED__';
 const MISSING_HASH = '__MINIMART_MISSING__';
-const manifestKey = (uid: string) => `minimart-cloud-sync-manifest-v2:${FIREBASE_BUSINESS_ID}:${uid}`;
 const safeJson = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
 function stableStringify(value: unknown): string {
@@ -148,18 +143,6 @@ function isBootstrapEquivalent(local: SyncItem, remote: SyncItem): boolean {
   if (local.scope === 'meta' && isDefaultMetaPayload(local.payload)) return true;
   return false;
 }
-export function readManifest(uid: string): SyncManifest | null {
-  try {
-    const raw = localStorage.getItem(manifestKey(uid));
-    if (!raw) return null;
-    const value = JSON.parse(raw) as SyncManifest;
-    return value.version === 2 && value.businessId === FIREBASE_BUSINESS_ID && value.records ? value : null;
-  } catch { return null; }
-}
-export function saveManifest(uid: string, records: Record<string, ManifestEntry>) {
-  localStorage.setItem(manifestKey(uid), JSON.stringify({ version: 2, businessId: FIREBASE_BUSINESS_ID, savedAt: new Date().toISOString(), records } satisfies SyncManifest));
-  window.dispatchEvent(new CustomEvent('minimart-cloud-manifest-updated', { detail: { uid } }));
-}
 export function manifestFromItems(items: Map<string, SyncItem>) {
   const records: Record<string, ManifestEntry> = {};
   for (const [key, item] of items) records[key] = manifestEntry(item);
@@ -173,9 +156,22 @@ export type DeviceBootstrapResult = {
   unavailableSharedKinds: SharedRecordKind[];
 };
 
+export type DeviceBootstrapOptions = {
+  /**
+   * Used after an intentional local reset/restore. Cloud wins every same-ID
+   * conflict so a restored or emptied device can never overwrite/delete cloud data.
+   */
+  preferRemoteOnConflict?: boolean;
+  /**
+   * Production first-connection guard: device-only template records must never
+   * be uploaded into the live business dataset during the initial bootstrap.
+   */
+  skipLocalOnlyPush?: boolean;
+};
+
 // Bootstrap from the already-received realtime snapshots. This avoids a full
 // Do not run a separate full server scan before attaching the realtime listeners.
-async function mergeOwnerDeviceSnapshot(uid: string, cloud: CloudRead): Promise<DeviceBootstrapResult> {
+async function mergeOwnerDeviceSnapshot(uid: string, cloud: CloudRead, options: DeviceBootstrapOptions = {}): Promise<DeviceBootstrapResult> {
   const local = buildLocalItems(usePosStore.getState());
   const merged = new Map<string, SyncItem>(cloud.items);
   const localOnly: SyncItem[] = [];
@@ -186,12 +182,14 @@ async function mergeOwnerDeviceSnapshot(uid: string, cloud: CloudRead): Promise<
     if (item.scope === 'shared' && unavailableShared.has(item.kind as SharedRecordKind)) continue;
     const remote = cloud.items.get(key);
     if (!remote) {
+      if (options.skipLocalOnlyPush) continue;
       localOnly.push(item);
       merged.set(key, item);
       continue;
     }
     if (!remote.deleted && hashPayload(remote.payload) === hashPayload(item.payload)) continue;
     if (isBootstrapEquivalent(item, remote)) continue;
+    if (options.preferRemoteOnConflict) continue;
     conflicts.push(key);
   }
 
@@ -214,8 +212,15 @@ async function mergeOwnerDeviceSnapshot(uid: string, cloud: CloudRead): Promise<
 
   // Import the union before persisting the baseline, so local state and the
   // manifest describe the same merged dataset.
-  importCloudItems(merged, { unavailableSharedKinds: cloud.unavailableSharedKinds });
-  saveManifest(uid, manifestFromItems(merged));
+  importCloudItems(merged, {
+    unavailableSharedKinds: cloud.unavailableSharedKinds,
+    adoptCloudMeta: options.skipLocalOnlyPush,
+  });
+  if (!(await saveManifest(uid, FIREBASE_BUSINESS_ID, manifestFromItems(merged)))) {
+    // Without a baseline the next reconcile would refuse to run, so report this
+    // as a failed bootstrap instead of a successful sync.
+    throw new Error('Sync Baseline ကို Browser Storage ထဲ သိမ်းမရပါ။ Storage နေရာလွတ်ပြီး App ကို ပြန်ဖွင့်ပါ။ Cloud Data မပျက်ပါ။');
+  }
 
   return {
     cloudRecords: cloud.items.size,
@@ -244,11 +249,12 @@ export function initializeOwnerDeviceSyncFromSnapshot(
   uid: string,
   items: Map<string, SyncItem>,
   unavailableSharedKinds: SharedRecordKind[] = [],
+  options: DeviceBootstrapOptions = {},
 ): Promise<DeviceBootstrapResult> {
   const existing = deviceBootstrapPromises.get(uid);
   if (existing) return existing;
   const cloud: CloudRead = { items: new Map(items), unavailableSharedKinds: [...unavailableSharedKinds] };
-  return rememberBootstrap(uid, mergeOwnerDeviceSnapshot(uid, cloud));
+  return rememberBootstrap(uid, mergeOwnerDeviceSnapshot(uid, cloud, options));
 }
 
 function pathFor(item: SyncItem): string[] {
@@ -271,6 +277,11 @@ export async function writeItemsIfBaselineUnchanged(items: SyncItem[], uid: stri
   let committedWriteCount = 0;
   let transactionChunkCount = 0;
   for (let offset = 0; offset < items.length; offset += 400) {
+    // A reset/restore can happen while earlier chunks are committing. Never
+    // finish writing a dataset that no longer represents this device.
+    if (isManifestSupersededByReset(baseline.savedAt)) {
+      throw new Error('Local Data အစားထိုးမှု ဖြစ်သွားပါပြီ။ Cloud သို့ အလိုအလျောက် မရေးတော့ဘဲ Safe Rebaseline ကို စောင့်ပါမယ်။');
+    }
     const chunk = items.slice(offset, offset + 400);
     let committedAttemptWriteCount = 0;
     await runTransaction(firestore, async (transaction) => {
@@ -309,7 +320,7 @@ export async function writeItemsIfBaselineUnchanged(items: SyncItem[], uid: stri
   });
 }
 
-export function importCloudItems(items: Map<string, SyncItem>, options: { unavailableSharedKinds?: readonly SharedRecordKind[] } = {}) {
+export function importCloudItems(items: Map<string, SyncItem>, options: { unavailableSharedKinds?: readonly SharedRecordKind[]; adoptCloudMeta?: boolean } = {}) {
   const current = usePosStore.getState();
   const live = [...items.values()].filter((item) => !item.deleted);
   const branches = live.filter((item) => item.scope === 'branch').map((item) => {
@@ -343,15 +354,23 @@ export function importCloudItems(items: Map<string, SyncItem>, options: { unavai
 
   const activeBranchId = branches.some((branch) => branch.id === current.activeBranchId && branch.status === 'active')
     ? current.activeBranchId : branches.find((branch) => branch.isDefault)?.id || branches[0]?.id;
-  const settings = { ...current.settings, ...cloudSettings, adminPin: current.settings.adminPin };
-  const ownerProfile = { ...current.ownerProfile, ...cloudOwner, photoUrl: current.ownerProfile.photoUrl || (typeof cloudOwner.photoUrl === 'string' ? cloudOwner.photoUrl : '') };
+  // adoptCloudMeta is the production first-connection path: the live dataset's
+  // settings/profile become the device values so template defaults are never
+  // diffed back into production. The device-local adminPin is always retained.
+  const settings = options.adoptCloudMeta && Object.keys(cloudSettings).length
+    ? { ...cloudSettings, adminPin: current.settings.adminPin }
+    : { ...current.settings, ...cloudSettings, adminPin: current.settings.adminPin };
+  const ownerProfile = options.adoptCloudMeta && Object.keys(cloudOwner).length
+    ? { ...cloudOwner, photoUrl: typeof cloudOwner.photoUrl === 'string' ? cloudOwner.photoUrl : current.ownerProfile.photoUrl }
+    : { ...current.ownerProfile, ...cloudOwner, photoUrl: current.ownerProfile.photoUrl || (typeof cloudOwner.photoUrl === 'string' ? cloudOwner.photoUrl : '') };
   usePosStore.getState().importData({
     branches: branches as never[], activeBranchId, categories: grouped.categories as never[], products: grouped.products as never[],
     sales: grouped.sales as never[], expenses: grouped.expenses as never[], cashierSettlements: grouped.cashierSettlements as never[], branchFinanceLedgerEntries: grouped.branchFinanceLedgerEntries as never[], cashierAdvanceReconciliations: grouped.cashierAdvanceReconciliations as never[], branchFinanceReconciliations: grouped.branchFinanceReconciliations as never[], heldItems: grouped.heldItems as never[],
     customers: unavailableShared.has('customers') ? undefined : customers as never[], suppliers: unavailableShared.has('suppliers') ? undefined : suppliers as never[], customerPayments: grouped.customerPayments as never[],
     purchases: grouped.purchases as never[], supplierPayments: grouped.supplierPayments as never[], purchaseReturns: grouped.purchaseReturns as never[],
     stockBatches: grouped.stockBatches as never[], stockReceipts: grouped.stockReceipts as never[], stockTransfers: grouped.stockTransfers as never[], stockShipments: grouped.stockShipments as never[], stockUnitRegistries: grouped.stockUnitRegistries as never[],
-    cashShifts: grouped.cashShifts as never[], cashMovements: grouped.cashMovements as never[], activityLogs: grouped.activityLogs as never[],
+    cashShifts: grouped.cashShifts as never[], cashMovements: grouped.cashMovements as never[],
+    activityLogs: mergeActivityLogs(current.activityLogs, grouped.activityLogs as never[]) as never[],
     ownerProfile: ownerProfile as never, settings: settings as never,
   });
 }
@@ -387,10 +406,12 @@ export function CloudSyncPanel({ onOpenProfile }: { onOpenProfile?: () => void }
       setManifest(null);
       return;
     }
-    const refreshManifest = () => setManifest(readManifest(user.uid));
+    let active = true;
+    const refreshManifest = () => { if (active) setManifest(readManifest(user.uid, FIREBASE_BUSINESS_ID)); };
     refreshManifest();
+    void preloadManifest(user.uid, FIREBASE_BUSINESS_ID).then(refreshManifest);
     window.addEventListener('minimart-cloud-manifest-updated', refreshManifest);
-    return () => window.removeEventListener('minimart-cloud-manifest-updated', refreshManifest);
+    return () => { active = false; window.removeEventListener('minimart-cloud-manifest-updated', refreshManifest); };
   }, [user?.uid]);
 
   const requestIncrementalSync = () => {

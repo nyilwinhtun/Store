@@ -1,5 +1,5 @@
 export type AutoSyncState = 'idle' | 'connecting' | 'synced' | 'offline' | 'conflict' | 'error';
-export type AutoSyncStatus = { state: AutoSyncState; message: string; savedAt?: string; conflictCount?: number };
+export type AutoSyncStatus = { state: AutoSyncState; message: string; savedAt?: string; conflictCount?: number; conflictKeys?: string[] };
 export const AUTO_SYNC_STATUS_EVENT = 'minimart-auto-sync-status-changed';
 export const autoSyncStatusKey = (uid: string) => `minimart-auto-sync-status:store-mini-main:${uid}`;
 

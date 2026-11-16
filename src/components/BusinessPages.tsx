@@ -1,7 +1,18 @@
-import { useMemo, useState, type FormEvent } from 'react';
-import { AlertTriangle, Building2, CalendarClock, CheckCircle2, ClipboardList, Contact, CreditCard, PackagePlus, Plus, Truck, Users, Wallet } from 'lucide-react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { createPortal } from 'react-dom';
+import { AlertTriangle, Building2, CalendarClock, CheckCircle2, ClipboardList, Contact, Copy, CreditCard, FileText, PackagePlus, Plus, Printer, Share2, Truck, Users, Wallet, X } from 'lucide-react';
 import { usePosStore } from '../store/usePosStore';
 import { formatQuantity, isValidQuantity, quantityModeForProduct, quantityStep } from '../lib/quantity';
+import { productIsUnitTracked } from '../lib/unitTracking';
+import { useBusinessAccess } from '../lib/businessAccess';
+import {
+  buildCustomerStatement,
+  buildCustomerStatementText,
+  formatStatementDate,
+  formatStatementMoney,
+  statementPeriodLabel,
+  type CustomerStatement,
+} from '../lib/customerStatement';
 
 const money = (value: number, currency = 'MMK') => `${new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(Math.round(value || 0))} ${currency}`;
 const dateLabel = (value: string) => value ? new Date(value).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
@@ -10,6 +21,61 @@ const daysUntil = (value: string) => {
   const target = new Date(`${value}T00:00:00`);
   return Math.ceil((target.getTime() - today.getTime()) / 86400000);
 };
+
+type StatementPaper = '58' | '80';
+
+function StatementDocument({ statement, paper, variant }: { statement: CustomerStatement; paper: StatementPaper; variant: 'preview' | 'print' }) {
+  return <article className={`statement-paper statement-paper-${paper} ${variant === 'print' ? 'statement-paper-print' : ''}`}>
+    <header className="statement-head">
+      <strong className="statement-shop">{statement.branch.name}</strong>
+      {statement.branch.address && <span>{statement.branch.address}</span>}
+      {statement.branch.phone && <span>ဖုန်း: {statement.branch.phone}</span>}
+      <h2>CUSTOMER CREDIT STATEMENT</h2>
+    </header>
+    <div className="statement-identity">
+      <div><span>Customer</span><b>{statement.customer.name}</b></div>
+      {statement.customer.phone && <div><span>ဖုန်း</span><b>{statement.customer.phone}</b></div>}
+      {statement.customer.address && <div><span>လိပ်စာ</span><b>{statement.customer.address}</b></div>}
+      <div><span>ကာလ</span><b>{statementPeriodLabel(statement)}</b></div>
+    </div>
+    <div className="statement-outstanding">
+      <span>လက်ရှိ ကျန်အကြွေး</span>
+      <strong>{formatStatementMoney(statement.currentOutstanding, statement.currency)}</strong>
+    </div>
+    <div className="statement-lines">
+      {statement.lines.length === 0
+        ? <p className="statement-empty">ဒီကာလအတွင်း Credit Invoice သို့မဟုတ် ငွေလက်ခံမှတ်တမ်း မရှိပါ။</p>
+        : statement.lines.map((line) => <div key={line.id} className={`statement-line statement-line-${line.kind}`}>
+          <div className="statement-line-top">
+            <span>{formatStatementDate(line.date)} · {line.reference}</span>
+            <b>{line.kind === 'invoice'
+              ? `+ ${formatStatementMoney(line.debit, statement.currency)}`
+              : `- ${formatStatementMoney(line.credit, statement.currency)}`}</b>
+          </div>
+          <div className="statement-line-meta">
+            <span>{line.description}{line.synthetic ? ' (Invoice ဖန်တီးချိန်)' : ''}{line.legacyBranch ? ' · Legacy' : ''}</span>
+            <span>လက်ကျန် {formatStatementMoney(line.balance, statement.currency)}</span>
+          </div>
+          {line.note && <small className="statement-line-note">{line.note}</small>}
+        </div>)}
+    </div>
+    <div className="statement-summary">
+      <div><span>အစ လက်ကျန်</span><b>{formatStatementMoney(statement.openingBalance, statement.currency)}</b></div>
+      <div><span>အကြွေးတင်ငွေ ({statement.invoiceCount} Invoice)</span><b>+ {formatStatementMoney(statement.totalInvoiced, statement.currency)}</b></div>
+      <div><span>ငွေလက်ခံ ({statement.paymentCount} ကြိမ်)</span><b>- {formatStatementMoney(statement.totalPaid, statement.currency)}</b></div>
+      <div className="statement-closing"><span>ကာလကုန် လက်ကျန်</span><b>{formatStatementMoney(statement.closingBalance, statement.currency)}</b></div>
+    </div>
+    <div className="statement-notes">
+      {statement.excludedVoidedInvoices > 0 && <p>ပယ်ဖျက်ထားသော Invoice {statement.excludedVoidedInvoices} ခုနှင့် ၎င်းတို့၏ ငွေလက်ခံမှုများကို မပါဝင်ပါ။</p>}
+      {statement.includesLegacyUnassignedBranchRecords && <p>Branch မသတ်မှတ်ထားသော Legacy မှတ်တမ်းများကို Default Branch တွင်သာ ပြထားပါသည်။</p>}
+      {statement.skippedInvalidRecords > 0 && <p>ရက်စွဲ မမှန်ကန်သော မှတ်တမ်း {statement.skippedInvalidRecords} ခုကို ချန်လှပ်ထားပါသည်။</p>}
+    </div>
+    <footer className="statement-footer">
+      <span>{statement.branch.name} အတွက် သီးသန့် ထုတ်ပေးထားပါသည်။</span>
+      <span>ထုတ်ပေးသည့်အချိန်: {formatStatementDate(statement.generatedAt)}</span>
+    </footer>
+  </article>;
+}
 
 export function CustomerCreditPage() {
   const customers = usePosStore((state) => state.customers);
@@ -33,6 +99,29 @@ export function CustomerCreditPage() {
   const [paymentNote, setPaymentNote] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<'Cash' | 'Transfer'>('Cash');
   const [query, setQuery] = useState('');
+  const accessRole = useBusinessAccess((state) => state.role);
+  const accessBranchIds = useBusinessAccess((state) => state.branchIds);
+  const canViewStatement = accessRole !== 'cashier' || accessBranchIds.includes(activeBranchId);
+  const [statementCustomerId, setStatementCustomerId] = useState('');
+  const [statementFrom, setStatementFrom] = useState('');
+  const [statementTo, setStatementTo] = useState('');
+  const [statementPaper, setStatementPaper] = useState<StatementPaper>(() => {
+    try {
+      return window.localStorage.getItem('minimart-statement-paper-width-v1') === '58' ? '58' : '80';
+    } catch {
+      return '80';
+    }
+  });
+  const [statementPrinting, setStatementPrinting] = useState(false);
+  const [statementFeedback, setStatementFeedback] = useState('');
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('minimart-statement-paper-width-v1', statementPaper);
+    } catch {
+      // Paper width preference is optional; ignore private-mode storage failures.
+    }
+  }, [statementPaper]);
 
   const openInvoices = useMemo(() => sales.filter((sale) => sale.status === 'completed' && sale.paymentMethod === 'Credit' && (sale.dueAmount ?? Math.max(0, sale.total - (sale.paidAmount ?? 0))) > 0), [sales]);
   const selectedSale = openInvoices.find((sale) => sale.id === saleId);
@@ -46,6 +135,105 @@ export function CustomerCreditPage() {
     const received = allPayments.filter((payment) => payment.branchId === branch.id).reduce((sum, payment) => sum + payment.amount, 0);
     return { branch, invoiceCount: creditSales.length, salesTotal: creditSales.reduce((sum, sale) => sum + sale.total, 0), due, received };
   });
+
+  const statementCustomer = customers.find((customer) => customer.id === statementCustomerId);
+  const statementResult = useMemo(() => {
+    if (!statementCustomer || !activeBranch) return { statement: null, error: '' };
+    try {
+      return {
+        statement: buildCustomerStatement({
+          customer: statementCustomer,
+          branch: activeBranch,
+          sales: allSales,
+          payments: allPayments,
+          fromDate: statementFrom || undefined,
+          toDate: statementTo || undefined,
+          currency: settings.currency,
+        }),
+        error: '',
+      };
+    } catch (error) {
+      return {
+        statement: null,
+        error: error instanceof Error ? error.message : 'Statement ကို ဖန်တီးမရပါ။',
+      };
+    }
+  }, [statementCustomer, activeBranch, allSales, allPayments, statementFrom, statementTo, settings.currency]);
+
+  useEffect(() => {
+    if (!statementPrinting) return;
+    document.body.classList.add('printing-customer-statement');
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      document.body.classList.remove('printing-customer-statement');
+      setStatementPrinting(false);
+    };
+    window.addEventListener('afterprint', finish);
+    const timer = window.setTimeout(() => {
+      window.print();
+      finish();
+    }, 150);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('afterprint', finish);
+      document.body.classList.remove('printing-customer-statement');
+    };
+  }, [statementPrinting]);
+
+  const openStatement = (customerId: string) => {
+    setStatementCustomerId(customerId);
+    setStatementFeedback('');
+  };
+  const closeStatement = () => {
+    setStatementCustomerId('');
+    setStatementFeedback('');
+  };
+  const copyStatement = async () => {
+    const statement = statementResult.statement;
+    if (!statement) return;
+    const text = buildCustomerStatementText(statement);
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const scratch = document.createElement('textarea');
+        scratch.value = text;
+        scratch.setAttribute('readonly', '');
+        scratch.style.position = 'fixed';
+        scratch.style.top = '-1000px';
+        document.body.appendChild(scratch);
+        scratch.select();
+        const copied = document.execCommand('copy');
+        document.body.removeChild(scratch);
+        if (!copied) throw new Error('Copy command was rejected.');
+      }
+      setStatementFeedback('Statement ကို Clipboard သို့ ကူးယူပြီးပါပြီ။');
+    } catch {
+      setStatementFeedback('Clipboard သို့ ကူးယူနိုင်မှု မအောင်မြင်ပါ။ Preview စာသားကို ကိုယ်တိုင် ရွေးကူးပါ။');
+    }
+  };
+  const canShareStatement = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
+  const shareStatement = async () => {
+    const statement = statementResult.statement;
+    if (!statement || !canShareStatement) return;
+    try {
+      await navigator.share({
+        title: `Customer Statement · ${statement.customer.name}`,
+        text: buildCustomerStatementText(statement),
+      });
+      setStatementFeedback('Statement ကို မျှဝေပြီးပါပြီ။');
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') return;
+      await copyStatement();
+    }
+  };
+  const printStatement = () => {
+    if (!statementResult.statement) return;
+    setStatementFeedback('');
+    setStatementPrinting(true);
+  };
 
   const editCustomer = (customer: (typeof customers)[number]) => {
     const nextName = window.prompt('Customer အမည်', customer.name);
@@ -116,7 +304,7 @@ export function CustomerCreditPage() {
         const allCustomerSales = allSales.filter((sale) => sale.customerId === customer.id && sale.status === 'completed');
         const currentDue = currentCustomerSales.reduce((sum, sale) => sum + Math.max(0, sale.dueAmount ?? (sale.paymentMethod === 'Credit' ? sale.total - (sale.paidAmount ?? 0) : 0)), 0);
         const allDue = allCustomerSales.reduce((sum, sale) => sum + Math.max(0, sale.dueAmount ?? (sale.paymentMethod === 'Credit' ? sale.total - (sale.paidAmount ?? 0) : 0)), 0);
-        return <tr key={customer.id}><td><div className="table-product"><div className="table-product-icon"><Users size={15} /></div><div><strong>{customer.name}</strong><small>{customer.address || customer.note || '—'}</small></div></div></td><td>{customer.phone || '—'}</td><td>{currentCustomerSales.filter((sale) => sale.paymentMethod === 'Credit').length}</td><td><b className={currentDue > 0 ? 'stock-warning' : 'stock-ok'}>{money(currentDue, settings.currency)}</b></td><td><b className={allDue > 0 ? 'stock-warning' : 'stock-ok'}>{money(allDue, settings.currency)}</b></td><td><button className="small-action" onClick={() => editCustomer(customer)}>ပြင်ရန်</button></td></tr>;
+        return <tr key={customer.id}><td><div className="table-product"><div className="table-product-icon"><Users size={15} /></div><div><strong>{customer.name}</strong><small>{customer.address || customer.note || '—'}</small></div></div></td><td>{customer.phone || '—'}</td><td>{currentCustomerSales.filter((sale) => sale.paymentMethod === 'Credit').length}</td><td><b className={currentDue > 0 ? 'stock-warning' : 'stock-ok'}>{money(currentDue, settings.currency)}</b></td><td><b className={allDue > 0 ? 'stock-warning' : 'stock-ok'}>{money(allDue, settings.currency)}</b></td><td><div className="table-actions"><button className="small-action" onClick={() => editCustomer(customer)}>ပြင်ရန်</button>{canViewStatement && <button className="small-action statement-action" onClick={() => openStatement(customer.id)}><FileText size={12} /> Statement</button>}</div></td></tr>;
       })}</tbody></table></div>}
     </div>
     <div className="panel"><div className="panel-heading"><div><h3>ဆိုင်အလိုက် Customer Ledger အကျဉ်းချုပ်</h3><p>Customer Profile တူညီသော်လည်း Invoice နှင့် ငွေလက်ခံမှုကို Branch တစ်ခုချင်းစီ ခွဲထားပါတယ်။</p></div><span className="subtle-count">{branches.length} branches</span></div>
@@ -126,6 +314,47 @@ export function CustomerCreditPage() {
       <div className="panel-heading"><div><h3>လက်ရှိဆိုင်၏ ငွေလက်ခံမှတ်တမ်း</h3><p>{activeBranch?.name || 'လက်ရှိဆိုင်'} အတွက်သာ ပြသထားပါတယ်။</p></div><span className="subtle-count">{payments.length} payments</span></div>
       {payments.length === 0 ? <div className="empty-state"><div className="empty-icon"><ClipboardList size={23} /></div><strong>ငွေလက်ခံမှတ်တမ်း မရှိသေးပါ</strong><p>အပေါ်က Form မှာ အကြွေးပြန်ဆပ်ငွေကို မှတ်တမ်းတင်နိုင်ပါတယ်။</p></div> : <div className="table-wrap"><table><thead><tr><th>ရက်စွဲ</th><th>Customer</th><th>Voucher</th><th>ပမာဏ</th><th>ငွေလက်ခံနည်း</th><th>မှတ်ချက်</th></tr></thead><tbody>{payments.slice(0, 30).map((payment) => <tr key={payment.id}><td>{dateLabel(payment.date)}</td><td>{customers.find((customer) => customer.id === payment.customerId)?.name || 'Customer'}</td><td>{sales.find((sale) => sale.id === payment.saleId)?.receiptNo || '—'}</td><td><b className="stock-ok">{money(payment.amount, settings.currency)}</b></td><td>{payment.paymentMethod || 'Cash (Legacy)'}</td><td>{payment.note || '—'}</td></tr>)}</tbody></table></div>}
     </div>
+    {statementCustomer && createPortal(
+      <div
+        className="modal-backdrop statement-backdrop"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Customer Credit Statement"
+        onClick={(event) => { if (event.target === event.currentTarget) closeStatement(); }}
+      >
+        <div className="modal-card statement-modal">
+          <div className="modal-header">
+            <div><h2>Customer Credit Statement</h2><p>{statementCustomer.name} · {activeBranch?.name || 'လက်ရှိဆိုင်'}</p></div>
+            <button className="icon-btn" type="button" onClick={closeStatement} aria-label="ပိတ်ရန်"><X size={17} /></button>
+          </div>
+          <div className="statement-controls">
+            <label>မှစသောရက်<input type="date" value={statementFrom} max={statementTo || undefined} onChange={(event) => setStatementFrom(event.target.value)} /></label>
+            <label>အထိရက်<input type="date" value={statementTo} min={statementFrom || undefined} onChange={(event) => setStatementTo(event.target.value)} /></label>
+            <label>စာရွက်အရွယ်<select value={statementPaper} onChange={(event) => setStatementPaper(event.target.value === '58' ? '58' : '80')}><option value="80">80mm (Thermal)</option><option value="58">58mm (Thermal)</option></select></label>
+            <button className="small-action" type="button" onClick={() => { setStatementFrom(''); setStatementTo(''); }}>အချိန်အားလုံး</button>
+          </div>
+          {statementResult.error
+            ? <div className="cloud-error">{statementResult.error}</div>
+            : statementResult.statement && <div className={`statement-preview statement-preview-${statementPaper}`}>
+              <StatementDocument statement={statementResult.statement} paper={statementPaper} variant="preview" />
+            </div>}
+          {statementFeedback && <div className="statement-feedback">{statementFeedback}</div>}
+          <div className="modal-actions statement-actions">
+            <button className="button button-outline" type="button" onClick={copyStatement} disabled={!statementResult.statement}><Copy size={14} /> Copy</button>
+            {canShareStatement && <button className="button button-outline" type="button" onClick={shareStatement} disabled={!statementResult.statement}><Share2 size={14} /> Share</button>}
+            <button className="button button-primary" type="button" onClick={printStatement} disabled={!statementResult.statement}><Printer size={14} /> Print</button>
+          </div>
+          <small className="field-hint">Statement သည် {activeBranch?.name || 'လက်ရှိဆိုင်'} ၏ Invoice နှင့် ငွေလက်ခံမှုကိုသာ ပြပါသည်။ ပယ်ဖျက်ထားသော Sale များ မပါဝင်ပါ။</small>
+        </div>
+      </div>,
+      document.body,
+    )}
+    {statementPrinting && statementResult.statement && createPortal(
+      <div className="statement-print-portal">
+        <StatementDocument statement={statementResult.statement} paper={statementPaper} variant="print" />
+      </div>,
+      document.body,
+    )}
   </section>;
 }
 
@@ -221,7 +450,7 @@ export function SupplierPurchasePage() {
     const product = products.find((entry) => entry.id === productId);
     const total = qty * cost;
     if (!product || !isValidQuantity(qty, quantityModeForProduct(product)) || !(cost >= 0) || !Number.isFinite(paid) || paid < 0 || paid > total) { window.alert('အရေအတွက်ကို ပစ္စည်းယူနစ်အလိုက် မှန်ကန်စွာ ထည့်ပါ။'); return; }
-    if (stockUnitRegistries.some((registry) => registry.branchId === activeBranchId && registry.productId === product.id && registry.units.length > 0)) { window.alert('ဒီ Product မှာ Barcode Sticker တစ်ခုချင်းစီ စာရင်းသွင်းထားပြီးပါပြီ။ Quantity နဲ့ Purchase ထပ်မထည့်နိုင်ပါ။ Stock Receiving ထဲက ပုံမှန် Quantity လက်ခံမှုအစား Sticker Scan Registration ကို အသုံးပြုပါ။'); return; }
+    if (productIsUnitTracked(product, stockUnitRegistries, activeBranchId)) { window.alert('ဒီ Product မှာ Individual Unit Tracking ဖွင့်ထားပါတယ်။ Quantity နဲ့ Purchase ထပ်မထည့်နိုင်ပါ။ Unit Barcode ကုန်လက်ခံစာမျက်နှာတွင် Sticker Scan ဖြင့် လက်ခံပါ။'); return; }
     const supplier = suppliers.find((entry) => entry.id === supplierId);
     addPurchase({ supplierId, supplierName: supplier?.name || 'အထွေထွေ Supplier', productId, productName: product.name, quantity: qty, unitCost: cost, expiryDate, note: purchaseNote.trim(), initialPaidAmount: paid, paymentMethod: initialPaymentMethod });
     setQuantity('1'); setUnitCost(''); setExpiryDate(''); setPurchaseNote(''); setInitialPaidAmount('0');
@@ -239,7 +468,7 @@ export function SupplierPurchasePage() {
     const qty = Number(returnQuantity);
     const returnProduct = selectedReturnPurchase ? products.find((product) => product.id === selectedReturnPurchase.productId) : undefined;
     if (!selectedReturnPurchase || !selectedReturnBatch || !returnProduct || !isValidQuantity(qty, quantityModeForProduct(returnProduct)) || qty > selectedReturnBatch.quantity) return;
-    if (stockUnitRegistries.some((registry) => registry.branchId === activeBranchId && registry.productId === returnProduct.id && registry.units.some((unit) => unit.status === 'in_stock' || unit.status === 'reserved'))) { window.alert('ဒီ Product မှာ Unit Barcode Tracking အသုံးပြုနေပါတယ်။ Barcode တစ်ခုချင်း Supplier Return မလုပ်နိုင်သေးတဲ့အတွက် စာရင်းမပြောင်းလဲထားပါ။'); return; }
+    if (productIsUnitTracked(returnProduct, stockUnitRegistries, activeBranchId)) { window.alert('ဒီ Product မှာ Unit Barcode Tracking အသုံးပြုနေပါတယ်။ Barcode တစ်ခုချင်း Supplier Return မလုပ်နိုင်သေးတဲ့အတွက် စာရင်းမပြောင်းလဲထားပါ။'); return; }
     if (!window.confirm(`${selectedReturnPurchase.productName} ${qty} ခုကို Supplier သို့ ပြန်ပို့မလား။ Stock လျှော့ပြီး Supplier လက်ကျန်ကို ပြန်တွက်ပါမယ်။`)) return;
     addPurchaseReturn(selectedReturnPurchase.id, qty, returnNote);
     setReturnQuantity('1'); setReturnNote('');

@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
-import { ArrowUpCircle, Banknote, CalendarDays, CheckCircle2, ClipboardList, CreditCard, Download, Plus, RefreshCw, Store, Wallet } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { ArrowUpCircle, Banknote, CalendarDays, CheckCircle2, ClipboardList, CreditCard, Download, Plus, QrCode, RefreshCw, Store, Wallet } from 'lucide-react';
 import { usePosStore, type Expense } from '../store/usePosStore';
 import { useBusinessAccess } from '../lib/businessAccess';
+import { KPAY_QR_ACCEPT, isAllowedKpayQrDataUrl, nextKpayQrVersion, prepareKpayQrDataUrl } from '../lib/kpayQr';
+import { isKpayEnabled } from '../lib/kpayAccount';
 import type { BranchFinanceChannel, BranchFinanceDirection, BranchFinanceReconciliationRecord, CashierSettlementRecord } from '../types/finance';
 
 type Props = { authorize: (action: string) => boolean; notify: (message: string) => void };
@@ -52,9 +54,14 @@ export function BranchFinanceManagementPage({ authorize, notify }: Props) {
   const addCashierAdvanceReconciliation = usePosStore((state) => state.addCashierAdvanceReconciliation);
   const addBranchFinanceReconciliations = usePosStore((state) => state.addBranchFinanceReconciliations);
 
+  const [kpayEnabled, setKpayEnabled] = useState(false);
   const [kpayAccountName, setKpayAccountName] = useState('');
   const [kpayAccountNumber, setKpayAccountNumber] = useState('');
   const [kpayAccountLabel, setKpayAccountLabel] = useState('');
+  const [kpayQrDataUrl, setKpayQrDataUrl] = useState('');
+  const [kpayQrDirty, setKpayQrDirty] = useState(false);
+  const [kpayQrBusy, setKpayQrBusy] = useState(false);
+  const kpayQrInputRef = useRef<HTMLInputElement>(null);
   const [openingCash, setOpeningCash] = useState('0');
   const [openingKPay, setOpeningKPay] = useState('0');
   const [startDate, setStartDate] = useState(dayKey());
@@ -83,9 +90,12 @@ export function BranchFinanceManagementPage({ authorize, notify }: Props) {
 
   useEffect(() => {
     if (!activeBranch) return;
+    setKpayEnabled(isKpayEnabled(activeBranch.settings));
     setKpayAccountName(activeBranch.settings.kpayAccountName || '');
     setKpayAccountNumber(activeBranch.settings.kpayAccountNumber || '');
     setKpayAccountLabel(activeBranch.settings.kpayAccountLabel || '');
+    setKpayQrDataUrl(isAllowedKpayQrDataUrl(activeBranch.settings.kpayQrDataUrl) ? activeBranch.settings.kpayQrDataUrl : '');
+    setKpayQrDirty(false);
     setOpeningCash(String(activeBranch.settings.cashLedgerOpeningBalance ?? 0));
     setOpeningKPay(String(activeBranch.settings.kpayLedgerOpeningBalance ?? 0));
     setStartDate(activeBranch.settings.financeLedgerStartDate || dayKey());
@@ -190,21 +200,54 @@ export function BranchFinanceManagementPage({ authorize, notify }: Props) {
     && entry.date >= (selectedAdvance.paidAt || selectedAdvance.createdAt)), [branchExpenses, selectedAdvance, branchReconciliations]);
   const chosenExpense = availableExpenses.find((entry) => entry.id === relatedExpenseId);
 
+  const handleQrFile = async (file: File | undefined) => {
+    if (!file) return;
+    setKpayQrBusy(true);
+    try {
+      const prepared = await prepareKpayQrDataUrl(file);
+      setKpayQrDataUrl(prepared);
+      setKpayQrDirty(true);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'QR ပုံကို ပြင်ဆင်မရပါ။');
+    } finally {
+      setKpayQrBusy(false);
+      if (kpayQrInputRef.current) kpayQrInputRef.current.value = '';
+    }
+  };
+
+  const removeQr = () => {
+    if (!authorize('Branch KPay QR ကို ဖယ်ရှားရန်')) return;
+    setKpayQrDataUrl('');
+    setKpayQrDirty(true);
+  };
+
   const saveAccount = (event: FormEvent) => {
     event.preventDefault();
     if (!activeBranch || !authorize('Branch KPay Account နှင့် Ledger အဖွင့်လက်ကျန် ပြင်ဆင်ရန်')) return;
     const cash = Number(openingCash); const kpay = Number(openingKPay);
     if (!Number.isSafeInteger(cash) || cash < 0 || !Number.isSafeInteger(kpay) || kpay < 0) { notify('အဖွင့်လက်ကျန်ကို သုည သို့မဟုတ် အပေါင်းပြည့်ကိန်းဖြင့် ဖြည့်ပါ။'); return; }
     if ((kpayAccountName.trim() && !kpayAccountNumber.trim()) || (!kpayAccountName.trim() && kpayAccountNumber.trim())) { notify('KPay Account အမည်နဲ့ ဖုန်းနံပါတ်ကို နှစ်ခုလုံးဖြည့်ပါ၊ သို့မဟုတ် နှစ်ခုလုံးရှင်းပါ။'); return; }
+    if (kpayEnabled && (!kpayAccountName.trim() || !kpayAccountNumber.trim())) { notify('KPay လက်ခံမှု ဖွင့်မယ်ဆိုရင် Account အမည်နဲ့ ဖုန်းနံပါတ် နှစ်ခုလုံး ဖြည့်ပါ။'); return; }
     if (kpay > 0 && (!kpayAccountName.trim() || !kpayAccountNumber.trim())) { notify('KPay အဖွင့်လက်ကျန် ထည့်မယ်ဆိုရင် Branch KPay Account ကို အရင်ဖြည့်ပါ။'); return; }
+    if (!isAllowedKpayQrDataUrl(kpayQrDataUrl)) { notify('QR ပုံ မမှန်ကန်ပါ။ PNG, JPEG သို့မဟုတ် WebP ပုံကို ပြန်ရွေးပါ။'); return; }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || Number.isNaN(Date.parse(`${startDate}T12:00:00`)) || startDate > dayKey()) { notify(`Ledger စတင်မည့်နေ့ကို ယနေ့ ${dayKey()} သို့မဟုတ် အရင်ရက်သာ ရွေးပါ။`); return; }
+    const qrChanged = kpayQrDirty && kpayQrDataUrl !== (activeBranch.settings.kpayQrDataUrl || '');
+    const qrSettings = qrChanged ? {
+      kpayQrDataUrl,
+      kpayQrVersion: nextKpayQrVersion(activeBranch.settings.kpayQrVersion),
+      kpayQrUpdatedAt: new Date().toISOString(),
+      kpayQrUpdatedBy: access.uid || 'local-owner',
+    } : {};
     setSaveBusy(true);
     updateBranch(activeBranch.id, { settings: {
+      kpayEnabled,
       kpayAccountName: kpayAccountName.trim(), kpayAccountNumber: kpayAccountNumber.trim(), kpayAccountLabel: kpayAccountLabel.trim(),
       cashLedgerOpeningBalance: cash, kpayLedgerOpeningBalance: kpay, financeLedgerStartDate: startDate,
+      ...qrSettings,
     } });
+    setKpayQrDirty(false);
     setSaveBusy(false);
-    notify('Branch KPay Account နဲ့ Ledger အဖွင့်လက်ကျန် သိမ်းပြီးပါပြီ။ Cloud Sync ပြီးနောက် ဒီ Branch ရဲ့ Cashier ဖုန်းမှာလည်း Account အချက်အလက် ရောက်ပါမယ်။');
+    notify('Branch KPay Account၊ QR နဲ့ Ledger အဖွင့်လက်ကျန် သိမ်းပြီးပါပြီ။ Cloud Sync ပြီးနောက် ဒီ Branch ရဲ့ Cashier ဖုန်းမှာလည်း ရောက်ပါမယ်။');
   };
 
   const addManualEntry = (event: FormEvent) => {
@@ -300,7 +343,31 @@ export function BranchFinanceManagementPage({ authorize, notify }: Props) {
     </div>
     <form className="panel form-panel" onSubmit={saveAccount}>
       <div className="panel-heading"><div className="panel-icon"><Store size={18}/></div><div><h3>ဒီ Branch ရဲ့ KPay Account</h3><p>ဆိုင်ခွဲတစ်ခုချင်းစီအတွက် ကိုယ်ပိုင် KPay လက်ခံအကောင့် သတ်မှတ်ပါ။ Cashier တွေက ဒီ Account အချက်အလက်ကို Branch Sync ကတစ်ဆင့် ရရှိပါမယ်။</p></div></div>
+      <label className={`kpay-enable-toggle${kpayEnabled ? '' : ' is-disabled'}`}>
+        <input type="checkbox" checked={kpayEnabled} onChange={(event) => setKpayEnabled(event.target.checked)} />
+        <span>
+          <strong>{kpayEnabled ? 'KPay လက်ခံမှု ဖွင့်ထားသည်' : 'KPay လက်ခံမှု ပိတ်ထားသည်'}</strong>
+          <small>{kpayEnabled ? 'POS မှာ ဒီ Branch အတွက် KPay ရွေးချယ်နိုင်ပါသည်။' : 'POS မှာ KPay ရွေးချယ်၍ မရပါ။ ပြောင်းလိုက်ပြီးနောက် အောက်က Save ကို နှိပ်ပါ။'}</small>
+        </span>
+      </label>
       <div className="form-grid"><label>Account Label<input value={kpayAccountLabel} onChange={(event) => setKpayAccountLabel(event.target.value)} placeholder="ဥပမာ - Main KPay"/></label><label>KPay Account အမည်<input value={kpayAccountName} onChange={(event) => setKpayAccountName(event.target.value)} placeholder="Account ပိုင်ရှင်အမည်"/></label><label>KPay ဖုန်းနံပါတ် / Account<input value={kpayAccountNumber} onChange={(event) => setKpayAccountNumber(event.target.value)} inputMode="tel" placeholder="09xxxxxxxxx"/></label><label>Ledger စတင်မည့်နေ့<input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)}/></label><label>စတင်ချိန် Cash လက်ကျန် ({settings.currency})<input type="number" min="0" step="1" value={openingCash} onChange={(event) => setOpeningCash(event.target.value)}/></label><label>စတင်ချိန် KPay လက်ကျန် ({settings.currency})<input type="number" min="0" step="1" value={openingKPay} onChange={(event) => setOpeningKPay(event.target.value)}/></label></div>
+      <div className="kpay-qr-editor">
+        <div className={`kpay-qr-preview${kpayQrDataUrl ? '' : ' empty'}`}>
+          {kpayQrDataUrl ? <img src={kpayQrDataUrl} alt="Branch KPay QR" /> : <span><QrCode size={30} /> QR မရှိသေးပါ</span>}
+        </div>
+        <div className="kpay-qr-actions">
+          <strong>KPay လက်ခံ QR ပုံ</strong>
+          <small>PNG, JPEG သို့မဟုတ် WebP ပုံကို ရွေးပါ။ App က အလိုအလျောက် ချုံ့ပြီး Cashier ဖုန်းတွေဆီ Branch Sync ကတစ်ဆင့် ပို့ပါမယ်။ Offline မှာလည်း ပြသနိုင်ပါတယ်။ SVG နှင့် အင်တာနက် Link ကို လက်မခံပါ။</small>
+          <div className="form-actions">
+            <button className="button button-outline" type="button" onClick={() => kpayQrInputRef.current?.click()} disabled={kpayQrBusy}>
+              <QrCode size={15} /> {kpayQrBusy ? 'ပြင်ဆင်နေသည်…' : kpayQrDataUrl ? 'QR ပြောင်းမည်' : 'QR ပုံရွေးမည်'}
+            </button>
+            {kpayQrDataUrl && <button className="button button-outline" type="button" onClick={removeQr} disabled={kpayQrBusy}>QR ဖယ်ရှားမည်</button>}
+          </div>
+          <input ref={kpayQrInputRef} type="file" accept={KPAY_QR_ACCEPT} hidden onChange={(event) => void handleQrFile(event.target.files?.[0])} />
+          {kpayQrDirty && <small className="field-hint">QR အသစ်/ဖယ်ရှားမှုကို သိမ်းရန် အောက်က ခလုတ်ကို နှိပ်ပါ။</small>}
+        </div>
+      </div>
       <div className="form-actions"><button className="button button-primary" type="submit" disabled={saveBusy}>{saveBusy ? 'သိမ်းဆည်းနေသည်…' : 'Branch Account / Opening Balance သိမ်းမည်'}</button></div>
       <small className="field-hint">Ledger စတင်မည့်နေ့မှစပြီး POS အရောင်း၊ Expense၊ Cashier Settlement နဲ့ Manual Entry တွေကို တွက်ချက်ပါမယ်။ နေ့စဉ် Cash Shift အဖွင့်ငွေနဲ့ မတူပါ။</small>
     </form>

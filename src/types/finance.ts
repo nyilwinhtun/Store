@@ -49,6 +49,11 @@ export interface CashierSettlementRecord {
   receiverAccountNumber?: string;
   senderAccountName?: string;
   senderAccountNumber?: string;
+  /** Immutable branch KPay account copy taken when the payout was recorded. */
+  kpayAccountNameSnapshot?: string;
+  kpayAccountNumberSnapshot?: string;
+  kpayAccountLabelSnapshot?: string;
+  kpayQrVersionSnapshot?: number;
   relatedExpenseId?: string;
   transactionReference?: string;
   receiptImageRef?: string;

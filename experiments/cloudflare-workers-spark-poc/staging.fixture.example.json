@@ -1,0 +1,38 @@
+{
+  "_note": "Template only. Do not put passwords or private keys in this file. Create the Owner and Cashier accounts manually in the Staging Firebase Console, then replace the placeholders and keep the completed copy outside Git.",
+  "projectId": "minimart-staging",
+  "environment": "staging",
+  "businessId": "store-staging-main",
+  "businessName": "Minimart Staging",
+  "owner": {
+    "email": "REPLACE_WITH_STAGING_OWNER_EMAIL",
+    "uid": "REPLACE_WITH_STAGING_OWNER_UID",
+    "role": "owner"
+  },
+  "branches": [
+    {
+      "id": "branch-staging-main",
+      "name": "Staging Main",
+      "status": "active",
+      "settings": {
+        "kpayEnabled": false
+      }
+    }
+  ],
+  "cashiers": [
+    {
+      "email": "REPLACE_WITH_STAGING_CASHIER_EMAIL",
+      "uid": "REPLACE_WITH_STAGING_CASHIER_UID",
+      "displayName": "Staging Cashier",
+      "role": "cashier",
+      "status": "active",
+      "branchIds": ["branch-staging-main"],
+      "canReceiveStock": true
+    }
+  ],
+  "isolation": {
+    "productionProjectId": "minimart-production",
+    "productionBusinessId": "store-mini-main",
+    "mustUseSeparateFirestoreRegion": true
+  }
+}

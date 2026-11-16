@@ -31,6 +31,17 @@ service cloud.firestore {
       return /databases/$(database)/documents/businesses/$(businessId)/branches/$(branchId)/sales/$(saleId);
     }
 
+    function cashShiftPath(businessId, branchId, shiftId) {
+      return /databases/$(database)/documents/businesses/$(businessId)/branches/$(branchId)/cashShifts/$(shiftId);
+    }
+
+    function branchCashierExpenseApprovalLimit(businessId, branchId) {
+      let settings = get(branchPath(businessId, branchId)).data.payload.settings;
+      return settings is map && settings.get('cashierExpenseApprovalLimit', 50000) is number
+        ? settings.get('cashierExpenseApprovalLimit', 50000)
+        : 50000;
+    }
+
     function isBusinessOwner(businessId) {
       // Keep the authentication check before any Rules document lookup so
       // anonymous requests do not trigger unnecessary dependent reads.
@@ -90,15 +101,27 @@ service cloud.firestore {
         && isActiveBranch(businessId, branchId);
     }
 
-    function branchHasConfiguredKPay(businessId, branchId) {
-      let branchDoc = get(branchPath(businessId, branchId));
-      return branchDoc != null
-        && branchDoc.data.payload is map
-        && branchDoc.data.payload.settings is map
-        && branchDoc.data.payload.settings.kpayAccountName is string
-        && branchDoc.data.payload.settings.kpayAccountName.size() > 0
-        && branchDoc.data.payload.settings.kpayAccountNumber is string
-        && branchDoc.data.payload.settings.kpayAccountNumber.size() > 0;
+    // The Owner-managed Branch KPay QR is an inline raster data URL so Cashiers
+    // can show it offline from the cached Branch document. SVG, remote URLs and
+    // oversized values are rejected. An empty string means "no QR configured".
+    function validBranchKpayQr(settings) {
+      return (!settings.keys().hasAny(['kpayQrDataUrl'])
+          || (settings.kpayQrDataUrl is string
+            && settings.kpayQrDataUrl.size() <= 60000
+            && (settings.kpayQrDataUrl == ''
+              || settings.kpayQrDataUrl.matches('^data:image/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$'))))
+        && (!settings.keys().hasAny(['kpayQrVersion'])
+          || (settings.kpayQrVersion is number && settings.kpayQrVersion >= 0))
+        && (!settings.keys().hasAny(['kpayQrUpdatedAt'])
+          || (settings.kpayQrUpdatedAt is string && settings.kpayQrUpdatedAt.size() <= 40))
+        && (!settings.keys().hasAny(['kpayQrUpdatedBy'])
+          || (settings.kpayQrUpdatedBy is string && settings.kpayQrUpdatedBy.size() <= 128));
+    }
+
+    function validBranchSettings(branchDoc) {
+      return !(branchDoc.payload is map)
+        || !(branchDoc.payload.settings is map)
+        || validBranchKpayQr(branchDoc.payload.settings);
     }
 
     function isStockReceiverForBranch(businessId, branchId) {
@@ -131,32 +154,6 @@ service cloud.firestore {
         && request.resource.data.payload.receivedAt is string
         && request.resource.data.payload.receivedItems is list
         && request.resource.data.payload.receivedItems.size() == resource.data.payload.items.size();
-    }
-
-    function validCashierSaleAuditCreate(businessId, branchId, eventId) {
-      let saleId = request.resource.data.saleId;
-      let linkedSale = salePath(businessId, branchId, saleId);
-      let afterSale = getAfter(linkedSale);
-      return isCashierForBranch(businessId, branchId)
-        && request.resource.data.keys().hasOnly([
-          'id', 'eventType', 'branchId', 'saleId', 'receiptNo', 'actorUid',
-          'actorEmail', 'actorName', 'occurredAt', 'total'
-        ])
-        && request.resource.data.id == eventId
-        && eventId == request.resource.data.saleId + '__created'
-        && request.resource.data.eventType == 'SALE_CREATED'
-        && request.resource.data.branchId == branchId
-        && request.resource.data.actorUid == request.auth.uid
-        && request.resource.data.saleId is string
-        && request.resource.data.receiptNo is string
-        && request.resource.data.occurredAt is string
-        && request.resource.data.total is number
-        && !exists(linkedSale)
-        && afterSale != null
-        && afterSale.data.kind == 'sales'
-        && afterSale.data.branchId == branchId
-        && afterSale.data.payload.createdByUid == request.auth.uid
-        && afterSale.data.payload.status == 'completed';
     }
 
     function validOwnerVoidAuditCreate(businessId, branchId, eventId) {
@@ -199,49 +196,6 @@ service cloud.firestore {
         && (!request.resource.data.keys().hasAny(['canReceiveStock']) || request.resource.data.canReceiveStock is bool);
     }
 
-    function validCashierSaleCreate(businessId, branchId, saleId) {
-      let payload = request.resource.data.payload;
-      return isCashierForBranch(businessId, branchId)
-        && request.resource.data.keys().hasOnly([
-          'scope', 'kind', 'branchId', 'deleted', 'updatedAt', 'updatedBy', 'payload'
-        ])
-        && request.resource.data.scope == 'branchRecord'
-        && request.resource.data.kind == 'sales'
-        && request.resource.data.branchId == branchId
-        && request.resource.data.deleted == false
-        && request.resource.data.updatedBy == request.auth.uid
-        && request.resource.data.updatedAt is string
-        && payload is map
-        && payload.id == saleId
-        && payload.branchId == branchId
-        && payload.createdByUid == request.auth.uid
-        && payload.status == 'completed'
-        && payload.receiptNo is string
-        && payload.items is list
-        && payload.items.size() > 0
-        && payload.total is number
-        && payload.total >= 0
-        && payload.paymentMethod in ['Cash', 'KPay', 'Credit']
-        && (payload.paymentMethod != 'KPay'
-          || (payload.kpayTransactionReference is string
-            && payload.kpayTransactionReference.size() > 0
-            && branchHasConfiguredKPay(businessId, branchId)))
-        && payload.productDeltas is map
-        && payload.productDeltas.keys().size() > 0
-        && payload.stockLines is list
-        && payload.stockLines.size() == payload.productDeltas.keys().size()
-        && (
-          (payload.cashierSyncVersion == 1
-            && (!payload.keys().hasAny(['batchDeltas']) || payload.batchDeltas is map)
-            && (!payload.keys().hasAny(['batchLines']) || payload.batchLines is list))
-          || (payload.cashierSyncVersion == 2
-            && payload.batchDeltas is map
-            && payload.batchDeltas.keys().size() >= payload.productDeltas.keys().size()
-            && payload.batchLines is list
-            && payload.batchLines.size() == payload.batchDeltas.keys().size())
-        );
-    }
-
     // Allows a Cashier to flag their own completed sale with a Void Request for the Owner.
     function validCashierSaleVoidRequest(businessId, branchId) {
       return isCashierForBranch(businessId, branchId)
@@ -262,19 +216,29 @@ service cloud.firestore {
 
     // Allows a Cashier to record a Customer Credit payment on an open Credit invoice.
     function validCashierCreditSalePaymentUpdate(businessId, branchId) {
+      let previous = resource.data.payload;
+      let next = request.resource.data.payload;
+      let previousPaid = previous.get('paidAmount', 0);
+      let previousDue = previous.get('dueAmount', previous.total);
       return isCashierForBranch(businessId, branchId)
         && resource.data.kind == 'sales'
         && resource.data.branchId == branchId
         && resource.data.deleted != true
-        && resource.data.payload.paymentMethod == 'Credit'
-        && resource.data.payload.status == 'completed'
+        && previous.paymentMethod == 'Credit'
+        && previous.status == 'completed'
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['payload', 'updatedAt', 'updatedBy'])
         && request.resource.data.updatedBy == request.auth.uid
-        && request.resource.data.payload.diff(resource.data.payload).affectedKeys().hasOnly(['paidAmount', 'dueAmount'])
-        && request.resource.data.payload.paidAmount is number
-        && request.resource.data.payload.dueAmount is number
-        && request.resource.data.payload.paidAmount >= 0
-        && request.resource.data.payload.dueAmount >= 0;
+        && next.diff(previous).affectedKeys().hasOnly(['paidAmount', 'dueAmount'])
+        && next.paidAmount is number
+        && next.dueAmount is number
+        && next.paidAmount >= 0
+        && next.dueAmount >= 0
+        // Payments may only move a Credit invoice forward, never reduce prior payments.
+        && previousPaid is number
+        && previous.total is number
+        && next.paidAmount >= previousPaid
+        && next.dueAmount <= previousDue
+        && next.paidAmount + next.dueAmount == previous.total;
     }
 
     function validCashierExpenseCreate(businessId, branchId, expenseId) {
@@ -314,98 +278,154 @@ service cloud.firestore {
         && (payload.fundedBy != 'branch-cash' || payload.paymentMethod == 'cash')
         && (payload.fundedBy != 'branch-kpay' || payload.paymentMethod == 'kpay')
         && payload.approvalStatus in ['pending', 'not-required']
+        // Branch funds above the Owner-configured threshold always require approval.
+        && (payload.amount <= branchCashierExpenseApprovalLimit(businessId, branchId)
+          || payload.approvalStatus == 'pending')
         && (!payload.keys().hasAny(['reviewStatus']) || payload.reviewStatus == 'submitted')
         && (!payload.keys().hasAny(['submittedAt']) || payload.submittedAt is string)
         && payload.updatedAt is string
         && payload.updatedByUid == request.auth.uid;
     }
 
-    function validCashierBranchRecordWrite(businessId, branchId, collectionName, recordId) {
+    function cashierRecordEnvelope(branchId, collectionName, recordId) {
       let payload = request.resource.data.payload;
-      return isCashierForBranch(businessId, branchId)
-        && collectionName in ['cashShifts', 'cashMovements', 'customerPayments']
+      return request.resource.data.keys().hasOnly([
+          'scope', 'kind', 'branchId', 'deleted', 'updatedAt', 'updatedBy', 'payload'
+        ])
         && request.resource.data.scope == 'branchRecord'
         && request.resource.data.kind == collectionName
         && request.resource.data.branchId == branchId
         && request.resource.data.deleted == false
         && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.updatedAt is string
         && payload is map
         && payload.id == recordId
         && payload.branchId == branchId;
     }
 
-    function linkedProductStockReduction(businessId, branchId, productId) {
-      let saleId = request.resource.data.sourceSaleId;
-      let linkedSale = salePath(businessId, branchId, saleId);
-      let afterSale = getAfter(linkedSale);
-      let reduction = resource.data.payload.stock - request.resource.data.payload.stock;
-      return isCashierForBranch(businessId, branchId)
-        && resource.data.kind == 'products'
-        && resource.data.branchId == branchId
-        && resource.data.deleted != true
-        && request.resource.data.scope == 'branchRecord'
-        && request.resource.data.kind == 'products'
-        && request.resource.data.branchId == branchId
-        && request.resource.data.deleted == false
-        && request.resource.data.updatedBy == request.auth.uid
-        && request.resource.data.sourceSaleId is string
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'payload', 'updatedAt', 'updatedBy', 'sourceSaleId'
-        ])
-        && request.resource.data.payload.diff(resource.data.payload).affectedKeys().hasOnly(['stock'])
-        && resource.data.payload.stock is number
-        && request.resource.data.payload.stock is number
-        && reduction > 0
-        && request.resource.data.payload.stock >= 0
-        && !exists(linkedSale)
-        && afterSale != null
-        && afterSale.data.kind == 'sales'
-        && afterSale.data.branchId == branchId
-        && afterSale.data.updatedBy == request.auth.uid
-        && afterSale.data.payload.createdByUid == request.auth.uid
-        && afterSale.data.payload.status == 'completed'
-        && afterSale.data.payload.productDeltas[productId] == reduction
-        && afterSale.data.payload.stockLines is list
-        && afterSale.data.payload.stockLines.hasAny([{'productId': productId, 'quantity': reduction}]);
+    function validCashierCashShiftCreatePayload(payload) {
+      return payload.keys().hasOnly(['id', 'branchId', 'openedAt', 'openedBy', 'openedByUid', 'openingCash', 'note'])
+        && payload.openedAt is string
+        && payload.openedBy is string
+        && payload.openedBy.size() > 0
+        && payload.openedBy.size() <= 120
+        && (!payload.keys().hasAny(['openedByUid']) || payload.openedByUid == request.auth.uid)
+        && payload.openingCash is number
+        && payload.openingCash >= 0
+        && payload.note is string
+        && payload.note.size() <= 500;
     }
 
-    function linkedBatchStockReduction(businessId, branchId, batchId) {
-      let saleId = request.resource.data.sourceSaleId;
-      let linkedSale = salePath(businessId, branchId, saleId);
-      let afterSale = getAfter(linkedSale);
-      let reduction = resource.data.payload.quantity - request.resource.data.payload.quantity;
+    function validCashierCashMovementCreatePayload(businessId, branchId, payload) {
+      return payload.keys().hasOnly([
+          'id', 'branchId', 'shiftId', 'date', 'direction', 'amount', 'note',
+          'createdByUid', 'createdByName'
+        ])
+        && payload.shiftId is string
+        && payload.shiftId.size() > 0
+        && payload.date is string
+        && payload.direction in ['in', 'out']
+        && payload.amount is number
+        && payload.amount > 0
+        && payload.note is string
+        && payload.note.size() > 0
+        && payload.note.size() <= 500
+        && (!payload.keys().hasAny(['createdByUid']) || payload.createdByUid == request.auth.uid)
+        && (!payload.keys().hasAny(['createdByName']) || payload.createdByName is string)
+        // A movement must belong to an existing open Shift in the same Branch.
+        && exists(cashShiftPath(businessId, branchId, payload.shiftId))
+        && get(cashShiftPath(businessId, branchId, payload.shiftId)).data.payload.branchId == branchId
+        && !('closedAt' in get(cashShiftPath(businessId, branchId, payload.shiftId)).data.payload);
+    }
+
+    function validCashierCustomerPaymentCreatePayload(businessId, branchId, payload) {
+      let sale = get(salePath(businessId, branchId, payload.saleId));
+      return payload.keys().hasOnly([
+          'id', 'branchId', 'customerId', 'saleId', 'amount', 'date', 'note', 'paymentMethod',
+          'kpayAccountNameSnapshot', 'kpayAccountNumberSnapshot', 'kpayAccountLabelSnapshot', 'kpayQrVersionSnapshot'
+        ])
+        && payload.customerId is string
+        && payload.customerId.size() > 0
+        && payload.saleId is string
+        && payload.saleId.size() > 0
+        && payload.amount is number
+        && payload.amount > 0
+        && payload.date is string
+        && payload.note is string
+        && payload.note.size() <= 500
+        && (!payload.keys().hasAny(['paymentMethod']) || payload.paymentMethod in ['Cash', 'Transfer'])
+        // Snapshots record the account used at payment time; they must not be forced
+        // to match the branch's current KPay settings.
+        && (!payload.keys().hasAny(['kpayAccountNameSnapshot']) || (payload.kpayAccountNameSnapshot is string && payload.kpayAccountNameSnapshot.size() <= 120))
+        && (!payload.keys().hasAny(['kpayAccountNumberSnapshot']) || (payload.kpayAccountNumberSnapshot is string && payload.kpayAccountNumberSnapshot.size() <= 120))
+        && (!payload.keys().hasAny(['kpayAccountLabelSnapshot']) || (payload.kpayAccountLabelSnapshot is string && payload.kpayAccountLabelSnapshot.size() <= 120))
+        && (!payload.keys().hasAny(['kpayQrVersionSnapshot']) || (payload.kpayQrVersionSnapshot is number && payload.kpayQrVersionSnapshot >= 0))
+        && exists(salePath(businessId, branchId, payload.saleId))
+        && sale.data.kind == 'sales'
+        && sale.data.branchId == branchId
+        && sale.data.deleted != true
+        && sale.data.payload.status == 'completed'
+        && sale.data.payload.paymentMethod == 'Credit'
+        && sale.data.payload.customerId == payload.customerId
+        && sale.data.payload.dueAmount is number
+        && payload.amount <= sale.data.payload.dueAmount;
+    }
+
+    function validCashierBranchRecordCreate(businessId, branchId, collectionName, recordId) {
+      let payload = request.resource.data.payload;
       return isCashierForBranch(businessId, branchId)
-        && resource.data.kind == 'stockBatches'
+        && collectionName in ['cashShifts', 'cashMovements', 'customerPayments']
+        && cashierRecordEnvelope(branchId, collectionName, recordId)
+        && ((collectionName == 'cashShifts' && validCashierCashShiftCreatePayload(payload))
+          || (collectionName == 'cashMovements' && validCashierCashMovementCreatePayload(businessId, branchId, payload))
+          || (collectionName == 'customerPayments' && validCashierCustomerPaymentCreatePayload(businessId, branchId, payload)));
+    }
+
+    // Cashiers may only close an open Shift they are operating. Opening fields are
+    // immutable, the variance must reconcile, and the closer is stamped from auth.
+    function validCashierCashShiftUpdate(businessId, branchId) {
+      let previous = resource.data.payload;
+      let next = request.resource.data.payload;
+      return isCashierForBranch(businessId, branchId)
+        && resource.data.scope == 'branchRecord'
+        && resource.data.kind == 'cashShifts'
         && resource.data.branchId == branchId
         && resource.data.deleted != true
         && request.resource.data.scope == 'branchRecord'
-        && request.resource.data.kind == 'stockBatches'
+        && request.resource.data.kind == 'cashShifts'
         && request.resource.data.branchId == branchId
         && request.resource.data.deleted == false
         && request.resource.data.updatedBy == request.auth.uid
-        && request.resource.data.sourceSaleId is string
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'payload', 'updatedAt', 'updatedBy', 'sourceSaleId'
+        && request.resource.data.updatedAt is string
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['payload', 'updatedAt', 'updatedBy'])
+        && next.keys().hasOnly([
+          'id', 'branchId', 'openedAt', 'openedBy', 'openedByUid', 'openingCash',
+          'closedAt', 'closedByUid', 'closedByName', 'closingCash', 'expectedCash', 'variance', 'note'
         ])
-        && request.resource.data.payload.diff(resource.data.payload).affectedKeys().hasOnly(['quantity'])
-        && resource.data.payload.quantity is number
-        && request.resource.data.payload.quantity is number
-        && reduction > 0
-        && request.resource.data.payload.quantity >= 0
-        && !exists(linkedSale)
-        && afterSale != null
-        && afterSale.data.kind == 'sales'
-        && afterSale.data.branchId == branchId
-        && afterSale.data.updatedBy == request.auth.uid
-        && afterSale.data.payload.createdByUid == request.auth.uid
-        && afterSale.data.payload.status == 'completed'
-        && afterSale.data.payload.batchDeltas[batchId] == reduction
-        && afterSale.data.payload.batchLines is list
-        && afterSale.data.payload.batchLines.hasAny([{
-          'batchId': batchId,
-          'productId': resource.data.payload.productId,
-          'quantity': reduction
-        }]);
+        && next.id == previous.id
+        && next.get('branchId', branchId) == previous.get('branchId', branchId)
+        && next.openedAt == previous.openedAt
+        && next.openedBy == previous.openedBy
+        && next.openingCash == previous.openingCash
+        && (!('openedByUid' in previous) || next.openedByUid == previous.openedByUid)
+        && next.note is string
+        && next.note.size() <= 1000
+        && (!('closedAt' in previous)
+          ? next.closedAt is string
+            && next.closedByUid == request.auth.uid
+            && next.closedByName is string
+            && next.closingCash is number
+            && next.closingCash >= 0
+            && next.expectedCash is number
+            && next.expectedCash >= 0
+            && next.variance is number
+            && next.variance == next.closingCash - next.expectedCash
+          : next.closedAt == previous.closedAt
+            && next.closedByUid == previous.closedByUid
+            && next.closedByName == previous.closedByName
+            && next.closingCash == previous.closingCash
+            && next.expectedCash == previous.expectedCash
+            && next.variance == previous.variance);
     }
 
     function sharedPriceGroupPath(businessId, groupId) {
@@ -573,12 +593,14 @@ service cloud.firestore {
             && resource.data.payload is map
             && resource.data.payload.status == 'active');
         allow list: if isOwner(businessId);
-        allow create, update, delete: if isOwner(businessId);
+        allow create: if isOwner(businessId) && validBranchSettings(request.resource.data);
+        allow update: if isOwner(businessId) && validBranchSettings(request.resource.data);
+        allow delete: if isOwner(businessId);
 
         match /{collectionName}/{recordId} {
           allow get: if isOwner(businessId)
             || (isCashierForBranch(businessId, branchId)
-              && (collectionName in ['categories', 'products', 'stockBatches', 'cashShifts', 'cashMovements', 'customerPayments']
+              && (collectionName in ['categories', 'products', 'stockBatches', 'stockUnitRegistries', 'cashShifts', 'cashMovements', 'customerPayments']
                 || (collectionName == 'stockShipments' && isStockReceiverForBranch(businessId, branchId))
                 || (collectionName == 'expenses'
                   && (!exists(/databases/$(database)/documents/businesses/$(businessId)/branches/$(branchId)/expenses/$(recordId))
@@ -590,11 +612,14 @@ service cloud.firestore {
                     || resource.data.payload.branchId == branchId))
                 || (collectionName == 'auditEvents'
                   && (!exists(/databases/$(database)/documents/businesses/$(businessId)/branches/$(branchId)/auditEvents/$(recordId))
+                    || resource.data.actorUid == request.auth.uid))
+                || (collectionName == 'saleReturns'
+                  && (!exists(/databases/$(database)/documents/businesses/$(businessId)/branches/$(branchId)/saleReturns/$(recordId))
                     || resource.data.actorUid == request.auth.uid))));
 
           allow list: if isOwner(businessId)
             || (isCashierForBranch(businessId, branchId)
-              && (collectionName in ['categories', 'products', 'stockBatches', 'cashShifts', 'cashMovements', 'customerPayments']
+              && (collectionName in ['categories', 'products', 'stockBatches', 'stockUnitRegistries', 'cashShifts', 'cashMovements', 'customerPayments']
                 || (collectionName == 'stockShipments' && isStockReceiverForBranch(businessId, branchId))
                 || (collectionName == 'expenses'
                   && request.query.limit <= 500
@@ -604,25 +629,28 @@ service cloud.firestore {
                   && resource.data.payload.cashierUid == request.auth.uid)
                 || (collectionName == 'sales'
                   && request.query.limit <= 500
-                  && resource.data.payload.createdByUid == request.auth.uid)));
+                  && resource.data.payload.createdByUid == request.auth.uid)
+                || (collectionName == 'saleReturns'
+                  && request.query.limit <= 500
+                  && resource.data.actorUid == request.auth.uid)));
 
-          allow create: if (isOwner(businessId) && collectionName != 'auditEvents'
+          // Cashier Sales, their stock deductions and their SALE_CREATED audit
+          // records are written only by the trusted Admin SDK callable. Direct
+          // Cashier Sale creation would bypass server-side price, cost, discount,
+          // customer, expiry and tracked-unit validation.
+          allow create: if (isOwner(businessId) && collectionName != 'auditEvents' && collectionName != 'saleReturns'
               && (collectionName != 'products' || validProductSharedPriceCreate(businessId, branchId, recordId)))
-            || (collectionName == 'sales' && validCashierSaleCreate(businessId, branchId, recordId))
             || (collectionName == 'expenses' && validCashierExpenseCreate(businessId, branchId, recordId))
-            || validCashierBranchRecordWrite(businessId, branchId, collectionName, recordId)
-            || (collectionName == 'auditEvents' && (validCashierSaleAuditCreate(businessId, branchId, recordId)
-              || validOwnerVoidAuditCreate(businessId, branchId, recordId)));
+            || validCashierBranchRecordCreate(businessId, branchId, collectionName, recordId)
+            || (collectionName == 'auditEvents' && validOwnerVoidAuditCreate(businessId, branchId, recordId));
 
-          allow update: if (isOwner(businessId) && collectionName != 'auditEvents' && collectionName != 'branchFinanceReconciliations'
+          allow update: if (isOwner(businessId) && collectionName != 'auditEvents' && collectionName != 'saleReturns' && collectionName != 'branchFinanceReconciliations'
               && (collectionName != 'products' || validProductSharedPriceUpdate(businessId, branchId, recordId)))
             || (collectionName == 'stockShipments' && validStockShipmentReceiptUpdate(businessId, branchId))
-            || (collectionName == 'products' && linkedProductStockReduction(businessId, branchId, recordId))
-            || (collectionName == 'stockBatches' && linkedBatchStockReduction(businessId, branchId, recordId))
             || (collectionName == 'sales' && (validCashierSaleVoidRequest(businessId, branchId) || validCashierCreditSalePaymentUpdate(businessId, branchId)))
-            || (collectionName == 'cashShifts' && validCashierBranchRecordWrite(businessId, branchId, collectionName, recordId));
+            || (collectionName == 'cashShifts' && validCashierCashShiftUpdate(businessId, branchId));
 
-          allow delete: if isOwner(businessId) && collectionName != 'auditEvents' && collectionName != 'branchFinanceReconciliations'
+          allow delete: if isOwner(businessId) && collectionName != 'auditEvents' && collectionName != 'saleReturns' && collectionName != 'branchFinanceReconciliations'
             && (collectionName != 'products' || validLinkedProductDelete(businessId, branchId, recordId));
         }
       }
@@ -634,8 +662,10 @@ service cloud.firestore {
       match /shared/{collectionName}/records/{recordId} {
         // Price Group master records are Owner-only. Cashiers receive the effective
         // retail/wholesale price through their assigned Branch Product documents.
+        // Cashiers only need the Shared Customer directory (credit sales and
+        // collection); Supplier contacts, notes and procurement data stay Owner-only.
         allow get: if isOwner(businessId)
-          || (collectionName != 'priceGroups' && isActiveMember(businessId));
+          || (collectionName == 'customers' && isActiveMember(businessId));
         allow list: if isOwner(businessId) || (isActiveMember(businessId) && collectionName == 'customers');
         allow create: if (isOwner(businessId)
             && (collectionName != 'priceGroups' || validSharedPriceGroupWrite(recordId)))
