@@ -16,6 +16,7 @@
     "check:staging": "node scripts/verify-staging-config.mjs",
     "test:rules": "firebase emulators:exec --only firestore --project demo-minimart-pos-security \"node --test tests/firestore.rules.test.mjs\"",
     "test:sync": "node scripts/test-sync-safety.mjs",
+    "test:autosync": "node scripts/test-auto-sync-status.mjs",
     "test:cash": "node scripts/test-cashier-cash.mjs",
     "test:qr": "node scripts/test-kpay-qr.mjs",
     "test:cursor": "node scripts/test-cashier-sync-cursor.mjs",

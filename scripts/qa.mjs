@@ -65,6 +65,7 @@ const steps = [
   ['Security source preflight', npm, ['run', 'check:security']],
   ['Staging preparation preflight', npm, ['run', 'check:staging']],
   ['Sync safety unit tests', npm, ['run', 'test:sync']],
+  ['Auto-sync status namespace tests', npm, ['run', 'test:autosync']],
   ['Cashier cash outbox unit tests', npm, ['run', 'test:cash']],
   ['KPay QR validation unit tests', npm, ['run', 'test:qr']],
   ['Cashier incremental cursor unit tests', npm, ['run', 'test:cursor']],
