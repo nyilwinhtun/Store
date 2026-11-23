@@ -1639,6 +1639,7 @@ td strong { color: var(--color-text); }
   pointer-events: none;
   box-shadow: 0 8px 24px rgba(15, 23, 42, .22);
 }
+.runtime-badge-inline { position: static; z-index: auto; box-shadow: none; pointer-events: auto; }
 .runtime-badge-dot { width: 7px; height: 7px; border-radius: 50%; background: #fbbf24; box-shadow: 0 0 0 3px rgba(251, 191, 36, .28); }
 .runtime-badge-emulator { background: #78350f; color: #fde68a; border: 1px solid #b45309; }
 .runtime-badge-staging { background: #0c4a6e; color: #bae6fd; border: 1px solid #0284c7; }

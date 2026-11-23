@@ -6,7 +6,6 @@ import { AccessBootstrap } from './components/AccessBootstrap';
 import { OwnerAutoSyncProvider } from './components/OwnerAutoSync';
 import { CashierAutoSyncProvider } from './components/CashierAutoSync';
 import { AppUpdateBanner } from './components/AppUpdateBanner';
-import { RuntimeBadge } from './components/RuntimeBadge';
 
 class AppErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
   state = { hasError: false };
@@ -66,6 +65,5 @@ createRoot(document.getElementById('root')!).render(
       <App />
     </StrictMode>
     <AppUpdateBanner />
-    <RuntimeBadge />
   </AppErrorBoundary>,
 );
