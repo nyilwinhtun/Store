@@ -10,10 +10,10 @@ const TEST_ONLY_ENV = ['FIRESTORE_EMULATOR_HOST', 'FIREBASE_JWKS_URL', 'POC_NOW'
 
 let runtime = null;
 
-function assertNoTestOverrides(env) {
+function assertNoTestOverrides(env, environment) {
   const configured = TEST_ONLY_ENV.filter((name) => String(env?.[name] ?? '').trim() !== '');
   if (configured.length) {
-    throw new Error(`Staging Worker must not configure test-only overrides: ${configured.join(', ')}`);
+    throw new Error(`${environment === 'production' ? 'Production' : 'Staging'} Worker must not configure test-only overrides: ${configured.join(', ')}`);
   }
 }
 
@@ -41,9 +41,10 @@ export function resolveCorsOrigins(env) {
 }
 
 /**
- * Staging deploys set ENVIRONMENT=staging. That deploy must never carry the
- * Production project/business pair, no deploy may keep a config placeholder,
- * and Staging must not inherit local test overrides.
+ * Staging deploys set ENVIRONMENT=staging and must never carry Production IDs.
+ * Production deploys set ENVIRONMENT=production and must strictly pair with
+ * minimart-production + store-mini-main. Neither may keep placeholders or
+ * inherit local test-only overrides.
  */
 export function resolveWorkerTarget(env) {
   const projectId = String(env?.FIREBASE_PROJECT_ID || '').trim();
@@ -54,10 +55,17 @@ export function resolveWorkerTarget(env) {
   }
   const environment = String(env?.ENVIRONMENT || '').trim().toLowerCase();
   if (environment === 'staging') {
-    assertNoTestOverrides(env);
+    assertNoTestOverrides(env, environment);
     if (projectId === PRODUCTION_PROJECT_ID || businessId === PRODUCTION_BUSINESS_ID) {
       throw new Error('Staging Worker must never target Production Firebase.');
     }
+  } else if (environment === 'production') {
+    assertNoTestOverrides(env, environment);
+    if (projectId !== PRODUCTION_PROJECT_ID || businessId !== PRODUCTION_BUSINESS_ID) {
+      throw new Error('Production Worker must strictly target minimart-production and store-mini-main.');
+    }
+  } else if (projectId === PRODUCTION_PROJECT_ID || businessId === PRODUCTION_BUSINESS_ID) {
+    throw new Error('Production project/business requires ENVIRONMENT = "production".');
   }
   return { projectId, businessId, environment };
 }
@@ -67,6 +75,14 @@ export function buildRuntime(env) {
   const allowedOrigins = resolveCorsOrigins(env);
   if (environment === 'staging' && allowedOrigins.length === 0) {
     throw new Error('Staging Worker requires at least one exact CORS_ALLOWED_ORIGINS value.');
+  }
+  if (environment === 'production') {
+    if (allowedOrigins.length === 0 || allowedOrigins.some((origin) => !origin.startsWith('https://'))) {
+      throw new Error('Production Worker requires non-empty exact HTTPS CORS_ALLOWED_ORIGINS.');
+    }
+    if (String(env?.CHECK_TOKEN_REVOCATION || '').trim() !== 'true') {
+      throw new Error('Production Worker requires CHECK_TOKEN_REVOCATION = "true".');
+    }
   }
   const credential = createCredentialFromEnv(env, {}, projectId);
   const firestore = new FirestoreRest({

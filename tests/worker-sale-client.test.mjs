@@ -145,10 +145,13 @@ test('the Worker gate stays off in this build and checkout routes through it onl
   assert.match(syncSource, /commitCashierUnitSaleToCloud/);
 });
 
-test('the Worker gate requires an explicit Staging build and a safe endpoint', () => {
+test('the Worker gate allows explicit Staging or Production opt-in with a safe endpoint and keeps emulator disabled', () => {
   const base = { flag: 'true', url: endpoint, mode: 'staging', dev: false };
   assert.equal(resolveWorkerSalesGate(base).enabled, true);
-  assert.equal(resolveWorkerSalesGate({ ...base, mode: 'production' }).enabled, false);
+  assert.equal(resolveWorkerSalesGate({ ...base, mode: 'production' }).enabled, true);
+  assert.equal(resolveWorkerSalesGate({ ...base, mode: 'production', flag: 'false' }).enabled, false);
+  assert.equal(resolveWorkerSalesGate({ ...base, mode: 'production', url: 'http://worker.example.test/api/sales/commit' }).enabled, false);
+  assert.equal(resolveWorkerSalesGate({ ...base, mode: 'production', url: 'http://localhost:8787/api/sales/commit', dev: true }).enabled, false);
   assert.equal(resolveWorkerSalesGate({ ...base, mode: 'emulator' }).enabled, false);
   assert.equal(resolveWorkerSalesGate({ ...base, flag: 'false' }).enabled, false);
   assert.equal(resolveWorkerSalesGate({ ...base, url: 'http://worker.example.test/api/sales/commit' }).enabled, false);

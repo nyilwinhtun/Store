@@ -7,6 +7,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pocDir = path.join(root, 'experiments/cloudflare-workers-spark-poc');
 const stagingConfig = path.join(pocDir, 'wrangler.staging.toml');
 const exampleConfig = path.join(pocDir, 'wrangler.staging.example.toml');
+const productionConfig = path.join(pocDir, 'wrangler.production.toml');
+const productionExampleConfig = path.join(pocDir, 'wrangler.production.example.toml');
 const fixturePath = path.join(pocDir, 'staging.fixture.example.json');
 const productionProject = 'minimart-production';
 const productionBusiness = 'store-mini-main';
@@ -86,8 +88,53 @@ const wrangler = read('experiments/cloudflare-workers-spark-poc/wrangler.toml');
 if (!/workers_dev\s*=\s*false/.test(wrangler)) fail('Production Worker config must keep workers_dev = false.');
 else pass('Production Worker config is not publicly deployed (workers_dev = false).');
 
+if (!existsSync(productionExampleConfig)) fail('wrangler.production.example.toml is missing.');
+else {
+  const prodExample = readFileSync(productionExampleConfig, 'utf8');
+  if (!prodExample.includes('REPLACE_WITH_PRODUCTION_PROJECT_ID')) fail('Production example must keep the project placeholder.');
+  else if (!/BUSINESS_ID\s*=\s*"store-mini-main"/.test(prodExample)) fail('Production example must set BUSINESS_ID = "store-mini-main".');
+  else if (!/ENVIRONMENT\s*=\s*"production"/.test(prodExample)) fail('Production example must set ENVIRONMENT = "production".');
+  else if (!/CHECK_TOKEN_REVOCATION\s*=\s*"true"/.test(prodExample)) fail('Production example must set CHECK_TOKEN_REVOCATION = "true".');
+  else if (!/CORS_ALLOWED_ORIGINS\s*=\s*"[^"]+"/.test(prodExample)) fail('Production example must include CORS_ALLOWED_ORIGINS.');
+  else if (/private_key|FIRESTORE_SERVICE_ACCOUNT\s*=/.test(prodExample)) fail('Production example must not contain secrets.');
+  else pass('Production example keeps placeholders, production guard, CORS origins and no secret values.');
+}
+
+if (!existsSync(productionConfig)) {
+  warn('wrangler.production.toml is not created yet (Owner action for Production Worker deploy).');
+} else {
+  const localProd = readFileSync(productionConfig, 'utf8');
+  if (localProd.includes('REPLACE_WITH_PRODUCTION_PROJECT_ID')) fail('wrangler.production.toml still has the project placeholder.');
+  else if (!localProd.includes(`FIREBASE_PROJECT_ID = "${productionProject}"`)) fail('wrangler.production.toml must target minimart-production.');
+  else if (!localProd.includes(`BUSINESS_ID = "${productionBusiness}"`)) fail('wrangler.production.toml must use store-mini-main.');
+  else if (!/ENVIRONMENT\s*=\s*"production"/.test(localProd)) fail('wrangler.production.toml must set ENVIRONMENT = "production".');
+  else if (!/CHECK_TOKEN_REVOCATION\s*=\s*"true"/.test(localProd)) fail('wrangler.production.toml must set CHECK_TOKEN_REVOCATION = "true".');
+  else if (/\b(FIRESTORE_EMULATOR_HOST|FIREBASE_JWKS_URL|POC_NOW|POC_DEBUG)\b/.test(localProd)) fail('wrangler.production.toml must not contain test-only overrides.');
+  else if (/private_key|FIRESTORE_SERVICE_ACCOUNT\s*=/.test(localProd)) fail('wrangler.production.toml must not contain a secret value.');
+  else {
+    const origins = /CORS_ALLOWED_ORIGINS\s*=\s*"([^"]+)"/.exec(localProd)?.[1]?.split(',').map((value) => value.trim()).filter(Boolean) || [];
+    if (!origins.length) fail('wrangler.production.toml must declare exact HTTPS CORS_ALLOWED_ORIGINS.');
+    else if (origins.some((origin) => origin === '*' || origin.includes('*'))) fail('CORS_ALLOWED_ORIGINS must never use a wildcard.');
+    else if (origins.some((origin) => {
+      try {
+        const parsed = new URL(origin);
+        return parsed.origin !== origin || parsed.protocol !== 'https:';
+      } catch {
+        return true;
+      }
+    })) fail('Production CORS_ALLOWED_ORIGINS must contain exact HTTPS origins without paths or trailing slashes.');
+    else pass('wrangler.production.toml targets minimart-production/store-mini-main with HTTPS CORS and no secret.');
+  }
+  try {
+    execFileSync('git', ['check-ignore', '-q', path.relative(root, productionConfig)], { cwd: root });
+    pass('wrangler.production.toml is Git-ignored.');
+  } catch {
+    fail('wrangler.production.toml is not Git-ignored.');
+  }
+}
+
 const gitignore = read('.gitignore');
-for (const pattern of ['**/.wrangler/', '**/.dev.vars', 'wrangler.staging.toml']) {
+for (const pattern of ['**/.wrangler/', '**/.dev.vars', 'wrangler.staging.toml', 'wrangler.production.toml', 'backups/']) {
   if (gitignore.includes(pattern)) pass(`.gitignore covers ${pattern}`);
   else fail(`.gitignore is missing ${pattern}`);
 }
