@@ -6,6 +6,10 @@ React + TypeScript + Vite + Firebase Firestore based Minimart POS with Owner/Cas
 
 ## Start here
 
+- [v3.3.0 Customer Handover Pack](docs/current/V3.3.0-CUSTOMER-HANDOVER-MY.md)
+- [v3.3.0 Owner / Cashier Usage Guide](docs/current/V3.3.0-OWNER-CASHIER-USAGE-MY.md)
+- [v3.3.0 Real-Device Test Checklist](docs/current/V3.3.0-REAL-DEVICE-TEST-CHECKLIST-MY.md)
+- [v3.3.0 Release Candidate and Rollback Record](docs/current/V3.3.0-RELEASE-CANDIDATE-MY.md)
 - [v3.2.5 စတင်အသုံးပြုရန်](docs/setup/V3.2.5-START-HERE-MY.md)
 - [v3.2.5 Release Notes](docs/releases/V3.2.5-DATA-INTEGRITY-OFFLINE-RELIABILITY-MY.md)
 - [v3.2.5 QA Test Plan](docs/test-plans/V3.2.5-DATA-INTEGRITY-TEST-PLAN-MY.md)

@@ -1,0 +1,25 @@
+# EXAMPLE ONLY — copy to a local, uncommitted wrangler.staging.toml and replace
+# the placeholder project id. Do not add secrets to this file.
+name = "minimart-sales-staging"
+main = "src/index.js"
+compatibility_date = "2026-11-15"
+workers_dev = true
+
+# Firebase Spark project created by the Owner for Staging only.
+[vars]
+FIREBASE_PROJECT_ID = "REPLACE_WITH_STAGING_PROJECT_ID"
+# Isolated Staging business, never store-mini-main. See staging.fixture.example.json.
+BUSINESS_ID = "store-staging-main"
+# Enables the runtime guard that rejects Production IDs. Keep this value.
+ENVIRONMENT = "staging"
+CHECK_TOKEN_REVOCATION = "true"
+# Exact browser origins only. Replace/add the real Staging Web App origin(s);
+# never use "*". HTTP is accepted only for loopback development.
+CORS_ALLOWED_ORIGINS = "http://localhost:5173"
+
+# Expiry transitions release no stock; Owner reconciliation is still required.
+[triggers]
+crons = ["15 * * * *"]
+
+# Secret (never in this file):
+#   npx wrangler secret put FIRESTORE_SERVICE_ACCOUNT

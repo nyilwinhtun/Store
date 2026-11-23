@@ -4,6 +4,7 @@ import { usePosStore } from '../store/usePosStore';
 import { formatQuantity, isValidQuantity, normalizeUnit, quantityModeForProduct, quantityMin, summarizeQuantities } from '../lib/quantity';
 import { firebaseAuth } from '../lib/firebase';
 import { useBusinessAccess } from '../lib/businessAccess';
+import { UNIT_TRANSFER_UNSUPPORTED_MESSAGE, productIsUnitTracked } from '../lib/unitTracking';
 
 const dateLabel = (value: string) => new Date(value).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 
@@ -57,7 +58,7 @@ export function StockTransferPage({ authorize, notify, onViewDestination }: {
     .filter((product) => product.branchId === sourceBranchId && product.stock > 0)
     .sort((a, b) => a.name.localeCompare(b.name)), [products, sourceBranchId]);
   const selectedProduct = sourceProducts.find((product) => product.id === sourceProductId);
-  const selectedProductHasUnitBarcodes = !!selectedProduct && stockUnitRegistries.some((registry) => registry.branchId === sourceBranchId && registry.productId === selectedProduct.id && registry.units.some((unit) => unit.status === 'in_stock' || unit.status === 'reserved'));
+  const selectedProductHasUnitBarcodes = !!selectedProduct && productIsUnitTracked(selectedProduct, stockUnitRegistries, sourceBranchId);
   const localNow = new Date();
   const currentDay = `${localNow.getFullYear()}-${String(localNow.getMonth() + 1).padStart(2, '0')}-${String(localNow.getDate()).padStart(2, '0')}`;
   const selectedBatches = selectedProduct ? stockBatches.filter((batch) => batch.branchId === sourceBranchId && batch.productId === selectedProduct.id && batch.quantity > 0) : [];
@@ -79,7 +80,7 @@ export function StockTransferPage({ authorize, notify, onViewDestination }: {
     const qty = Number(quantity);
     if (batchMismatch && !window.confirm('ဒီပစ္စည်း၏ Stock Batch စုစုပေါင်းသည် Product Stock ထက်ပိုနေပါတယ်။ လွှဲနိုင်မည့်ပမာဏကို Product Stock နှင့် Expiry မှန်ကန်သော Batch ပမာဏအတွင်းသာ ကန့်သတ်ပါမယ်။ Transfer ပြီးနောက် Batch မှတ်တမ်းကို ထပ်စစ်ပါမယ်။ ဆက်လွှဲမလား။')) return;
     if (destinationModeMismatch) { notify('လက်ခံဆိုင်မှာ ရှိပြီးသား Product ရဲ့ အရေအတွက်တွက်ချက်ပုံ မတူပါ။ Destination Product ကို ပြင်ပြီးမှ လွှဲပါ။'); return; }
-    if (selectedProductHasUnitBarcodes) { notify('ဒီ Product မှာ Unique Barcode Sticker Tracking ရှိပါတယ်။ Barcode တစ်ခုချင်း Branch Transfer မပြီးသေးတဲ့အတွက် ယာယီမလွှဲနိုင်သေးပါ။'); return; }
+    if (selectedProductHasUnitBarcodes) { notify(UNIT_TRANSFER_UNSUPPORTED_MESSAGE); return; }
     if (!selectedProduct || !isValidQuantity(qty, quantityMode) || qty > availableQuantity) {
       notify(`လွှဲနိုင်သော Stock ${selectedProduct ? formatQuantity(availableQuantity, quantityMode) : '0'} ${selectedProduct?.unit || 'ခု'} ထက် မပိုရပါ။ အရေအတွက်ယူနစ်ဖြစ်ပါက ဒသမမထည့်ပါနဲ့။`);
       return;
@@ -152,6 +153,7 @@ export function StockTransferPage({ authorize, notify, onViewDestination }: {
           'not-found': 'ကုန်လွှဲမှတ်တမ်း မတွေ့ပါ။',
           'already-reversed': 'ဒီကုန်လွှဲမှုကို အရင်က ပြန်လည်ပယ်ဖျက်ပြီးပါပြီ။',
           'invalid-transfer': 'ဒီကုန်လွှဲမှတ်တမ်းဟောင်းမှာ မူလ/လက်ခံ Stock အတည်ပြုမှတ်တမ်း မပြည့်စုံပါ။ မှားယွင်းစွာ Stock ပြန်မပြောင်းမိစေရန် ပယ်ဖျက်ခွင့် မပေးထားပါ။',
+          'unit-tracking-unsupported': UNIT_TRANSFER_UNSUPPORTED_MESSAGE,
           'source-product-missing': 'မူလဆိုင် Product မရှိတော့ပါ။ Stock ကို အလိုအလျောက် မပြင်ထားပါ။',
           'destination-product-missing': 'လက်ခံဆိုင် Product မရှိတော့ပါ။ Stock ကို အလိုအလျောက် မပြင်ထားပါ။',
           'destination-stock-insufficient': 'လက်ခံဆိုင် Stock မလုံလောက်ပါ။ ကုန်အချို့ကို ရောင်းချ/ပြင်ဆင်ထားနိုင်ပါတယ်။',

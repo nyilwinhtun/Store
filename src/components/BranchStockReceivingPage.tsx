@@ -6,6 +6,7 @@ import { commitBranchShipmentAutoCompleteToCloud, BranchShipmentAutoCompleteUnkn
 import { formatQuantity, isValidQuantity, quantityMin, quantityModeForProduct } from '../lib/quantity';
 import { firebaseAuth } from '../lib/firebase';
 import { usePosStore, type BranchShipmentReceiptInput, type BranchStockShipment } from '../store/usePosStore';
+import { productIsUnitTracked } from '../lib/unitTracking';
 
 const dateLabel = (value: string) => new Date(value).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 
@@ -57,7 +58,7 @@ function canAutoCompleteLocally(shipment: BranchStockShipment): { ok: boolean; r
       if (!hasCategory) return { ok: false, reason: 'လက်ခံမည့်ဆိုင်မှာ Active Category မရှိသေးပါ။' };
       continue;
     }
-    if (state.stockUnitRegistries.some((registry) => registry.branchId === shipment.toBranchId && registry.productId === destination.id && registry.units.length > 0)) {
+    if (productIsUnitTracked(destination, state.stockUnitRegistries, shipment.toBranchId)) {
       return { ok: false, hardBlock: true, reason: `${item.productName}: Destination မှာ Unit Barcode Tracking ရှိပြီးသားဖြစ်လို့ Quantity-only Shipment နဲ့ မရောနိုင်ပါ။ Barcode Unit Transfer လုပ်ငန်းစဉ်ကို အသုံးပြုရန်လိုပါတယ်။` };
     }
     if (quantityModeForProduct(destination) !== (item.quantityMode || quantityModeForProduct(destination))) {

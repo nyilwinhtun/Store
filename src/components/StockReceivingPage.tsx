@@ -4,6 +4,7 @@ import { DEFAULT_BRANCH_ID, usePosStore } from '../store/usePosStore';
 import { formatQuantity, inferQuantityMode, quantityModeForProduct, quantityStep, summarizeQuantities } from '../lib/quantity';
 import { BarcodeCameraScanner } from './BarcodeCameraScanner';
 import { normalizeBarcode } from '../lib/barcode';
+import { productIsUnitTracked } from '../lib/unitTracking';
 
 type IntakeLine = { key: string; name: string; quantity: string; unit: string; barcode: string };
 const today = () => {
@@ -14,7 +15,7 @@ const newKey = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const blankLine = (): IntakeLine => ({ key: newKey(), name: '', quantity: '1', unit: 'ခု', barcode: '' });
 const dateLabel = (value: string) => value ? new Date(value).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
 
-export function StockReceivingPage({ notify }: { notify: (message: string) => void }) {
+export function StockReceivingPage({ notify, onOpenUnitReceiving }: { notify: (message: string) => void; onOpenUnitReceiving?: () => void }) {
   const branches = usePosStore((state) => state.branches);
   const allProducts = usePosStore((state) => state.products);
   const allReceipts = usePosStore((state) => state.stockReceipts);
@@ -65,8 +66,12 @@ export function StockReceivingPage({ notify }: { notify: (message: string) => vo
       notify('ပစ္စည်းအမည်နဲ့ အရေအတွက်ကို မှန်ကန်စွာ ဖြည့်ပါ။'); return;
     }
     const trackedProduct = items.map((item) => findLineProduct({ ...blankLine(), name: item.name, unit: item.unit, barcode: item.barcode || '', quantity: String(item.quantity) }))
-      .find((product) => product && stockUnitRegistries.some((registry) => registry.branchId === hubBranch.id && registry.productId === product.id && registry.units.length > 0));
-    if (trackedProduct) { notify(`${trackedProduct.name}: ဒီ Product မှာ Barcode Sticker Unit Tracking အသုံးပြုထားပါတယ်။ Quantity နဲ့ ကုန်ရောက်စာရင်း ထပ်မတိုးနိုင်ပါ။ Product/Stock ထဲက Sticker Scan Registration ကို သုံးပါ။`); return; }
+      .find((product) => product && productIsUnitTracked(product, stockUnitRegistries, hubBranch.id));
+    if (trackedProduct) {
+      notify(`${trackedProduct.name}: Unit Barcode Tracking Product ဖြစ်လို့ Sticker Scan ဖြင့် ကုန်လက်ခံရန် စာမျက်နှာကို ဖွင့်ပါမယ်။ Qty အလိုက် Stock တိုးခြင်း မလုပ်ပါ။`);
+      onOpenUnitReceiving?.();
+      return;
+    }
     const receiptId = addQuickGoodsArrival({ receivedDate, note, items });
     if (!receiptId) { notify('ကုန်ရောက်စာရင်း မသိမ်းနိုင်ပါ။ အမည်၊ ယူနစ်နဲ့ အရေအတွက်ကို စစ်ဆေးပါ။'); return; }
     setLines([blankLine()]); setNote(''); setReceivedDate(today());
@@ -81,7 +86,10 @@ export function StockReceivingPage({ notify }: { notify: (message: string) => vo
   return <section className="page-stack">
     <div className="section-heading">
       <div><h2>ရိုးရှင်းသော ကုန်ရောက်စာရင်း</h2><p>ကုန်ရောက်လာချိန် ပစ္စည်းအမည်နဲ့ အရေအတွက်သာ အရင်ထည့်ပါ။</p></div>
-      <div className="sales-summary-chip"><Store size={16} /> အဓိကဆိုင်</div>
+      <div className="heading-actions">
+        {onOpenUnitReceiving && <button className="button button-outline" type="button" onClick={onOpenUnitReceiving}><Camera size={16} /> Unit Barcode ကုန်လက်ခံ</button>}
+        <div className="sales-summary-chip"><Store size={16} /> အဓိကဆိုင်</div>
+      </div>
     </div>
 
     <div className="mini-stats">

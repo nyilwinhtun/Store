@@ -6,17 +6,19 @@ import {
   orderBy,
   query,
   runTransaction,
+  startAfter,
   type DocumentData,
   type DocumentReference,
 } from 'firebase/firestore';
 import { firebaseAuth, firestore, FIREBASE_BUSINESS_ID } from './firebase';
 import { recordFirestoreActivity } from './firestoreDiagnostics';
 import { cleanQuantity, quantityModeForProduct } from './quantity';
-import type { Product, Sale } from '../store/usePosStore';
+import { ACTIVITY_LOG_QUERY_PAGE_SIZE } from './activityLogPolicy';
+import type { ActivityLog, Product, Sale } from '../store/usePosStore';
 
 export type SalesAuditEvent = {
   id: string;
-  eventType: 'SALE_CREATED' | 'SALE_VOIDED';
+  eventType: 'SALE_CREATED' | 'SALE_VOIDED' | 'SALE_RETURNED';
   branchId: string;
   saleId: string;
   receiptNo: string;
@@ -182,4 +184,30 @@ export async function loadBranchSalesAudit(branchId: string): Promise<SalesAudit
   const events = snapshot.docs.map((entry) => entry.data() as SalesAuditEvent);
   recordFirestoreActivity(firebaseAuth?.currentUser?.uid || 'local', 'read', 'sales-audit-history', snapshot.size);
   return events;
+}
+
+export type ActivityLogPage = { logs: ActivityLog[]; hasMore: boolean };
+
+/**
+ * Owner-only on-demand reader for activity history older than the local/synced
+ * window. Cloud history is never deleted, so this is the only way to browse it.
+ * No listener is attached; each call is a bounded server read.
+ */
+export async function loadBranchActivityLogs(
+  branchId: string,
+  options: { pageSize?: number; before?: string } = {},
+): Promise<ActivityLogPage> {
+  if (!firestore || !branchId) return { logs: [], hasMore: false };
+  const pageSize = Math.min(Math.max(Math.trunc(options.pageSize ?? ACTIVITY_LOG_QUERY_PAGE_SIZE), 1), 100);
+  const collectionRef = collection(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, 'activityLogs');
+  const cursor = options.before && !Number.isNaN(Date.parse(options.before)) ? options.before : null;
+  const snapshot = await getDocsFromServer(cursor
+    ? query(collectionRef, orderBy('payload.at', 'desc'), startAfter(cursor), limit(pageSize))
+    : query(collectionRef, orderBy('payload.at', 'desc'), limit(pageSize)));
+  const logs = snapshot.docs
+    .filter((entry) => entry.data().deleted !== true)
+    .map((entry) => entry.data().payload as ActivityLog)
+    .filter((log): log is ActivityLog => !!log && typeof log.id === 'string');
+  recordFirestoreActivity(firebaseAuth?.currentUser?.uid || 'local', 'read', 'activity-log-history', snapshot.size);
+  return { logs, hasMore: snapshot.size >= pageSize };
 }

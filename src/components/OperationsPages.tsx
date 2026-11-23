@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Activity, ArrowDownCircle, ArrowUpCircle, CheckCircle2, ClipboardList, Coins, Download, LockKeyhole, Plus, Wallet } from 'lucide-react';
-import { usePosStore } from '../store/usePosStore';
+import { usePosStore, type ActivityLog } from '../store/usePosStore';
 import { useBusinessAccess } from '../lib/businessAccess';
-import { loadBranchSalesAudit, type SalesAuditEvent } from '../lib/salesAudit';
+import { loadBranchActivityLogs, loadBranchSalesAudit, type SalesAuditEvent } from '../lib/salesAudit';
+import { ACTIVITY_LOG_LOCAL_LIMIT, ACTIVITY_LOG_QUERY_PAGE_SIZE, ACTIVITY_LOG_SYNC_DAYS } from '../lib/activityLogPolicy';
 
 const money = (value: number, currency = 'MMK') => `${new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(Math.round(value || 0))} ${currency}`;
 const dateTime = (value: string) => new Date(value).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -154,6 +155,31 @@ export function ActivityLogPage() {
   const logs = useMemo(() => allLogs.filter((entry) => entry.branchId === activeBranchId), [allLogs, activeBranchId]);
   const [query, setQuery] = useState('');
   const filtered = useMemo(() => logs.filter((log) => `${log.action} ${log.entity} ${log.description} ${log.actor}`.toLowerCase().includes(query.toLowerCase())), [logs, query]);
+  const isOwner = access.status === 'active' && access.role === 'owner';
+  const [olderLogs, setOlderLogs] = useState<ActivityLog[]>([]);
+  const [olderHasMore, setOlderHasMore] = useState(false);
+  const [olderState, setOlderState] = useState('');
+  const [olderLoading, setOlderLoading] = useState(false);
+  useEffect(() => { setOlderLogs([]); setOlderHasMore(false); setOlderState(''); }, [activeBranchId]);
+  const loadOlderLogs = async (reset: boolean) => {
+    if (!isOwner || olderLoading) return;
+    const base = reset ? [] : olderLogs;
+    const cursor = base.length ? base[base.length - 1].at : undefined;
+    setOlderLoading(true);
+    setOlderState(reset ? 'Cloud မှတ်တမ်းဟောင်း ဖတ်နေပါတယ်။' : 'နောက်ထပ် မှတ်တမ်းဟောင်း ဖတ်နေပါတယ်။');
+    try {
+      const page = await loadBranchActivityLogs(activeBranchId, { before: cursor });
+      const seen = new Set(base.map((entry) => entry.id));
+      const next = [...base, ...page.logs.filter((entry) => !seen.has(entry.id))];
+      setOlderLogs(next);
+      setOlderHasMore(page.hasMore);
+      setOlderState(next.length ? `Cloud မှတ်တမ်းဟောင်း ${next.length} ခု ဖတ်ပြီးပါပြီ။` : 'Cloud မှတ်တမ်းဟောင်း မရှိပါ။');
+    } catch (error: unknown) {
+      setOlderState(error instanceof Error ? error.message : 'Cloud မှတ်တမ်းဟောင်း ဖတ်မရပါ။');
+    } finally {
+      setOlderLoading(false);
+    }
+  };
   const exportLogs = () => downloadCsv(`minimart-activity-log-${new Date().toISOString().slice(0, 10)}.csv`, [
     ['Date', 'Actor', 'Action', 'Entity', 'Description'],
     ...filtered.map((log) => [log.at, log.actor, log.action, log.entity, log.description]),
@@ -161,11 +187,15 @@ export function ActivityLogPage() {
   return <section className="page-stack">
     <div className="section-heading"><div><h2>Activity & Audit Log</h2><p>Device Local လုပ်ဆောင်ချက်များနှင့် Cloud Sales Audit ကို ခွဲခြားကြည့်နိုင်ပါတယ်။</p></div><button className="button button-outline" onClick={exportLogs}><Download size={15} /> CSV Export</button></div>
     {access.status === 'active' && access.role === 'owner' && <div className="panel"><div className="panel-heading"><div><h3>Cloud Sales Audit (နောက်ဆုံး ၁၀၀ ခု)</h3><p>{cloudAuditState}</p></div><button className="button button-outline" type="button" onClick={() => { setCloudAuditState('Cloud Audit ကို ပြန်ဖတ်နေပါတယ်။'); void loadBranchSalesAudit(activeBranchId).then((events) => { setCloudAudit(events); setCloudAuditState(`${events.length} ခုသော Cloud Audit Event ကို ဖတ်ပြီးပါပြီ။`); }).catch((error: unknown) => setCloudAuditState(error instanceof Error ? error.message : 'Cloud Audit ကို ဖတ်မရပါ။')); }}>ပြန်ဖတ်ရန်</button></div>
-      {cloudAudit.length === 0 ? <div className="empty-state"><div className="empty-icon"><Activity size={23} /></div><strong>Cloud Sales Audit မရှိသေးပါ</strong><p>Cashier Sale Sync အသစ်များနှင့် Owner Void လုပ်ဆောင်ချက်များကို ဒီနေရာမှာ ပြပါမယ်။</p></div> : <div className="table-wrap"><table><thead><tr><th>အချိန်</th><th>လုပ်ဆောင်သူ</th><th>လုပ်ဆောင်ချက်</th><th>Voucher</th><th>ပမာဏ</th><th>အကြောင်းပြချက်</th></tr></thead><tbody>{cloudAudit.map((event) => <tr key={event.id}><td>{dateTime(event.occurredAt)}</td><td>{event.actorName || event.actorEmail}</td><td><span className={`tag ${event.eventType === 'SALE_VOIDED' ? 'tag-danger' : 'tag-success'}`}>{event.eventType === 'SALE_VOIDED' ? 'VOID' : 'SALE'}</span></td><td><strong className="mono">{event.receiptNo}</strong></td><td><b>{money(event.total)}</b></td><td>{event.reason || '—'}</td></tr>)}</tbody></table></div>}
+      {cloudAudit.length === 0 ? <div className="empty-state"><div className="empty-icon"><Activity size={23} /></div><strong>Cloud Sales Audit မရှိသေးပါ</strong><p>Cashier Sale Sync အသစ်များနှင့် Owner Void လုပ်ဆောင်ချက်များကို ဒီနေရာမှာ ပြပါမယ်။</p></div> : <div className="table-wrap"><table><thead><tr><th>အချိန်</th><th>လုပ်ဆောင်သူ</th><th>လုပ်ဆောင်ချက်</th><th>Voucher</th><th>ပမာဏ</th><th>အကြောင်းပြချက်</th></tr></thead><tbody>{cloudAudit.map((event) => <tr key={event.id}><td>{dateTime(event.occurredAt)}</td><td>{event.actorName || event.actorEmail}</td><td><span className={`tag ${event.eventType === 'SALE_VOIDED' ? 'tag-danger' : event.eventType === 'SALE_RETURNED' ? 'tag-warn' : 'tag-success'}`}>{event.eventType === 'SALE_VOIDED' ? 'VOID' : event.eventType === 'SALE_RETURNED' ? 'RETURN' : 'SALE'}</span></td><td><strong className="mono">{event.receiptNo}</strong></td><td><b>{money(event.total)}</b></td><td>{event.reason || '—'}</td></tr>)}</tbody></table></div>}
     </div>}
-    <div className="panel"><div className="panel-heading"><div><h3>Device Activity Log</h3><p>နောက်ဆုံးလုပ်ဆောင်ချက် ၁,၀၀၀ ခုအထိ သိမ်းဆည်းထားပါမည်။</p></div><input className="inline-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Action / Description ရှာရန်" /></div>
+    <div className="panel"><div className="panel-heading"><div><h3>Device Activity Log</h3><p>နောက်ဆုံး {ACTIVITY_LOG_SYNC_DAYS} ရက်အတွင်း လုပ်ဆောင်ချက် {ACTIVITY_LOG_LOCAL_LIMIT.toLocaleString()} ခုအထိ Device တွင် သိမ်းထားပြီး Cloud နှင့် ချိတ်ဆက်ထားပါသည်။</p></div><input className="inline-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Action / Description ရှာရန်" /></div>
       {filtered.length === 0 ? <div className="empty-state"><div className="empty-icon"><Activity size={23} /></div><strong>မှတ်တမ်း မရှိသေးပါ</strong><p>Product, Sale, Stock, Payment, Purchase နှင့် Cash Shift လုပ်ဆောင်ချက်များ ဒီနေရာမှာ ပေါ်လာပါမယ်။</p></div> : <div className="table-wrap"><table><thead><tr><th>အချိန်</th><th>လုပ်ဆောင်သူ</th><th>Action</th><th>အမျိုးအစား</th><th>အသေးစိတ်</th></tr></thead><tbody>{filtered.map((log) => <tr key={log.id}><td>{dateTime(log.at)}</td><td>{log.actor}</td><td><span className="tag">{log.action}</span></td><td>{log.entity}</td><td>{log.description}</td></tr>)}</tbody></table></div>}
     </div>
-    <div className="panel security-note"><LockKeyhole size={18} /><div><strong>Audit Log ၏ ကန့်သတ်ချက်</strong><p>အပေါ်က Cloud Sales Audit သည် Firestore ထဲတွင် append-only သိမ်းထားသော Cashier Sale / Owner Void Event များဖြစ်ပါတယ်။ အောက်က Device Activity Log ကတော့ လက်ရှိ Device မှတ်တမ်းဖြစ်ပြီး Local ဖြစ်နေဆဲပါ။ ငွေပြန်အမ်းခြင်းနှင့် Partial Refund ကို ဒီ Version မှာ မထည့်သေးပါ။</p></div></div>
+    {isOwner && <div className="panel"><div className="panel-heading"><div><h3>Cloud မှတ်တမ်းဟောင်း</h3><p>{olderState || `Cloud မှာ သိမ်းထားသော မှတ်တမ်းဟောင်းများကို ${ACTIVITY_LOG_QUERY_PAGE_SIZE} ခုစီ ဖတ်နိုင်ပါတယ်။ မှတ်တမ်းများကို ဘယ်တော့မှ အလိုအလျောက် ဖျက်ပစ်မည် မဟုတ်ပါ။`}</p></div><button className="button button-outline" type="button" disabled={olderLoading} onClick={() => void loadOlderLogs(olderLogs.length === 0)}><Download size={15} /> {olderLogs.length ? 'နောက်ထပ် ဖတ်ရန်' : 'မှတ်တမ်းဟောင်း ဖတ်ရန်'}</button></div>
+      {olderLogs.length === 0 ? <div className="empty-state"><div className="empty-icon"><Activity size={23} /></div><strong>Cloud မှတ်တမ်းဟောင်း မဖတ်ရသေးပါ</strong><p>အထက်က ခလုတ်နှိပ်ပြီး Cloud ထဲက မှတ်တမ်းဟောင်းများကို လိုအပ်မှသာ ဖတ်နိုင်ပါတယ်။</p></div> : <div className="table-wrap"><table><thead><tr><th>အချိန်</th><th>လုပ်ဆောင်သူ</th><th>Action</th><th>အမျိုးအစား</th><th>အသေးစိတ်</th></tr></thead><tbody>{olderLogs.map((log) => <tr key={log.id}><td>{dateTime(log.at)}</td><td>{log.actor}</td><td><span className="tag">{log.action}</span></td><td>{log.entity}</td><td>{log.description}</td></tr>)}</tbody></table></div>}
+      {olderLogs.length > 0 && !olderHasMore && <small className="field-hint">နောက်ထပ် မှတ်တမ်းဟောင်း မရှိတော့ပါ။</small>}
+    </div>}
+    <div className="panel security-note"><LockKeyhole size={18} /><div><strong>Audit Log ၏ ကန့်သတ်ချက်</strong><p>အပေါ်က Cloud Sales Audit သည် Firestore ထဲတွင် append-only သိမ်းထားသော Cashier Sale / Owner Void Event များဖြစ်ပါတယ်။ Device Activity Log သည် နောက်ဆုံး {ACTIVITY_LOG_SYNC_DAYS} ရက်ကို အလိုအလျောက် ချိတ်ဆက်ထားပြီး ကျန်မှတ်တမ်းများကို Cloud မှ လိုအပ်မှသာ ဖတ်ပါတယ်။ Cloud မှတ်တမ်းများကို အလိုအလျောက် ဖျက်ပစ်ခြင်း မရှိပါ။ ငွေပြန်အမ်းခြင်းနှင့် Partial Refund ကို ဒီ Version မှာ မထည့်သေးပါ။</p></div></div>
   </section>;
 }

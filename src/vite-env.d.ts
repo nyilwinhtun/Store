@@ -1,6 +1,9 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
+  readonly VITE_FIREBASE_MODE?: 'production' | 'staging' | 'emulator';
+  readonly VITE_ALLOW_PRODUCTION_IN_DEV?: string;
+  readonly VITE_EMULATOR_HOST?: string;
   readonly VITE_FIREBASE_API_KEY?: string;
   readonly VITE_FIREBASE_AUTH_DOMAIN?: string;
   readonly VITE_FIREBASE_DATABASE_URL?: string;
@@ -9,4 +12,6 @@ interface ImportMetaEnv {
   readonly VITE_FIREBASE_MESSAGING_SENDER_ID?: string;
   readonly VITE_FIREBASE_APP_ID?: string;
   readonly VITE_FIREBASE_MEASUREMENT_ID?: string;
+  readonly VITE_WORKER_SALES_URL?: string;
+  readonly VITE_WORKER_SALES_ENABLED?: string;
 }

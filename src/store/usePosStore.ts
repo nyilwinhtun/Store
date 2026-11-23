@@ -2,15 +2,32 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { cleanQuantity, formatQuantity, inferQuantityMode, isValidQuantity, quantityModeForProduct, summarizeQuantities, type QuantityMode } from '../lib/quantity';
 import { normalizeBarcode } from '../lib/barcode';
+import {
+  MAX_UNITS_PER_RECEIPT,
+  MAX_UNITS_PER_REGISTRY,
+  UNIT_TRANSFER_UNSUPPORTED_MESSAGE,
+  countReceivableUnits,
+  normalizeUnitSelectionKey,
+  productIsUnitTracked,
+  validateUnitCandidates,
+} from '../lib/unitTracking';
+import { isKpayEnabled } from '../lib/kpayAccount';
 import { persistentStateStorage, writePosStateDurably } from '../lib/persistentStateStorage';
+import { announceLocalDataReplacement, markLocalDataReplacement } from '../lib/syncSafety';
+import { ACTIVITY_LOG_LOCAL_LIMIT, trimActivityLogs } from '../lib/activityLogPolicy';
+import { firebaseRuntime } from '../lib/firebaseRuntime';
 import type { BranchFinanceLedgerEntry, BranchFinanceLedgerEntryInput, BranchFinanceReconciliationInput, BranchFinanceReconciliationRecord, CashierAdvanceReconciliationInput, CashierAdvanceReconciliationRecord, CashierExpenseFields, CashierSettlementRecord } from '../types/finance';
 
-/** Stable Zustand persistence key; also used by durable checkout flush. */
-const POS_PERSIST_STORAGE_KEY = 'minimart-pos-data-v1';
+/** Stable Zustand persistence key; also used by durable checkout flush.
+ * Cloud targets keep a separate cache so emulator/device test data can never be
+ * merged or uploaded into another project's business dataset. */
+const POS_PERSIST_STORAGE_KEY = firebaseRuntime.mode === 'emulator'
+  ? 'minimart-pos-data-v1'
+  : `minimart-pos-data-v1:${firebaseRuntime.projectId}`;
 
 export type PriceMode = 'retail' | 'wholesale';
 export const DEFAULT_CASHIER_EXPENSE_APPROVAL_LIMIT = 50000;
-export type BranchSettings = { storeName: string; currency: string; receiptFooter: string; receiptHeader?: string; kpayAccountName?: string; kpayAccountNumber?: string; kpayAccountLabel?: string; cashLedgerOpeningBalance?: number; kpayLedgerOpeningBalance?: number; financeLedgerStartDate?: string; /** Per-expense threshold above which a Cashier must obtain Owner approval before spending branch funds. */ cashierExpenseApprovalLimit?: number };
+export type BranchSettings = { storeName: string; currency: string; receiptFooter: string; receiptHeader?: string; kpayEnabled?: boolean; kpayAccountName?: string; kpayAccountNumber?: string; kpayAccountLabel?: string; kpayQrDataUrl?: string; kpayQrVersion?: number; kpayQrUpdatedAt?: string; kpayQrUpdatedBy?: string; cashLedgerOpeningBalance?: number; kpayLedgerOpeningBalance?: number; financeLedgerStartDate?: string; /** Per-expense threshold above which a Cashier must obtain Owner approval before spending branch funds. */ cashierExpenseApprovalLimit?: number };
 export type Branch = { id: string; name: string; code: string; address: string; phone: string; ownerName?: string; email?: string; logoUrl?: string; bannerUrl?: string; status: 'active' | 'archived'; isDefault: boolean; createdAt: string; updatedAt: string; settings: BranchSettings };
 export type OwnerProfile = { displayName: string; phone: string; photoUrl: string; updatedAt?: string };
 export type Category = { id: string; branchId: string; name: string; color: string; isActive: boolean; createdAt: string };
@@ -29,6 +46,18 @@ export type StockUnit = {
   registeredByName?: string;
   batchId?: string;
   note?: string;
+  /** Set once the unit is committed to a completed sale; never cleared from history. */
+  saleId?: string;
+  soldAt?: string;
+  soldByUid?: string;
+  lastSaleId?: string;
+  returnId?: string;
+  returnedAt?: string;
+  returnedByUid?: string;
+  damagedAt?: string;
+  damagedByUid?: string;
+  damageReason?: string;
+  voidedSaleId?: string;
 };
 /** Chunked registry records per Product + Branch; each record stores up to 250 physical units. */
 export type StockUnitRegistry = {
@@ -44,11 +73,30 @@ export type StockUnitRegistry = {
 export type StockUnitRegistrationInput = {
   branchId?: string;
   productId: string;
-  units: Array<{ barcode: string; barcodeSource: StockUnitBarcodeSource; note?: string }>;
+  units: Array<{ barcode: string; barcodeSource: StockUnitBarcodeSource; note?: string; batchId?: string }>;
   actorUid?: string;
   actorName?: string;
 };
 export type StockUnitRegistrationResult = { ok: true; created: number; remainingUnregistered: number } | { ok: false; message: string };
+export type TrackedStockReceiptInput = {
+  requestId?: string;
+  branchId?: string;
+  productId: string;
+  quantity: number;
+  barcodes: string[];
+  batchId?: string;
+  unitCost?: number;
+  expiryDate?: string;
+  receivedDate?: string;
+  note?: string;
+  supplierId?: string;
+  actorUid?: string;
+  actorName?: string;
+};
+export type TrackedStockReceiptResult =
+  | { ok: true; receiptId: string; batchId: string; created: number; duplicate: boolean }
+  | { ok: false; message: string };
+export type StockUnitSelection = { registryId: string; unitId: string; barcode: string; batchId?: string };
 export type Product = {
   branchId?: string;
   /** Explicit owner-approved shared retail/wholesale price link. */
@@ -67,6 +115,8 @@ export type Product = {
   lowStockAt: number;
   unit: string;
   quantityMode?: QuantityMode;
+  /** When enabled, every physical unit must be registered with its own sticker barcode. */
+  tracksIndividualUnits?: boolean;
   image?: string;
   createdAt: string;
 };
@@ -100,9 +150,47 @@ export type CartItem = {
   unit?: string;
   quantityMode?: QuantityMode;
   batchAllocations?: BatchAllocation[];
+  /** Exact physical stock units selected by sticker scan for tracked products. */
+  stockUnitSelections?: StockUnitSelection[];
   /** Shared price metadata snapshot for audit; historical unitPrice remains authoritative. */
   priceGroupId?: string;
   priceVersion?: number;
+};
+export type SaleReturnDisposition = 'restock' | 'damaged';
+export type SaleReturnRecord = {
+  id: string;
+  at: string;
+  actorUid: string;
+  actorName: string;
+  reason: string;
+  deviceId?: string;
+  value: number;
+  refundStatus: string;
+  refundAmount: number;
+  items: Array<{ productId: string; quantity: number; units: string[] }>;
+};
+export type SaleReturnApplyUnit = { registryId: string; unitId: string; disposition: SaleReturnDisposition };
+export type SaleReturnApplyItem = {
+  productId: string;
+  quantity: number;
+  disposition: SaleReturnDisposition;
+  batchAllocations?: BatchAllocation[];
+  units?: SaleReturnApplyUnit[];
+};
+export type SaleReturnApplyInput = {
+  returnId: string;
+  saleId: string;
+  branchId?: string;
+  at: string;
+  actor: { uid: string; email: string; name: string };
+  reason: string;
+  items: SaleReturnApplyItem[];
+  returnedValue: number;
+  refundStatus: string;
+  refundAmount: number;
+  dueAmount?: number;
+  returnedProductQuantities?: Record<string, number>;
+  returnedBatchQuantities?: Record<string, number>;
 };
 export type Sale = {
   branchId?: string;
@@ -116,6 +204,15 @@ export type Sale = {
   cashReceivedAmount?: number;
   /** KPay provider receipt/reference entered after the transfer is completed. */
   kpayTransactionReference?: string;
+  /**
+   * Immutable copy of the branch KPay account that received this payment. The Owner
+   * may change branch settings later; history must keep showing the original account.
+   */
+  kpayAccountNameSnapshot?: string;
+  kpayAccountNumberSnapshot?: string;
+  kpayAccountLabelSnapshot?: string;
+  /** Version of the branch KPay QR image that was displayed when the sale was recorded. */
+  kpayQrVersionSnapshot?: number;
   /** Change returned to the customer; optional for older sales. */
   changeAmount?: number;
   paidAmount?: number;
@@ -136,6 +233,21 @@ export type Sale = {
   voidedByUid?: string;
   voidedByEmail?: string;
   voidedByName?: string;
+  voidRefundStatus?: string;
+  voidRefundAmount?: number;
+  returnedProductQuantities?: Record<string, number>;
+  returnedBatchQuantities?: Record<string, number>;
+  returns?: SaleReturnRecord[];
+  returnCount?: number;
+  returnedTotal?: number;
+  lastReturnId?: string;
+  lastReturnReason?: string;
+  lastReturnedAt?: string;
+  lastReturnedByUid?: string;
+  lastReturnedByName?: string;
+  lastAdjustmentKind?: 'void' | 'return';
+  lastAdjustedAt?: string;
+  lastAdjustedByUid?: string;
   createdByUid?: string;
   createdByEmail?: string;
   createdByName?: string;
@@ -183,6 +295,11 @@ export type CustomerPayment = {
   date: string;
   note: string;
   paymentMethod?: 'Cash' | 'Transfer';
+  /** Immutable branch KPay account snapshot for transfer payments. */
+  kpayAccountNameSnapshot?: string;
+  kpayAccountNumberSnapshot?: string;
+  kpayAccountLabelSnapshot?: string;
+  kpayQrVersionSnapshot?: number;
 };
 export type Purchase = {
   branchId?: string;
@@ -252,12 +369,14 @@ export type StockReceiptLine = {
   wholesalePrice?: number;
   expiryDate: string;
   unit?: string;
+  batchId?: string;
 };
 export type StockReceipt = {
   branchId: string;
   id: string;
   receiptNo: string;
   date: string;
+  requestId?: string;
   supplierId?: string;
   supplierName: string;
   referenceNo: string;
@@ -350,7 +469,7 @@ export type StockTransfer = {
   reversalNote?: string;
 };
 export type StockTransferActor = { uid?: string; email?: string; name?: string };
-export type StockTransferReversalResult = { ok: true; transferId: string; transferNo: string } | { ok: false; reason: 'not-found' | 'already-reversed' | 'invalid-transfer' | 'source-product-missing' | 'destination-product-missing' | 'destination-stock-insufficient' | 'transferred-batch-missing' | 'transferred-batch-insufficient' | 'batch-reconciliation-failed' | 'state-changed' };
+export type StockTransferReversalResult = { ok: true; transferId: string; transferNo: string } | { ok: false; reason: 'not-found' | 'already-reversed' | 'invalid-transfer' | 'unit-tracking-unsupported' | 'source-product-missing' | 'destination-product-missing' | 'destination-stock-insufficient' | 'transferred-batch-missing' | 'transferred-batch-insufficient' | 'batch-reconciliation-failed' | 'state-changed' };
 export type StockTransferDraftItem = { sourceProductId: string; quantity: number };
 export type ShipmentBatchAllocation = {
   sourceBatchId: string;
@@ -525,6 +644,7 @@ type PosState = {
   addSale: (sale: Sale) => Sale | null;
   updateSaleCloudSyncStatus: (id: string, branchId: string, status: 'pending' | 'synced', error?: string) => void;
   voidSale: (id: string, reason: string, actor: { uid: string; email: string; name: string }, voidedAt?: string) => boolean;
+  applySaleReturn: (input: SaleReturnApplyInput) => boolean;
   requestSaleVoid: (id: string, reason: string, actor: { uid: string; name: string }) => boolean;
   addExpense: (expense: Omit<Expense, 'id'> & { id?: string }) => Expense;
   updateExpense: (id: string, changes: Partial<Expense>) => void;
@@ -549,6 +669,7 @@ type PosState = {
   confirmBranchStockShipmentReceipt: (input: { shipmentId: string; receivedItems: BranchShipmentReceiptInput[]; actor?: StockTransferActor; note?: string }) => boolean;
   approveBranchStockShipment: (input: { shipmentId: string; actor?: StockTransferActor; note?: string; autoComplete?: boolean }) => boolean;
   registerStockUnits: (input: StockUnitRegistrationInput) => StockUnitRegistrationResult;
+  receiveTrackedStockUnits: (input: TrackedStockReceiptInput) => TrackedStockReceiptResult;
   cancelBranchStockShipment: (input: { shipmentId: string; actor?: StockTransferActor; note: string }) => boolean;
   addSupplierPayment: (payment: Omit<SupplierPayment, 'id'>) => boolean;
   addPurchaseReturn: (purchaseId: string, quantity: number, note: string) => void;
@@ -576,6 +697,30 @@ function isKPayReferenceUsed(
     || state.cashierSettlements.some((entry) => entry.branchId === branchId && entry.paymentMethod === 'kpay' && entry.transactionReference?.trim().toLocaleLowerCase() === key)
     || state.branchFinanceLedgerEntries.some((entry) => entry.branchId === branchId && entry.channel === 'kpay' && entry.transactionReference?.trim().toLocaleLowerCase() === key)
     || state.cashierAdvanceReconciliations.some((entry) => entry.branchId === branchId && entry.channel === 'kpay' && entry.transactionReference?.trim().toLocaleLowerCase() === key);
+}
+
+export const KPAY_SNAPSHOT_FIELDS = ['kpayAccountNameSnapshot', 'kpayAccountNumberSnapshot', 'kpayAccountLabelSnapshot', 'kpayQrVersionSnapshot'] as const;
+
+/**
+ * Freezes the branch KPay account that will receive a payment. Owners may change
+ * these settings at any time, so each transaction must carry its own copy.
+ */
+export function kpayAccountSnapshot(settings: BranchSettings | undefined): {
+  kpayAccountNameSnapshot?: string;
+  kpayAccountNumberSnapshot?: string;
+  kpayAccountLabelSnapshot?: string;
+  kpayQrVersionSnapshot?: number;
+} {
+  const name = settings?.kpayAccountName?.trim();
+  const number = settings?.kpayAccountNumber?.trim();
+  const label = settings?.kpayAccountLabel?.trim();
+  const version = settings?.kpayQrVersion;
+  return {
+    ...(name ? { kpayAccountNameSnapshot: name } : {}),
+    ...(number ? { kpayAccountNumberSnapshot: number } : {}),
+    ...(label ? { kpayAccountLabelSnapshot: label } : {}),
+    ...(typeof version === 'number' && Number.isFinite(version) ? { kpayQrVersionSnapshot: version } : {}),
+  };
 }
 
 const defaultSettings: StoreSettings = {
@@ -623,7 +768,62 @@ const isDuplicateSharedProfile = <T extends { name: string; phone: string; addre
 const makeAudit = (action: string, entity: string, description: string, entityId?: string, branchId = DEFAULT_BRANCH_ID): ActivityLog => ({
   id: newId(), branchId, at: new Date().toISOString(), actor: 'Local device user', action, entity, entityId, description,
 });
-const prependAudit = (logs: ActivityLog[], entry: ActivityLog) => [entry, ...logs].slice(0, 300);
+const prependAudit = (logs: ActivityLog[], entry: ActivityLog) => [entry, ...logs].slice(0, ACTIVITY_LOG_LOCAL_LIMIT);
+
+/** Chunk product units into Firestore-safe registry records without losing prior chunks. */
+function appendUnitRegistries(
+  registries: StockUnitRegistry[],
+  branchId: string,
+  productId: string,
+  newUnits: StockUnit[],
+  now: string,
+  actorUid?: string,
+): { next: StockUnitRegistry[]; productRegistryIds: Set<string>; nextRegistryIds: Set<string> } {
+  const productRegistries = registries
+    .filter((entry) => entry.branchId === branchId && entry.productId === productId)
+    .sort((a, b) => (a.chunkIndex ?? 0) - (b.chunkIndex ?? 0))
+    .map((entry) => ({ ...entry, units: [...entry.units] }));
+  let cursor = 0;
+  while (cursor < newUnits.length) {
+    const last = productRegistries[productRegistries.length - 1];
+    if (last && last.units.length < MAX_UNITS_PER_REGISTRY) {
+      const take = Math.min(MAX_UNITS_PER_REGISTRY - last.units.length, newUnits.length - cursor);
+      last.units.push(...newUnits.slice(cursor, cursor + take));
+      last.updatedAt = now;
+      if (actorUid) last.updatedByUid = actorUid;
+      cursor += take;
+      continue;
+    }
+    const chunkIndex = productRegistries.length
+      ? Math.max(...productRegistries.map((entry) => entry.chunkIndex ?? 0)) + 1
+      : 0;
+    const take = Math.min(MAX_UNITS_PER_REGISTRY, newUnits.length - cursor);
+    productRegistries.push({
+      id: `unit-registry-${encodeURIComponent(branchId)}-${encodeURIComponent(productId)}-${chunkIndex}`,
+      branchId, productId, chunkIndex,
+      units: newUnits.slice(cursor, cursor + take), updatedAt: now,
+      ...(actorUid ? { updatedByUid: actorUid } : {}),
+    });
+    cursor += take;
+  }
+  const productRegistryIds = new Set(registries.filter((entry) => entry.branchId === branchId && entry.productId === productId).map((entry) => entry.id));
+  const nextRegistryIds = new Set(productRegistries.map((entry) => entry.id));
+  return {
+    next: [...registries.filter((entry) => !productRegistryIds.has(entry.id) && !nextRegistryIds.has(entry.id)), ...productRegistries],
+    productRegistryIds,
+    nextRegistryIds,
+  };
+}
+
+/**
+ * Activity logs are synced to the cloud and browsed by Owners, so only the last
+ * four digits of a KPay account number are ever written into them.
+ */
+export function maskedAccount(value: string | undefined): string {
+  const digits = (value || '').replace(/\s+/g, '');
+  if (!digits) return 'မရှိ';
+  return digits.length <= 4 ? `•••• ${digits}` : `•••• ${digits.slice(-4)}`;
+}
 
 function removeBatchQuantity(batches: StockBatch[], productId: string, quantity: number, mode: QuantityMode = 'decimal'): StockBatch[] {
   let remaining = Math.max(0, quantity);
@@ -650,17 +850,24 @@ function ensureStockBatchCoverage(products: Product[], batches: StockBatch[]): S
       .reduce((sum, batch) => sum + Math.max(0, batch.quantity), 0);
     const missing = Math.max(0, product.stock - covered);
     if (missing > 0.000001) {
-      result.push({
-        id: `opening-${product.branchId || DEFAULT_BRANCH_ID}-${product.id}`,
-        branchId: product.branchId || DEFAULT_BRANCH_ID,
-        productId: product.id,
-        purchaseId: '',
-        supplierId: '',
-        quantity: missing,
-        receivedAt: product.createdAt || new Date().toISOString(),
-        expiryDate: '',
-        unitCost: product.costPrice,
-      });
+      const openingId = `opening-${product.branchId || DEFAULT_BRANCH_ID}-${product.id}`;
+      const existing = result.findIndex((batch) => batch.id === openingId
+        && batch.branchId === (product.branchId || DEFAULT_BRANCH_ID) && batch.productId === product.id);
+      if (existing >= 0) {
+        result[existing] = { ...result[existing], quantity: cleanQuantity(result[existing].quantity + missing, quantityModeForProduct(product)) };
+      } else {
+        result.push({
+          id: openingId,
+          branchId: product.branchId || DEFAULT_BRANCH_ID,
+          productId: product.id,
+          purchaseId: '',
+          supplierId: '',
+          quantity: missing,
+          receivedAt: product.createdAt || new Date().toISOString(),
+          expiryDate: '',
+          unitCost: product.costPrice,
+        });
+      }
     }
   }
   return result;
@@ -772,7 +979,30 @@ export const usePosStore = create<PosState>()(
         const nextBranchSettings = { ...target.settings, ...(changes.settings || {}), storeName: name };
         const updated: Branch = { ...target, ...changes, name, updatedAt: new Date().toISOString(), settings: nextBranchSettings };
         const activeSettings = state.activeBranchId === id ? { ...state.settings, storeName: name, currency: nextBranchSettings.currency || state.settings.currency, receiptFooter: nextBranchSettings.receiptFooter || state.settings.receiptFooter } : state.settings;
-        return { branches: state.branches.map((branch) => branch.id === id ? updated : branch), settings: activeSettings, activityLogs: prependAudit(state.activityLogs, makeAudit('BRANCH_PROFILE_UPDATE', 'Branch', `ဆိုင်အချက်အလက် ပြင်ဆင်သည်: ${name}`, id, id)) };
+        // KPay account changes are financial configuration: keep a permanent audit
+        // trail, but never write the full account number into the activity log.
+        const kpayFieldsChanged = (['kpayAccountName', 'kpayAccountNumber', 'kpayAccountLabel'] as const)
+          .some((field) => (target.settings[field]?.trim() || '') !== (nextBranchSettings[field]?.trim() || ''));
+        const qrChanged = target.settings.kpayQrVersion !== nextBranchSettings.kpayQrVersion;
+        const kpayAudits: ActivityLog[] = [];
+        if (kpayFieldsChanged) {
+          kpayAudits.push(makeAudit(
+            'KPAY_ACCOUNT_UPDATE',
+            'Branch',
+            `KPay လက်ခံမည့်အကောင့် ပြောင်းသည်: ${nextBranchSettings.kpayAccountName?.trim() || 'မရှိ'} · ${maskedAccount(nextBranchSettings.kpayAccountNumber)}`,
+            id,
+            id,
+          ));
+        }
+        if (qrChanged) {
+          kpayAudits.push(makeAudit('KPAY_QR_UPDATE', 'Branch', `KPay QR ပုံ ပြောင်းသည်: ${name}`, id, id));
+        }
+        if (isKpayEnabled(target.settings) !== isKpayEnabled(nextBranchSettings)) {
+          kpayAudits.push(makeAudit('KPAY_ENABLE_UPDATE', 'Branch', `KPay လက်ခံမှု ${isKpayEnabled(nextBranchSettings) ? 'ဖွင့်' : 'ပိတ်'}သည်: ${name}`, id, id));
+        }
+        const profileAudit = makeAudit('BRANCH_PROFILE_UPDATE', 'Branch', `ဆိုင်အချက်အလက် ပြင်ဆင်သည်: ${name}`, id, id);
+        const activityLogs = kpayAudits.reduce((logs, entry) => prependAudit(logs, entry), prependAudit(state.activityLogs, profileAudit));
+        return { branches: state.branches.map((branch) => branch.id === id ? updated : branch), settings: activeSettings, activityLogs };
       }),
       archiveBranch: (id) => {
         const state = get();
@@ -838,6 +1068,7 @@ export const usePosStore = create<PosState>()(
         const createdAt = new Date().toISOString();
         const saved: Product = { ...product, priceGroupId: undefined, priceVersion: undefined, quantityMode: product.quantityMode || inferQuantityMode(product.unit), branchId: state.activeBranchId, id: newId(), createdAt };
         if (!isValidQuantity(saved.stock, quantityModeForProduct(saved), true) || !isValidQuantity(saved.lowStockAt, quantityModeForProduct(saved), true)) return false;
+        if (saved.tracksIndividualUnits === true && (quantityModeForProduct(saved) !== 'whole' || saved.stock !== 0)) return false;
         const openingBatch: StockBatch | null = saved.stock > 0 ? {
           id: newId(), branchId: state.activeBranchId, productId: saved.id, purchaseId: '', supplierId: '',
           quantity: saved.stock, receivedAt: createdAt, expiryDate: '', unitCost: saved.costPrice,
@@ -944,6 +1175,18 @@ export const usePosStore = create<PosState>()(
       updateProduct: (id, changes) => set((state) => {
         const current = state.products.find((product) => product.id === id && product.branchId === state.activeBranchId);
         if (current?.priceGroupId && ((changes.retailPrice !== undefined && changes.retailPrice !== current.retailPrice) || (changes.wholesalePrice !== undefined && changes.wholesalePrice !== current.wholesalePrice))) return state;
+        if (current) {
+          const hasUnits = state.stockUnitRegistries.some((registry) => registry.branchId === state.activeBranchId && registry.productId === id && registry.units.length > 0);
+          const wasTracked = productIsUnitTracked(current, state.stockUnitRegistries, state.activeBranchId);
+          const nextMode = changes.quantityMode || current.quantityMode || inferQuantityMode(changes.unit || current.unit);
+          const nextStock = typeof changes.stock === 'number' ? changes.stock : current.stock;
+          // Tracked stock only moves through Sticker Scan receiving; manual edits would desync units.
+          if (wasTracked && (nextMode !== 'whole' || Math.abs(nextStock - current.stock) > 1e-8)) return state;
+          if (changes.tracksIndividualUnits !== undefined) {
+            if (!changes.tracksIndividualUnits && hasUnits) return state;
+            if (changes.tracksIndividualUnits && (nextMode !== 'whole' || (!wasTracked && (hasUnits || nextStock !== 0)))) return state;
+          }
+        }
         const barcodeKey = changes.barcode !== undefined ? normalizeBarcode(changes.barcode) : normalizeBarcode(current?.barcode);
         const skuKey = changes.sku !== undefined ? normalizeBarcode(changes.sku) : normalizeBarcode(current?.sku);
         if (state.products.some((product) => {
@@ -979,6 +1222,7 @@ export const usePosStore = create<PosState>()(
         const state = get();
         const target = state.products.find((product) => product.id === id && product.branchId === state.activeBranchId);
         if (!target || target.priceGroupId) return false;
+        if (state.stockUnitRegistries.some((registry) => registry.branchId === state.activeBranchId && registry.productId === id && registry.units.length > 0)) return false;
         set((current) => ({
           products: current.products.filter((product) => !(product.id === id && product.branchId === current.activeBranchId)),
           heldItems: current.heldItems.filter((item) => !(item.productId === id && item.branchId === current.activeBranchId)),
@@ -991,7 +1235,7 @@ export const usePosStore = create<PosState>()(
         const state = get();
         if (!Number.isFinite(quantity) || quantity === 0) return false;
         const target = state.products.find((product) => product.id === id && product.branchId === state.activeBranchId);
-        if (!target || !isValidQuantity(Math.abs(quantity), 'decimal') || !isValidQuantity(target.stock + quantity, quantityModeForProduct(target), true) || target.stock + quantity < 0) return false;
+        if (!target || productIsUnitTracked(target, state.stockUnitRegistries, state.activeBranchId) || !isValidQuantity(Math.abs(quantity), 'decimal') || !isValidQuantity(target.stock + quantity, quantityModeForProduct(target), true) || target.stock + quantity < 0) return false;
         const receivedAt = new Date().toISOString();
         const nextStock = cleanQuantity(target.stock + quantity, quantityModeForProduct(target));
         const stockBatches = quantity < 0
@@ -1008,9 +1252,30 @@ export const usePosStore = create<PosState>()(
         let savedSale: Sale | null = null;
         set((state) => {
         const branchId = state.activeBranchId;
+        // Duplicate retries must never create a second sale or sell the same unit twice.
+        if (state.sales.some((entry) => entry.id === sale.id && entry.branchId === branchId)) return state;
+        const selectedUnitKeys = new Set<string>();
+        const selectedUnits = new Map<string, Map<string, StockUnit>>();
         const invalidSaleItem = sale.items.find((item) => {
           const product = state.products.find((entry) => entry.id === item.productId && entry.branchId === branchId);
-          return !product || !isValidQuantity(item.quantity, quantityModeForProduct(product)) || product.stock < item.quantity;
+          if (!product || !isValidQuantity(item.quantity, quantityModeForProduct(product)) || product.stock < item.quantity) return true;
+          const tracked = productIsUnitTracked(product, state.stockUnitRegistries, branchId);
+          const selections = item.stockUnitSelections || [];
+          if (!tracked) return selections.length > 0;
+          if (!Number.isInteger(item.quantity) || selections.length !== item.quantity) return true;
+          const byUnitId = new Map<string, StockUnit>();
+          for (const selection of selections) {
+            const registry = state.stockUnitRegistries.find((entry) => entry.id === selection.registryId);
+            const unit = registry?.units.find((entry) => entry.id === selection.unitId);
+            if (!registry || !unit || registry.branchId !== branchId || registry.productId !== product.id
+              || normalizeBarcode(unit.barcode) !== normalizeBarcode(selection.barcode) || unit.status !== 'in_stock') return true;
+            const key = normalizeUnitSelectionKey(branchId, product.id, unit.id);
+            if (selectedUnitKeys.has(key) || byUnitId.has(unit.id)) return true;
+            selectedUnitKeys.add(key);
+            byUnitId.set(unit.id, unit);
+          }
+          selectedUnits.set(item.productId, byUnitId);
+          return false;
         });
         if (invalidSaleItem) return state;
         if (sale.paymentMethod === 'KPay') {
@@ -1036,8 +1301,29 @@ export const usePosStore = create<PosState>()(
         const currentDay = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}-${String(currentDate.getDate()).padStart(2, '0')}`;
         let batchAllocationIncomplete = false;
         const saleItems = sale.items.map((item) => {
+          const product = state.products.find((entry) => entry.id === item.productId && entry.branchId === branchId)!;
           let remaining = item.quantity;
           const allocations: BatchAllocation[] = [];
+          const units = selectedUnits.get(item.productId);
+          if (units?.size) {
+            const batchCounts = new Map<string, number>();
+            let unitsWithoutBatch = 0;
+            units.forEach((unit) => {
+              if (unit.batchId) batchCounts.set(unit.batchId, (batchCounts.get(unit.batchId) || 0) + 1);
+              else unitsWithoutBatch += 1;
+            });
+            for (const [batchId, count] of batchCounts) {
+              const batch = stockBatches.find((entry) => entry.id === batchId && entry.branchId === branchId && entry.productId === item.productId);
+              if (!batch || batch.quantity + 0.000001 < count || (batch.expiryDate && batch.expiryDate < currentDay)) {
+                batchAllocationIncomplete = true;
+                break;
+              }
+              batch.quantity = cleanQuantity(batch.quantity - count, quantityModeForProduct(product));
+              allocations.push({ batchId, quantity: count });
+              remaining -= count;
+            }
+            remaining = unitsWithoutBatch;
+          }
           const candidates = stockBatches
             .filter((batch) => batch.branchId === branchId && batch.productId === item.productId && batch.quantity > 0 && (!batch.expiryDate || batch.expiryDate >= currentDay))
             .sort((a, b) => (a.expiryDate || '9999-12-31').localeCompare(b.expiryDate || '9999-12-31'));
@@ -1045,8 +1331,10 @@ export const usePosStore = create<PosState>()(
             if (remaining <= 0.000001) break;
             const take = Math.min(batch.quantity, remaining);
             if (take > 0) {
-              batch.quantity = cleanQuantity(batch.quantity - take, quantityModeForProduct(state.products.find((product) => product.id === item.productId && product.branchId === branchId)!));
-              allocations.push({ batchId: batch.id, quantity: take });
+              batch.quantity = cleanQuantity(batch.quantity - take, quantityModeForProduct(product));
+              const existing = allocations.find((entry) => entry.batchId === batch.id);
+              if (existing) existing.quantity += take;
+              else allocations.push({ batchId: batch.id, quantity: take });
               remaining -= take;
             }
           }
@@ -1056,11 +1344,34 @@ export const usePosStore = create<PosState>()(
         if (batchAllocationIncomplete) return state;
         const paidAmount = sale.paymentMethod === 'Cash' || sale.paymentMethod === 'KPay' ? sale.total : Math.max(0, Math.min(sale.total, sale.paidAmount ?? 0));
         const dueAmount = sale.paymentMethod === 'Cash' || sale.paymentMethod === 'KPay' ? 0 : Math.max(0, sale.total - paidAmount);
-        const saleToSave: Sale = { ...sale, branchId, customerId, paidAmount, dueAmount, items: saleItems, ...(customerSnapshot ? { customerSnapshot } : {}) };
+        const kpaySnapshot = sale.paymentMethod === 'KPay'
+          ? kpayAccountSnapshot(state.branches.find((entry) => entry.id === branchId)?.settings)
+          : {};
+        const saleToSave: Sale = { ...sale, branchId, customerId, paidAmount, dueAmount, items: saleItems, ...kpaySnapshot, ...(customerSnapshot ? { customerSnapshot } : {}) };
         savedSale = saleToSave;
+        const soldAt = sale.date || currentDate.toISOString();
+        const nextRegistries = selectedUnitKeys.size
+          ? state.stockUnitRegistries.map((registry) => {
+            if (registry.branchId !== branchId) return registry;
+            let changed = false;
+            const units = registry.units.map((unit) => {
+              if (!selectedUnitKeys.has(normalizeUnitSelectionKey(branchId, registry.productId, unit.id))) return unit;
+              changed = true;
+              return {
+                ...unit,
+                status: 'sold' as const,
+                saleId: saleToSave.id,
+                soldAt,
+                ...(saleToSave.createdByUid ? { soldByUid: saleToSave.createdByUid } : {}),
+              };
+            });
+            return changed ? { ...registry, units, updatedAt: soldAt, ...(saleToSave.createdByUid ? { updatedByUid: saleToSave.createdByUid } : {}) } : registry;
+          })
+          : state.stockUnitRegistries;
         return {
           customers,
           stockBatches,
+          stockUnitRegistries: nextRegistries,
           sales: [saleToSave, ...state.sales],
           activityLogs: prependAudit(state.activityLogs, makeAudit('CHECKOUT', 'Sale', `Voucher ${saleToSave.receiptNo} · ${saleToSave.customer} · ${saleToSave.total} MMK`, saleToSave.id, state.activeBranchId)),
           products: state.products.map((product) => {
@@ -1094,18 +1405,142 @@ export const usePosStore = create<PosState>()(
             description: `Voucher ${sale.receiptNo} ကို ပယ်ဖျက်သည် · ${reason.trim()}`,
           };
           succeeded = true;
+          const products = state.products.map((product) => {
+            if (product.branchId !== state.activeBranchId) return product;
+            const returned = sale.items.filter((item) => item.productId === product.id).reduce((sum, item) => sum + item.quantity, 0);
+            return returned ? { ...product, stock: cleanQuantity(product.stock + returned, quantityModeForProduct(product)) } : product;
+          });
+          const stockBatches = state.stockBatches.map((batch) => ({
+            ...batch,
+            quantity: batch.branchId === state.activeBranchId ? cleanQuantity(batch.quantity + allocations.filter((allocation) => allocation.batchId === batch.id).reduce((sum, allocation) => sum + allocation.quantity, 0), quantityModeForProduct(state.products.find((product) => product.id === batch.productId && product.branchId === state.activeBranchId) || { unit: 'ခု' })) : batch.quantity,
+          }));
+          // Legacy / Cashier-sync-v1 sales have no batch allocations. Restore their
+          // returned quantity into batches too, or a later sale fails batch coverage.
+          const restoredProductIds = new Set(sale.items.map((item) => item.productId));
+          const coveredBatches = ensureStockBatchCoverage(
+            products.filter((product) => product.branchId === state.activeBranchId && restoredProductIds.has(product.id)),
+            stockBatches.filter((batch) => batch.branchId === state.activeBranchId),
+          );
+          const restoredUnitIds = new Set(sale.items.flatMap((item) => (item.stockUnitSelections || []).map((selection) => `${selection.registryId}::${selection.unitId}`)));
+          const stockUnitRegistries = restoredUnitIds.size
+            ? state.stockUnitRegistries.map((registry) => {
+              let changed = false;
+              const units = registry.units.map((unit) => {
+                if (!restoredUnitIds.has(`${registry.id}::${unit.id}`) || unit.status !== 'sold' || unit.saleId !== sale.id) return unit;
+                changed = true;
+                const { saleId: _saleId, soldAt: _soldAt, soldByUid: _soldByUid, ...restored } = unit;
+                return { ...restored, status: 'in_stock' as const, lastSaleId: sale.id };
+              });
+              return changed ? { ...registry, units, updatedAt: now, ...(actor.uid ? { updatedByUid: actor.uid } : {}) } : registry;
+            })
+            : state.stockUnitRegistries;
           return {
             sales: state.sales.map((entry) => entry.id === id && entry.branchId === state.activeBranchId ? updatedSale : entry),
             activityLogs: prependAudit(state.activityLogs, audit),
-            products: state.products.map((product) => {
-              if (product.branchId !== state.activeBranchId) return product;
-              const returned = sale.items.filter((item) => item.productId === product.id).reduce((sum, item) => sum + item.quantity, 0);
-              return returned ? { ...product, stock: cleanQuantity(product.stock + returned, quantityModeForProduct(product)) } : product;
-            }),
-            stockBatches: state.stockBatches.map((batch) => ({
-              ...batch,
-              quantity: batch.branchId === state.activeBranchId ? cleanQuantity(batch.quantity + allocations.filter((allocation) => allocation.batchId === batch.id).reduce((sum, allocation) => sum + allocation.quantity, 0), quantityModeForProduct(state.products.find((product) => product.id === batch.productId && product.branchId === state.activeBranchId) || { unit: 'ခု' })) : batch.quantity,
+            products,
+            stockUnitRegistries,
+            stockBatches: [...stockBatches.filter((batch) => batch.branchId !== state.activeBranchId), ...coveredBatches],
+          };
+        });
+        return succeeded;
+      },
+      applySaleReturn: (input) => {
+        let succeeded = false;
+        set((state) => {
+          const branchId = input.branchId || state.activeBranchId;
+          const sale = state.sales.find((entry) => entry.id === input.saleId && entry.branchId === branchId);
+          if (!sale || sale.status !== 'completed' || !input.items.length) return state;
+          if ((sale.returns || []).some((entry) => entry.id === input.returnId)) { succeeded = true; return state; }
+          const unitDispositions = new Map<string, SaleReturnDisposition>();
+          const restockByProduct = new Map<string, number>();
+          const batchRestock = new Map<string, number>();
+          input.items.forEach((item) => {
+            const restock = item.units?.length
+              ? item.units.filter((unit) => unit.disposition === 'restock').length
+              : item.disposition === 'restock' ? item.quantity : 0;
+            restockByProduct.set(item.productId, (restockByProduct.get(item.productId) || 0) + restock);
+            (item.batchAllocations || []).forEach((allocation) => {
+              batchRestock.set(allocation.batchId, (batchRestock.get(allocation.batchId) || 0) + allocation.quantity);
+            });
+            (item.units || []).forEach((unit) => unitDispositions.set(`${unit.registryId}::${unit.unitId}`, unit.disposition));
+          });
+          const nextProductReturned: Record<string, number> = { ...(sale.returnedProductQuantities || {}) };
+          const nextBatchReturned: Record<string, number> = { ...(sale.returnedBatchQuantities || {}) };
+          input.items.forEach((item) => {
+            const product = state.products.find((entry) => entry.id === item.productId && entry.branchId === branchId);
+            nextProductReturned[item.productId] = cleanQuantity((nextProductReturned[item.productId] || 0) + item.quantity, quantityModeForProduct(product || { unit: 'ခု' }));
+          });
+          Object.entries(input.returnedBatchQuantities || {}).forEach(([batchId, quantity]) => {
+            nextBatchReturned[batchId] = cleanQuantity(Number(quantity) || 0, 'decimal');
+          });
+          const returns: SaleReturnRecord[] = [...(sale.returns || []), {
+            id: input.returnId, at: input.at, actorUid: input.actor.uid, actorName: input.actor.name,
+            reason: input.reason, value: input.returnedValue, refundStatus: input.refundStatus,
+            refundAmount: input.refundAmount,
+            items: input.items.map((item) => ({
+              productId: item.productId, quantity: item.quantity,
+              units: (item.units || []).map((unit) => `${unit.registryId}::${unit.unitId}`),
             })),
+          }].slice(-50);
+          const updatedSale: Sale = {
+            ...sale,
+            dueAmount: input.dueAmount ?? sale.dueAmount,
+            returnedProductQuantities: { ...nextProductReturned, ...(input.returnedProductQuantities || {}) },
+            returnedBatchQuantities: nextBatchReturned,
+            returns,
+            returnCount: returns.length,
+            returnedTotal: Math.round(((sale.returnedTotal || 0) + input.returnedValue) * 100) / 100,
+            lastReturnId: input.returnId,
+            lastReturnReason: input.reason,
+            lastReturnedAt: input.at,
+            lastReturnedByUid: input.actor.uid,
+            lastReturnedByName: input.actor.name,
+            lastAdjustmentKind: 'return',
+            lastAdjustedAt: input.at,
+            lastAdjustedByUid: input.actor.uid,
+          };
+          const products = state.products.map((product) => {
+            if (product.branchId !== branchId) return product;
+            const restock = restockByProduct.get(product.id) || 0;
+            return restock ? { ...product, stock: cleanQuantity(product.stock + restock, quantityModeForProduct(product)) } : product;
+          });
+          const stockBatches = state.stockBatches.map((batch) => {
+            if (batch.branchId !== branchId) return batch;
+            const restock = batchRestock.get(batch.id) || 0;
+            const product = state.products.find((entry) => entry.id === batch.productId && entry.branchId === branchId);
+            return restock ? { ...batch, quantity: cleanQuantity(batch.quantity + restock, quantityModeForProduct(product || { unit: 'ခု' })) } : batch;
+          });
+          const stockUnitRegistries = unitDispositions.size
+            ? state.stockUnitRegistries.map((registry) => {
+              if (registry.branchId !== branchId) return registry;
+              let changed = false;
+              const units = registry.units.map((unit) => {
+                const disposition = unitDispositions.get(`${registry.id}::${unit.id}`);
+                if (!disposition) return unit;
+                changed = true;
+                if (disposition === 'damaged') {
+                  const { saleId: _saleId, soldAt: _soldAt, soldByUid: _soldByUid, ...rest } = unit;
+                  return { ...rest, status: 'damaged' as const, lastSaleId: sale.id, damagedAt: input.at, damagedByUid: input.actor.uid, damageReason: input.reason };
+                }
+                const { saleId: _saleId, soldAt: _soldAt, soldByUid: _soldByUid, ...rest } = unit;
+                return { ...rest, status: 'in_stock' as const, lastSaleId: sale.id, returnedAt: input.at, returnedByUid: input.actor.uid };
+              });
+              return changed ? { ...registry, units, updatedAt: input.at, updatedByUid: input.actor.uid } : registry;
+            })
+            : state.stockUnitRegistries;
+          succeeded = true;
+          return {
+            sales: state.sales.map((entry) => entry.id === sale.id && entry.branchId === branchId ? updatedSale : entry),
+            products,
+            stockBatches,
+            stockUnitRegistries,
+            activityLogs: prependAudit(state.activityLogs, {
+              id: newId(), branchId, at: input.at,
+              actor: input.actor.name || input.actor.email || 'User',
+              actorUid: input.actor.uid, actorEmail: input.actor.email,
+              action: 'SALE_RETURN', entity: 'Sale', entityId: sale.id,
+              description: `Voucher ${sale.receiptNo} မှ ပစ္စည်းပြန်လည်လက်ခံသည် · ${input.returnedValue.toLocaleString('en-US')} MMK · ${input.reason}`,
+            }),
           };
         });
         return succeeded;
@@ -1183,6 +1618,7 @@ export const usePosStore = create<PosState>()(
           ? `kpay_${encodeURIComponent(branchId)}_${encodeURIComponent(input.transactionReference!.trim().toLowerCase())}`
           : newId();
         if (state.cashierSettlements.some((entry) => entry.id === id && entry.status === 'paid')) return null;
+        const settlementBranchSettings = state.branches.find((branch) => branch.id === branchId)?.settings;
         const saved: CashierSettlementRecord = {
           ...input,
           id,
@@ -1193,8 +1629,9 @@ export const usePosStore = create<PosState>()(
           paidAt: now,
           receiverAccountName: input.receiverAccountName?.trim() || undefined,
           receiverAccountNumber: input.receiverAccountNumber?.trim() || undefined,
-          senderAccountName: input.senderAccountName?.trim() || state.branches.find((branch) => branch.id === branchId)?.settings.kpayAccountName || undefined,
-          senderAccountNumber: input.senderAccountNumber?.trim() || state.branches.find((branch) => branch.id === branchId)?.settings.kpayAccountNumber || undefined,
+          senderAccountName: input.senderAccountName?.trim() || settlementBranchSettings?.kpayAccountName || undefined,
+          senderAccountNumber: input.senderAccountNumber?.trim() || settlementBranchSettings?.kpayAccountNumber || undefined,
+          ...(input.paymentMethod === 'kpay' ? kpayAccountSnapshot(settlementBranchSettings) : {}),
           transactionReference: input.transactionReference?.trim() || undefined,
           note: input.note?.trim() || '',
         };
@@ -1358,7 +1795,15 @@ export const usePosStore = create<PosState>()(
         const due = Math.max(0, sale.dueAmount ?? (sale.total - (sale.paidAmount ?? 0)));
         if (due <= 0 || payment.amount > due) return false;
         const amount = payment.amount;
-        const saved: CustomerPayment = { ...payment, branchId: state.activeBranchId, amount, id: newId(), date: payment.date || new Date().toISOString() };
+        const branchSettings = state.branches.find((branch) => branch.id === state.activeBranchId)?.settings;
+        const saved: CustomerPayment = {
+          ...payment,
+          branchId: state.activeBranchId,
+          amount,
+          id: newId(),
+          date: payment.date || new Date().toISOString(),
+          ...(payment.paymentMethod === 'Transfer' ? kpayAccountSnapshot(branchSettings) : {}),
+        };
         const activeShift = state.cashShifts.find((shift) => shift.branchId === state.activeBranchId && !shift.closedAt);
         const cashMovement: CashMovement | null = saved.paymentMethod === 'Cash' && activeShift ? {
           branchId: state.activeBranchId, id: newId(), shiftId: activeShift.id, date: saved.date, direction: 'in', amount,
@@ -1642,6 +2087,9 @@ export const usePosStore = create<PosState>()(
           if (seenProducts.has(draft.sourceProductId)) return fail('ပစ္စည်းတစ်မျိုးကို Shipment တစ်ခုထဲမှာ ထပ်ထည့်ထားပါတယ်။ ထပ်နေတဲ့စာကြောင်းကို ဖယ်ပါ။');
           seenProducts.add(draft.sourceProductId);
           const source = products[sourceIndex];
+          if (productIsUnitTracked(source, state.stockUnitRegistries, sourceBranch.id)) {
+            return fail(`${source.name}: ${UNIT_TRANSFER_UNSUPPORTED_MESSAGE}`);
+          }
           const quantity = Number(draft.quantity);
           const mode = quantityModeForProduct(source);
           if (!Number.isFinite(quantity) || !isValidQuantity(quantity, mode) || quantity <= 0) {
@@ -1759,7 +2207,7 @@ export const usePosStore = create<PosState>()(
             activityLogs: [...batchWarningAudits, {
               ...makeAudit('STOCK_SHIPMENT_DISPATCHED', 'Branch Stock Shipment', `${shipment.shipmentNo} · ${sourceBranch.name} မှ ${destinationBranch.name} သို့ ${shipment.items.length} မျိုး ပို့ဆောင်သည်`, shipmentId, sourceBranch.id),
               actor: input.actor?.name || input.actor?.email || 'Owner', actorUid: input.actor?.uid || '', actorEmail: input.actor?.email || '',
-            }, ...current.activityLogs].slice(0, 1000),
+            }, ...current.activityLogs].slice(0, ACTIVITY_LOG_LOCAL_LIMIT),
           };
         });
         if (!commitApplied) return fail('Stock အချက်အလက်ကို ပို့နေချိန်အတွင်း ပြောင်းလဲသွားပါတယ်။ Page ကို Refresh လုပ်ပြီး လက်ကျန်အသစ်နဲ့ ပြန်စမ်းပါ။ Stock မပြောင်းထားပါ။');
@@ -1806,6 +2254,11 @@ export const usePosStore = create<PosState>()(
         if (!shipment || shipment.status !== 'received' || !Array.isArray(shipment.receivedItems) || shipment.receivedItems.length !== shipment.items.length) return false;
         const destinationBranch = state.branches.find((branch) => branch.id === shipment.toBranchId && branch.status === 'active');
         if (!destinationBranch) return false;
+        if (shipment.items.some((item) => productIsUnitTracked(
+          state.products.find((product) => product.id === item.sourceProductId && product.branchId === shipment.fromBranchId) || { id: item.sourceProductId },
+          state.stockUnitRegistries,
+          shipment.fromBranchId,
+        ))) return false;
         const products = state.products.map((product) => ({ ...product }));
         const batches = state.stockBatches.map((batch) => ({ ...batch }));
         const categories = state.categories.map((category) => ({ ...category }));
@@ -2026,6 +2479,9 @@ export const usePosStore = create<PosState>()(
 
           const source = products.find((product) => product.id === draft.sourceProductId && product.branchId === sourceBranch.id);
           if (!source || !isValidQuantity(quantity, quantityModeForProduct(source)) || source.stock + epsilon < quantity) return null;
+          // Unit registries cannot move with a quantity transfer yet, so refuse before
+          // any working copy is mutated. The UI shows UNIT_TRANSFER_UNSUPPORTED_MESSAGE.
+          if (productIsUnitTracked(source, state.stockUnitRegistries, sourceBranch.id)) return null;
           const sourceStockBefore = source.stock;
           const sourceTrackedTotal = batches
             .filter((batch) => batch.branchId === sourceBranch.id && batch.productId === source.id)
@@ -2183,7 +2639,7 @@ export const usePosStore = create<PosState>()(
               { ...makeAudit('STOCK_TRANSFER_IN', 'Stock Transfer', `${transfer.transferNo} · ${sourceBranch.name} မှ ${summarizeQuantities(transferLines.map((item) => ({ quantity: item.quantity, unit: item.unit })))} လက်ခံသည်`, transferId, destinationBranch.id), actor: input.actor?.name || input.actor?.email || 'Owner / Local User' },
               { ...makeAudit('STOCK_TRANSFER_OUT', 'Stock Transfer', `${transfer.transferNo} · ${destinationBranch.name} သို့ ${summarizeQuantities(transferLines.map((item) => ({ quantity: item.quantity, unit: item.unit })))} လွှဲသည်`, transferId, sourceBranch.id), actor: input.actor?.name || input.actor?.email || 'Owner / Local User' },
               ...current.activityLogs,
-            ].slice(0, 1000),
+            ].slice(0, ACTIVITY_LOG_LOCAL_LIMIT),
           };
         });
 
@@ -2209,6 +2665,14 @@ export const usePosStore = create<PosState>()(
         // Only reverse records whose original before/after stock was verified by v2.7.4+.
         // This prevents reversing legacy false-success transfer records with unknown balances.
         if (transfer.items.some((line) => line.sourceStockBefore === undefined || line.sourceStockAfter === undefined || line.destinationStockBefore === undefined || line.destinationStockAfter === undefined)) return { ok: false, reason: 'invalid-transfer' };
+        // Unit registries do not move with stock; reversing a tracked product would
+        // restore a quantity without restoring the matching units.
+        if (transfer.items.some((line) => {
+          const source = state.products.find((product) => product.id === line.sourceProductId && product.branchId === transfer.fromBranchId);
+          const destination = state.products.find((product) => product.id === line.destinationProductId && product.branchId === transfer.toBranchId);
+          return productIsUnitTracked(source || { id: line.sourceProductId }, state.stockUnitRegistries, transfer.fromBranchId)
+            || productIsUnitTracked(destination || { id: line.destinationProductId }, state.stockUnitRegistries, transfer.toBranchId);
+        })) return { ok: false, reason: 'unit-tracking-unsupported' };
 
         const epsilon = 0.000001;
         const products = state.products.map((product) => ({ ...product }));
@@ -2310,7 +2774,7 @@ export const usePosStore = create<PosState>()(
               { ...makeAudit('STOCK_TRANSFER_REVERSED_OUT', 'Stock Transfer', `${transfer.transferNo} ကို ${transfer.toBranchName || transfer.toBranchId} မှ ပြန်လက်ခံသည်။ ${reversedTransfer.reversalNote || 'မှတ်ချက်မရှိ'}`, transfer.id, transfer.fromBranchId), actor: actorName },
               { ...makeAudit('STOCK_TRANSFER_REVERSED_IN', 'Stock Transfer', `${transfer.transferNo} ကို ${transfer.fromBranchName || transfer.fromBranchId} သို့ ပြန်ပို့သည်။ ${reversedTransfer.reversalNote || 'မှတ်ချက်မရှိ'}`, transfer.id, transfer.toBranchId), actor: actorName },
               ...current.activityLogs,
-            ].slice(0, 1000),
+            ].slice(0, ACTIVITY_LOG_LOCAL_LIMIT),
           };
         });
         if (!commitApplied) return { ok: false, reason: 'state-changed' };
@@ -2335,28 +2799,27 @@ export const usePosStore = create<PosState>()(
           return { ok: false, message: 'Unit Barcode Registration ကို ပြည့်ကိန်း Stock ပစ္စည်းများမှာသာ အသုံးပြုနိုင်ပါတယ်။' };
         }
         if (!Array.isArray(input.units) || input.units.length === 0) return { ok: false, message: 'မှတ်ပုံတင်မည့် Barcode မရှိပါ။' };
-        const productRegistries = state.stockUnitRegistries
-          .filter((entry) => entry.branchId === branchId && entry.productId === product.id)
-          .sort((a, b) => (a.chunkIndex ?? 0) - (b.chunkIndex ?? 0));
-        const existingInStock = productRegistries.flatMap((entry) => entry.units)
-          .filter((unit) => unit.status === 'in_stock' || unit.status === 'reserved').length;
-        const remaining = Math.max(0, Math.floor(product.stock) - existingInStock);
+        const remaining = countReceivableUnits(product.stock, state.stockUnitRegistries, branchId, product.id);
         if (input.units.length > remaining) {
           return { ok: false, message: `လက်ရှိ Stock မှာ Barcode အသစ်ထည့်နိုင်တာ ${remaining} ခုသာ ကျန်ပါတယ်။` };
         }
-        const allRegistered = state.stockUnitRegistries.flatMap((entry) => entry.units.map((unit) => normalizeBarcode(unit.barcode)));
-        const usedCodes = new Set(allRegistered);
-        const productCodes = new Set(state.products.flatMap((entry) => [normalizeBarcode(entry.barcode), normalizeBarcode(entry.sku)]).filter(Boolean));
-        const incoming: string[] = [];
-        for (const unit of input.units) {
-          const code = normalizeBarcode(unit.barcode);
-          if (!code || code.length > 128 || /[^\x20-\x7E]/.test(code)) {
-            return { ok: false, message: 'Barcode သည် ASCII စာလုံးဖြစ်ပြီး ၁၂၈ လုံးထက် မပိုရပါ။' };
+        const usedCodes = new Set([
+          ...state.stockUnitRegistries.flatMap((entry) => entry.units.map((unit) => normalizeBarcode(unit.barcode))),
+          ...state.products.flatMap((entry) => [normalizeBarcode(entry.barcode), normalizeBarcode(entry.sku)]).filter(Boolean),
+        ]);
+        const validation = validateUnitCandidates(input.units.map((unit) => ({ barcode: unit.barcode, barcodeSource: unit.barcodeSource, note: unit.note })), usedCodes);
+        if (!validation.ok) {
+          return {
+            ok: false,
+            message: validation.reason === 'duplicate-existing' || validation.reason === 'duplicate-input'
+              ? `Barcode တူညီပြီးသားရှိပါတယ်: ${validation.barcode}`
+              : 'Barcode သည် ASCII စာလုံးဖြစ်ပြီး ၁၂၈ လုံးထက် မပိုရပါ။',
+          };
+        }
+        for (const entry of input.units) {
+          if (entry.batchId && !state.stockBatches.some((batch) => batch.id === entry.batchId && batch.branchId === branchId && batch.productId === product.id)) {
+            return { ok: false, message: 'ရွေးချယ်ထားသော Stock Batch ကို ဒီ Product အတွက် မတွေ့ပါ။' };
           }
-          if (usedCodes.has(code) || productCodes.has(code) || incoming.includes(code)) {
-            return { ok: false, message: `Barcode တူညီပြီးသားရှိပါတယ်: ${code}` };
-          }
-          incoming.push(code);
         }
         const now = new Date().toISOString();
         const newUnits: StockUnit[] = input.units.map((entry) => ({
@@ -2364,45 +2827,115 @@ export const usePosStore = create<PosState>()(
           status: 'in_stock', registeredAt: now,
           ...(input.actorUid ? { registeredByUid: input.actorUid } : {}),
           ...(input.actorName ? { registeredByName: input.actorName } : {}),
+          ...(entry.batchId ? { batchId: entry.batchId } : {}),
           ...(entry.note?.trim() ? { note: entry.note.trim() } : {}),
         }));
-        // Chunk registries by Product + Branch; never create one Firestore document per bottle.
-        // 250 units/document leaves ample headroom below Firestore's 1 MiB document limit.
-        const maxUnitsPerRegistry = 250;
-        const nextProductRegistries = productRegistries.map((entry) => ({ ...entry, units: [...entry.units] }));
-        let cursor = 0;
-        while (cursor < newUnits.length) {
-          const last = nextProductRegistries[nextProductRegistries.length - 1];
-          if (last && last.units.length < maxUnitsPerRegistry) {
-            const take = Math.min(maxUnitsPerRegistry - last.units.length, newUnits.length - cursor);
-            last.units.push(...newUnits.slice(cursor, cursor + take));
-            last.updatedAt = now;
-            if (input.actorUid) last.updatedByUid = input.actorUid;
-            cursor += take;
-            continue;
-          }
-          const chunkIndex = nextProductRegistries.length
-            ? Math.max(...nextProductRegistries.map((entry) => entry.chunkIndex ?? 0)) + 1
-            : 0;
-          const take = Math.min(maxUnitsPerRegistry, newUnits.length - cursor);
-          nextProductRegistries.push({
-            id: `unit-registry-${encodeURIComponent(branchId)}-${encodeURIComponent(product.id)}-${chunkIndex}`,
-            branchId, productId: product.id, chunkIndex,
-            units: newUnits.slice(cursor, cursor + take), updatedAt: now,
-            ...(input.actorUid ? { updatedByUid: input.actorUid } : {}),
-          });
-          cursor += take;
-        }
-        const productRegistryIds = new Set(productRegistries.map((entry) => entry.id));
-        const nextRegistryIds = new Set(nextProductRegistries.map((entry) => entry.id));
+        const appended = appendUnitRegistries(state.stockUnitRegistries, branchId, product.id, newUnits, now, input.actorUid);
         set((current) => ({
           stockUnitRegistries: [
-            ...current.stockUnitRegistries.filter((entry) => !productRegistryIds.has(entry.id) && !nextRegistryIds.has(entry.id)),
-            ...nextProductRegistries,
+            ...current.stockUnitRegistries.filter((entry) => !appended.productRegistryIds.has(entry.id) && !appended.nextRegistryIds.has(entry.id)),
+            ...appended.next.filter((entry) => entry.branchId === branchId && entry.productId === product.id),
           ],
           activityLogs: prependAudit(current.activityLogs, makeAudit('STOCK_UNIT_REGISTER', 'Stock Unit', `${product.name} အတွက် Unit Barcode ${newUnits.length} ခု မှတ်ပုံတင်သည်`, product.id, branchId)),
         }));
         return { ok: true, created: newUnits.length, remainingUnregistered: remaining - newUnits.length };
+      },
+      receiveTrackedStockUnits: (input) => {
+        const state = get();
+        const branchId = input.branchId || state.activeBranchId;
+        const requestId = (input.requestId || '').trim();
+        if (requestId) {
+          const existing = state.stockReceipts.find((receipt) => receipt.branchId === branchId && receipt.requestId === requestId);
+          if (existing) {
+            return { ok: true, receiptId: existing.id, batchId: existing.items[0]?.batchId || '', created: 0, duplicate: true };
+          }
+        }
+        const product = state.products.find((entry) => entry.id === input.productId && (entry.branchId || DEFAULT_BRANCH_ID) === branchId);
+        if (!product) return { ok: false, message: 'ရွေးချယ်ထားသော Product ကို ဒီဆိုင်မှာ မတွေ့ပါ။' };
+        if (product.tracksIndividualUnits !== true) return { ok: false, message: 'ဒီ Product မှာ Individual Unit Tracking ဖွင့်ထားခြင်း မရှိပါ။' };
+        if (quantityModeForProduct(product) !== 'whole') return { ok: false, message: 'Unit Barcode လက်ခံမှုကို ပြည့်ကိန်းယူနစ်ပစ္စည်းများတွင်သာ အသုံးပြုနိုင်ပါတယ်။' };
+        const quantity = Number(input.quantity);
+        if (!Number.isInteger(quantity) || quantity <= 0 || quantity > MAX_UNITS_PER_RECEIPT) {
+          return { ok: false, message: `လက်ခံအရေအတွက်သည် ၁ မှ ${MAX_UNITS_PER_RECEIPT} အတွင်း ပြည့်ကိန်းဖြစ်ရပါမယ်။` };
+        }
+        if (!Array.isArray(input.barcodes) || input.barcodes.length !== quantity) {
+          return { ok: false, message: `Sticker Scan မပြည့်စုံသေးပါ: ${Array.isArray(input.barcodes) ? input.barcodes.length : 0}/${quantity}။ အရေအတွက်အတိုင်း Scan ပြီးမှ လက်ခံပါ။` };
+        }
+        const usedCodes = new Set([
+          ...state.stockUnitRegistries.flatMap((entry) => entry.units.map((unit) => normalizeBarcode(unit.barcode))),
+          ...state.products.flatMap((entry) => [normalizeBarcode(entry.barcode), normalizeBarcode(entry.sku)]).filter(Boolean),
+        ]);
+        const validation = validateUnitCandidates(input.barcodes.map((barcode) => ({ barcode, barcodeSource: 'purchased_sticker' as const })), usedCodes);
+        if (!validation.ok) {
+          return {
+            ok: false,
+            message: validation.reason === 'duplicate-existing' || validation.reason === 'duplicate-input'
+              ? `Sticker Barcode ထပ်နေပါတယ် (ဆိုင်ခွဲအားလုံး စစ်ပြီး): ${validation.barcode}`
+              : `Sticker Barcode ပုံစံ မမှန်ပါ: ${validation.barcode}`,
+          };
+        }
+        const unitCost = Math.max(0, Number.isFinite(Number(input.unitCost)) ? Number(input.unitCost) : product.costPrice);
+        const receivedDate = input.receivedDate ? new Date(`${input.receivedDate}T12:00:00`) : new Date();
+        if (!Number.isFinite(receivedDate.getTime())) return { ok: false, message: 'လက်ခံရက်စွဲ မမှန်ကန်ပါ။' };
+        const receivedAt = receivedDate.toISOString();
+        const existingBatch = input.batchId
+          ? state.stockBatches.find((batch) => batch.id === input.batchId && batch.branchId === branchId && batch.productId === product.id)
+          : undefined;
+        if (input.batchId && !existingBatch) return { ok: false, message: 'ရွေးချယ်ထားသော Receiving Batch ကို မတွေ့ပါ။' };
+        if (existingBatch?.expiryDate && existingBatch.expiryDate < receivedAt.slice(0, 10)) {
+          return { ok: false, message: 'သက်တမ်းကုန်ပြီးသား Batch ထဲကို ပစ္စည်းအသစ် ထပ်မထည့်နိုင်ပါ။' };
+        }
+        const receiptId = newId();
+        const batchId = existingBatch?.id || newId();
+        const expiryDate = (input.expiryDate || existingBatch?.expiryDate || '').trim();
+        const supplier = input.supplierId ? state.suppliers.find((entry) => entry.id === input.supplierId) : undefined;
+        if (input.supplierId && !supplier) return { ok: false, message: 'Supplier ကို မတွေ့ပါ။' };
+        const nextStock = cleanQuantity(product.stock + quantity, 'whole');
+        const nextProductCost = nextStock > 0
+          ? ((product.stock * product.costPrice) + (quantity * unitCost)) / nextStock
+          : unitCost;
+        const nextBatchQuantity = cleanQuantity((existingBatch?.quantity || 0) + quantity, 'whole');
+        const nextBatchUnitCost = nextBatchQuantity > 0
+          ? (((existingBatch?.quantity || 0) * (existingBatch?.unitCost || 0)) + (quantity * unitCost)) / nextBatchQuantity
+          : unitCost;
+        const now = new Date().toISOString();
+        const newUnits: StockUnit[] = validation.normalized.map((barcode) => ({
+          id: newId(), barcode, barcodeSource: 'purchased_sticker' as const, status: 'in_stock' as const,
+          registeredAt: now, batchId,
+          ...(input.actorUid ? { registeredByUid: input.actorUid } : {}),
+          ...(input.actorName ? { registeredByName: input.actorName } : {}),
+        }));
+        const appended = appendUnitRegistries(state.stockUnitRegistries, branchId, product.id, newUnits, now, input.actorUid);
+        const batch: StockBatch = existingBatch
+          ? { ...existingBatch, quantity: nextBatchQuantity, unitCost: nextBatchUnitCost, ...(expiryDate ? { expiryDate } : {}) }
+          : { id: batchId, branchId, productId: product.id, purchaseId: '', supplierId: supplier?.id || '', stockReceiptId: receiptId, quantity, receivedAt, expiryDate, unitCost };
+        const receipt: StockReceipt = {
+          id: receiptId, branchId, receiptNo: `GR-${receivedAt.slice(0, 10).replace(/-/g, '')}-${receiptId.slice(0, 6).toUpperCase()}`,
+          date: receivedAt, ...(requestId ? { requestId } : {}), supplierId: supplier?.id,
+          supplierName: supplier?.name || 'Supplier မသတ်မှတ်ထား', referenceNo: '', note: (input.note || '').trim() || 'Unit Barcode Scan ဖြင့် လက်ခံ',
+          items: [{
+            id: newId(), productId: product.id, productName: product.name, sku: product.sku, barcode: product.barcode,
+            quantity, unitCost, lineTotal: quantity * unitCost, retailPrice: product.retailPrice,
+            wholesalePrice: product.wholesalePrice, expiryDate, unit: product.unit, batchId,
+          }],
+          totalQuantity: quantity, totalCost: quantity * unitCost,
+        };
+        set((current) => {
+          if (requestId && current.stockReceipts.some((entry) => entry.branchId === branchId && entry.requestId === requestId)) return current;
+          return {
+            products: current.products.map((entry) => entry.id === product.id && entry.branchId === branchId ? { ...entry, stock: nextStock, costPrice: nextProductCost } : entry),
+            stockBatches: existingBatch
+              ? current.stockBatches.map((entry) => entry.id === batchId && entry.branchId === branchId ? batch : entry)
+              : [batch, ...current.stockBatches],
+            stockReceipts: [receipt, ...current.stockReceipts],
+            stockUnitRegistries: [
+              ...current.stockUnitRegistries.filter((entry) => !appended.productRegistryIds.has(entry.id) && !appended.nextRegistryIds.has(entry.id)),
+              ...appended.next.filter((entry) => entry.branchId === branchId && entry.productId === product.id),
+            ],
+            activityLogs: prependAudit(current.activityLogs, makeAudit('STOCK_UNIT_RECEIVED', 'Stock Unit', `${product.name} · ${quantity} units · Batch ${batchId.slice(0, 8)}`, product.id, branchId)),
+          };
+        });
+        return { ok: true, receiptId, batchId, created: quantity, duplicate: false };
       },
       addSupplierPayment: (payment) => {
         const state = get();
@@ -2530,7 +3063,7 @@ export const usePosStore = create<PosState>()(
         const nextStockShipments = Array.isArray(data.stockShipments) ? data.stockShipments as BranchStockShipment[] : state.stockShipments;
         const nextCashShifts = normalizeBranchRecords<CashShift>(data.cashShifts, state.cashShifts);
         const nextCashMovements = normalizeBranchRecords<CashMovement>(data.cashMovements, state.cashMovements);
-        const nextActivityLogs = normalizeBranchRecords<ActivityLog>(data.activityLogs, state.activityLogs);
+        const nextActivityLogs = trimActivityLogs(normalizeBranchRecords<ActivityLog>(data.activityLogs, state.activityLogs));
         const incomingCategories = Array.isArray(data.categories) ? (data.categories as Category[]).map((category, index) => ({ ...category, branchId: nextBranches.some((branch) => branch.id === category.branchId) ? category.branchId : defaultBranchId, color: category.color || ['#0f766e', '#2563eb', '#d97706', '#7c3aed', '#db2777', '#64748b'][index % 6], isActive: category.isActive !== false, createdAt: category.createdAt || new Date().toISOString() })) : [];
         const categories = incomingCategories.length ? incomingCategories : nextBranches.flatMap((branch) => {
           const names = [...new Set([...DEFAULT_CATEGORY_NAMES, ...nextProducts.filter((product) => product.branchId === branch.id).map((product) => product.category).filter(Boolean)])];
@@ -2557,7 +3090,13 @@ export const usePosStore = create<PosState>()(
           cashMovements: nextCashMovements, activityLogs: nextActivityLogs, ownerProfile: data.ownerProfile ? normalizeOwnerProfile({ ...normalizeOwnerProfile(state.ownerProfile), ...data.ownerProfile }) : normalizeOwnerProfile(state.ownerProfile), settings,
         };
       }),
-      clearAllData: () => set({ branches: [makeDefaultBranch()], activeBranchId: DEFAULT_BRANCH_ID, categories: makeDefaultCategories(DEFAULT_BRANCH_ID), products: [], sales: [], expenses: [], cashierSettlements: [], branchFinanceLedgerEntries: [], cashierAdvanceReconciliations: [], branchFinanceReconciliations: [], heldItems: [], customers: [], suppliers: [], customerPayments: [], purchases: [], supplierPayments: [], purchaseReturns: [], stockBatches: [], stockReceipts: [], stockTransfers: [], stockShipments: [], stockUnitRegistries: [], priceGroups: [], cashShifts: [], cashMovements: [], activityLogs: [], ownerProfile: defaultOwnerProfile, settings: defaultSettings }),
+      clearAllData: () => {
+        // Mark before mutating state so the sync layer can never interpret this
+        // deliberate local wipe as "the owner deleted every record in the cloud".
+        const marker = markLocalDataReplacement('local-reset');
+        set({ branches: [makeDefaultBranch()], activeBranchId: DEFAULT_BRANCH_ID, categories: makeDefaultCategories(DEFAULT_BRANCH_ID), products: [], sales: [], expenses: [], cashierSettlements: [], branchFinanceLedgerEntries: [], cashierAdvanceReconciliations: [], branchFinanceReconciliations: [], heldItems: [], customers: [], suppliers: [], customerPayments: [], purchases: [], supplierPayments: [], purchaseReturns: [], stockBatches: [], stockReceipts: [], stockTransfers: [], stockShipments: [], stockUnitRegistries: [], priceGroups: [], cashShifts: [], cashMovements: [], activityLogs: [], ownerProfile: defaultOwnerProfile, settings: defaultSettings });
+        announceLocalDataReplacement(marker);
+      },
     }),
     {
       name: POS_PERSIST_STORAGE_KEY,

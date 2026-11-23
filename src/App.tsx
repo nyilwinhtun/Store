@@ -1,13 +1,13 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { Component, lazy, Suspense, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
   Activity, AlertTriangle, ArchiveRestore, ArrowDownToLine, ArrowUpRight, BarChart3, ChevronDown,
   Boxes, Camera, Check, CircleDollarSign, ClipboardList, CreditCard, Download,
   FileJson, LayoutDashboard, LockKeyhole, Menu, Minus, PackagePlus,
   Plus, Printer, Receipt, Search, Settings, ShoppingBag, ShoppingCart, Copy,
-  Smartphone, Store, Trash2, TrendingUp, Truck, Wallet, X, Users, CalendarClock, UserRound, Sun, Moon, LogOut, PackageCheck, Send,
+  Smartphone, Store, Trash2, TrendingUp, Truck, Wallet, X, Users, CalendarClock, UserRound, Sun, Moon, LogOut, PackageCheck, Send, ShieldCheck, ScanLine, RotateCcw,
 } from 'lucide-react';
 import {
-  usePosStore, flushPosStorePersistence, DEFAULT_CASHIER_EXPENSE_APPROVAL_LIMIT, type Branch, type CartItem, type Expense, type PriceMode, type Product, type Sale, type StockBatch,
+  usePosStore, flushPosStorePersistence, DEFAULT_CASHIER_EXPENSE_APPROVAL_LIMIT, type Branch, type CartItem, type Expense, type PriceMode, type Product, type Sale, type StockBatch, type StockUnitSelection,
 } from './store/usePosStore';
 const CustomerCreditPage = lazy(() => import('./components/BusinessPages').then((module) => ({ default: module.CustomerCreditPage })));
 const ExpiryTrackingPage = lazy(() => import('./components/BusinessPages').then((module) => ({ default: module.ExpiryTrackingPage })));
@@ -25,6 +25,7 @@ const AnalyticsPage = lazy(() => import('./components/AnalyticsPage').then((modu
 import type { CashierSettlementCreateInput, CashierSettlementRecord } from './types/finance';
 const CloudSyncPanel = lazy(() => import('./components/CloudSyncPanel').then((module) => ({ default: module.CloudSyncPanel })));
 import { useBusinessAccess, canAccessBranch, canUsePage } from './lib/businessAccess';
+import { checkKpayReference, normalizeKpayReference } from './lib/kpayReference';
 import { firebaseApp, firebaseAuth, firebaseConfigured, FIREBASE_BUSINESS_ID } from './lib/firebase';
 import { signOut } from 'firebase/auth';
 const BranchManagementPage = lazy(() => import('./components/BranchManagementPage').then((module) => ({ default: module.BranchManagementPage })));
@@ -32,30 +33,42 @@ const SharedPricingPage = lazy(() => import('./components/SharedPricingPage').th
 const ProfileManagementPage = lazy(() => import('./components/ProfileManagementPage').then((module) => ({ default: module.ProfileManagementPage })));
 const LoginPage = lazy(() => import('./components/LoginPage').then((module) => ({ default: module.LoginPage })));
 const BarcodeCameraScanner = lazy(() => import('./components/BarcodeCameraScanner').then((module) => ({ default: module.BarcodeCameraScanner })));
+const StockUnitRegistrationPage = lazy(() => import('./components/StockUnitRegistrationPage').then((module) => ({ default: module.StockUnitRegistrationPage })));
 const CashierSalesQueueStatus = lazy(() => import('./components/CashierSalesQueueStatus').then((module) => ({ default: module.CashierSalesQueueStatus })));
 import { normalizeBarcode } from './lib/barcode';
-import { submitCashierSale, submitCashierVoidRequestToCloud } from './lib/cashierSalesSync';
+import { findUnitMatches, isUnitSellable, productIsUnitTracked, unitAvailabilityMessage } from './lib/unitTracking';
+import { buildBranchOverview } from './lib/branchOverview';
+import { POS_ALL_CATEGORIES, filterPosProducts, isProductSelectable, otherBranchProductCounts, posProductViewState, productsForBranch, sellableStockFor } from './lib/posProductSelection';
+import { describeKpayUnavailable, isPaymentMethodSelectable, kpayUnavailableReason } from './lib/posPaymentState';
+import { AUTO_SYNC_STATUS_EVENT, readAutoSyncStatus, type AutoSyncStatus } from './lib/autoSyncStatus';
+import { submitCashierSale } from './lib/cashierSalesSync';
 import { flushPendingCashierExpenses, submitCashierExpenseToCloud } from './lib/cashierExpenseSync';
-import { voidCloudSaleWithAudit } from './lib/salesAudit';
+import { makeAdjustmentRequestId, returnSaleOnServer, voidSaleOnServer } from './lib/saleAdjustments';
+import { SaleReturnDialog, type SaleReturnSubmission } from './components/SaleReturnDialog';
 import { exportLocalImages, importLocalImages, migrateDataUrlImage, useLocalImageSource } from './lib/localImages';
+import { isAllowedKpayQrDataUrl } from './lib/kpayQr';
+import { isKpayEnabled } from './lib/kpayAccount';
 import { formatQuantity, hasLegacyFractionalQuantity, inferQuantityMode, isValidQuantity, quantityModeForProduct, quantityStep, type QuantityMode } from './lib/quantity';
 import { getStorageHealth, STORAGE_HEALTH_EVENT } from './lib/persistentStateStorage';
+import { announceLocalDataReplacement, markLocalDataReplacement } from './lib/syncSafety';
+import { makeReceiptNo } from './lib/receiptNumber';
 
-type Page = 'profile' | 'branches' | 'overview' | 'pricing' | 'dashboard' | 'pos' | 'inventory' | 'receiving' | 'transfers' | 'shipments' | 'branchReceiving' | 'sales' | 'customers' | 'purchasing' | 'expiry' | 'cash' | 'activity' | 'expenses' | 'settlements' | 'finance' | 'analytics' | 'settings';
+type Page = 'profile' | 'branches' | 'overview' | 'pricing' | 'dashboard' | 'pos' | 'inventory' | 'receiving' | 'unitReceiving' | 'transfers' | 'shipments' | 'branchReceiving' | 'sales' | 'customers' | 'purchasing' | 'expiry' | 'cash' | 'activity' | 'expenses' | 'settlements' | 'finance' | 'analytics' | 'settings';
+const POS_PRODUCT_PAGE_SIZE = 96;
 type ProductDraft = {
   name: string; sku: string; barcode: string; category: string; costPrice: string; retailPrice: string;
   wholesalePrice: string; stock: string; lowStockAt: string; unit: string; quantityMode: QuantityMode;
+  tracksIndividualUnits: boolean;
 };
 
 const emptyDraft: ProductDraft = {
   name: '', sku: '', barcode: '', category: 'အထွေထွေ', costPrice: '0', retailPrice: '0',
-  wholesalePrice: '0', stock: '0', lowStockAt: '5', unit: 'ခု', quantityMode: 'whole',
+  wholesalePrice: '0', stock: '0', lowStockAt: '5', unit: 'ခု', quantityMode: 'whole', tracksIndividualUnits: false,
 };
 const money = (value: number, currency = 'MMK') => `${new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(Math.round(value || 0))} ${currency}`;
 const dateLabel = (value: string) => new Date(value).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 const dayKey = (value: Date) => `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
 const today = () => dayKey(new Date());
-const makeReceiptNo = () => `MM-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(Date.now()).slice(-5)}`;
 const makeSortableId = (prefix: string) => `${prefix}-${String(9999999999999 - Date.now()).padStart(13, '0')}-${crypto.randomUUID().slice(0, 8)}`;
 
 async function copyAccessValue(value: string, label: string) {
@@ -73,20 +86,39 @@ function App() {
   const [localStateHydrated, setLocalStateHydrated] = useState(() => usePosStore.persist.hasHydrated());
   const access = useBusinessAccess();
   const cashierMode = access.status === 'active' && access.role === 'cashier';
+  const canUseCloudAdjustments = Boolean(firebaseAuth?.currentUser) && access.status === 'active';
+  const [autoSyncStatus, setAutoSyncStatus] = useState<AutoSyncStatus>(() => readAutoSyncStatus(access.uid || ''));
+  useEffect(() => {
+    const uid = access.uid || '';
+    setAutoSyncStatus(readAutoSyncStatus(uid));
+    const onStatus = (event: Event) => {
+      const detail = (event as CustomEvent<{ uid?: string; status?: AutoSyncStatus }>).detail;
+      if (!detail?.status || (uid && detail.uid && detail.uid !== uid)) return;
+      setAutoSyncStatus(detail.status);
+    };
+    window.addEventListener(AUTO_SYNC_STATUS_EVENT, onStatus);
+    return () => window.removeEventListener(AUTO_SYNC_STATUS_EVENT, onStatus);
+  }, [access.uid]);
   const [themeMode, setThemeMode] = useState<'light' | 'dark'>(() => {
-    try { return localStorage.getItem('minimart-ui-theme-v1') === 'dark' ? 'dark' : 'light'; }
-    catch { return 'light'; }
+    try {
+      const stored = localStorage.getItem('minimart-ui-theme-v1');
+      if (stored === 'dark' || stored === 'light') return stored;
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    } catch { return 'light'; }
   });
   const [mobileMenu, setMobileMenu] = useState(false);
   const [toast, setToast] = useState('');
   const [toastActionPage, setToastActionPage] = useState<Page | null>(null);
   const [installPrompt, setInstallPrompt] = useState<(() => Promise<void>) | null>(null);
   const [showProductModal, setShowProductModal] = useState(false);
+  const [returnSale, setReturnSale] = useState<Sale | null>(null);
+  const [adjustmentBusy, setAdjustmentBusy] = useState(false);
   const [cameraScannerTarget, setCameraScannerTarget] = useState<'product' | 'pos' | null>(null);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [productDraft, setProductDraft] = useState<ProductDraft>(emptyDraft);
   const [productSearch, setProductSearch] = useState('');
-  const [categoryFilter, setCategoryFilter] = useState('အားလုံး');
+  const [categoryFilter, setCategoryFilter] = useState(POS_ALL_CATEGORIES);
+  const [visibleProductCount, setVisibleProductCount] = useState(POS_PRODUCT_PAGE_SIZE);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [customer, setCustomer] = useState('လက်လီဝယ်သူ');
   const [paymentMethod, setPaymentMethod] = useState<'Cash' | 'KPay' | 'Credit'>('Cash');
@@ -110,6 +142,9 @@ function App() {
   const [chartPeriod, setChartPeriod] = useState<'7' | '30' | '365'>('7');
   const importRef = useRef<HTMLInputElement>(null);
   const ownerOverviewRedirected = useRef(false);
+  // Synchronous re-entry lock. State updates are async, so two fast taps can
+  // both pass the savingSale check before React re-renders the button.
+  const checkoutInFlight = useRef(false);
 
   const allProducts = usePosStore((s) => s.products);
   const allPriceGroups = usePosStore((s) => s.priceGroups);
@@ -121,6 +156,7 @@ function App() {
   const allHeldItems = usePosStore((s) => s.heldItems);
   const customers = usePosStore((s) => s.customers);
   const allStockBatches = usePosStore((s) => s.stockBatches);
+  const stockUnitRegistries = usePosStore((s) => s.stockUnitRegistries);
   const allCategories = usePosStore((s) => s.categories);
   const branches = usePosStore((s) => s.branches);
   const activeBranchId = usePosStore((s) => s.activeBranchId);
@@ -128,7 +164,11 @@ function App() {
   const activeBranches = branches.filter((branch) => branch.status === 'active' && canAccessBranch(access.role, access.branchIds, branch.id));
   // Keep existing shared-price groups manageable even after one member branch is archived.
   const canManageSharedPricing = !cashierMode && (activeBranches.length > 1 || allPriceGroups.some((group) => group.status === 'active'));
-  const products = useMemo(() => allProducts.filter((record) => record.branchId === activeBranchId), [allProducts, activeBranchId]);
+  const products = useMemo(() => productsForBranch(allProducts, activeBranchId), [allProducts, activeBranchId]);
+  const otherBranchProducts = useMemo(
+    () => otherBranchProductCounts(activeBranches, allProducts, activeBranchId),
+    [activeBranches, allProducts, activeBranchId],
+  );
   const sales = useMemo(() => allSales.filter((record) => record.branchId === activeBranchId), [allSales, activeBranchId]);
   const expenses = useMemo(() => allExpenses.filter((record) => record.branchId === activeBranchId), [allExpenses, activeBranchId]);
   const visibleExpenses = useMemo(() => cashierMode ? expenses.filter((record) => record.createdByUid === access.uid) : expenses, [expenses, cashierMode, access.uid]);
@@ -141,6 +181,18 @@ function App() {
   const ownerProfile = usePosStore((s) => s.ownerProfile);
   const activeBranchLogoSource = useLocalImageSource(activeBranch?.logoUrl);
   const activeBranchBannerSource = useLocalImageSource(activeBranch?.bannerUrl);
+  // Render only a validated in-document raster QR, even if a remote document was tampered with.
+  const branchKpayEnabled = isKpayEnabled(activeBranch?.settings);
+  const paymentMethodsEnabled = cart.length > 0;
+  // Before the first cloud snapshot the local branch is a placeholder, so an
+  // empty product list or KPay warning would describe the wrong state.
+  const posProductView = posProductViewState(products.length, autoSyncStatus.state);
+  const posDataLoading = posProductView === 'loading';
+  const posDataUnavailable = posProductView === 'offline';
+  const posDataSettled = posProductView === 'ready' || posProductView === 'empty';
+  const kpaySelectable = posDataSettled && isPaymentMethodSelectable('KPay', { cartCount: cart.length, kpaySettings: activeBranch?.settings });
+  const kpayUnavailable = posDataSettled ? kpayUnavailableReason(activeBranch?.settings) : null;
+  const branchKpayQrSource = branchKpayEnabled && isAllowedKpayQrDataUrl(activeBranch?.settings.kpayQrDataUrl) ? (activeBranch?.settings.kpayQrDataUrl || '') : '';
   const ownerPhotoSource = useLocalImageSource(ownerProfile?.photoUrl);
   const setActiveBranch = usePosStore((s) => s.setActiveBranch);
   const addProduct = usePosStore((s) => s.addProduct);
@@ -151,7 +203,7 @@ function App() {
   const addSale = usePosStore((s) => s.addSale);
   const updateSaleCloudSyncStatus = usePosStore((s) => s.updateSaleCloudSyncStatus);
   const voidSale = usePosStore((s) => s.voidSale);
-  const requestSaleVoid = usePosStore((s) => s.requestSaleVoid);
+  const applySaleReturn = usePosStore((s) => s.applySaleReturn);
   const addExpense = usePosStore((s) => s.addExpense);
   const updateExpense = usePosStore((s) => s.updateExpense);
   const deleteExpense = usePosStore((s) => s.deleteExpense);
@@ -174,7 +226,7 @@ function App() {
     document.documentElement.dataset.theme = themeMode;
     try { localStorage.setItem('minimart-ui-theme-v1', themeMode); } catch { /* Theme still works for this session. */ }
     const themeMeta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
-    if (themeMeta) themeMeta.content = themeMode === 'dark' ? '#0b1220' : '#0f766e';
+    if (themeMeta) themeMeta.content = themeMode === 'dark' ? '#071a16' : '#047857';
   }, [themeMode]);
 
   useEffect(() => {
@@ -219,6 +271,20 @@ function App() {
     if (!localStateHydrated) return;
     if (cashierMode && !canUsePage(access.role, page, access.canReceiveStock)) setPage('pos');
   }, [localStateHydrated, cashierMode, access.role, access.canReceiveStock, page]);
+
+  useEffect(() => {
+    if (branchKpayEnabled || paymentMethod !== 'KPay') return;
+    setPaymentMethod('Cash');
+    setKpayTransactionReference('');
+  }, [branchKpayEnabled, paymentMethod]);
+
+  // An empty cart has no payment choice; never leave a stale method selected.
+  useEffect(() => {
+    if (cart.length > 0) return;
+    setPaymentMethod('Cash');
+    setCashReceived('');
+    setKpayTransactionReference('');
+  }, [cart.length]);
 
   useEffect(() => {
     const listener = (event: Event) => {
@@ -273,47 +339,88 @@ function App() {
     if (pin !== settings.adminPin) { notify('Admin PIN မှားယွင်းနေပါတယ်။'); return false; }
     return true;
   };
-  const handleRequestVoidSale = async (sale: Sale) => {
-    if (sale.status !== 'completed') return;
-    const reason = window.prompt(`Voucher ${sale.receiptNo} ကို ပယ်ဖျက်ပေးရန် Owner ထံ အကြောင်းပြချက် ပို့ပါမယ်။`, sale.voidRequestReason || 'ဘောင်ချာ မှားရိုက်မိသည်');
-    if (!reason || reason.trim().length < 2) { notify('Void တောင်းဆိုသည့် အကြောင်းပြချက် ဖြည့်ပါ။'); return; }
-    const uid = access.uid || firebaseAuth?.currentUser?.uid || '';
-    const name = access.displayName || firebaseAuth?.currentUser?.displayName || access.email || 'Cashier';
-    requestSaleVoid(sale.id, reason.trim(), { uid, name });
-    if (uid) {
-      try {
-        await submitCashierVoidRequestToCloud(sale.id, activeBranchId, uid, name, reason.trim());
-      } catch {
-        // Local flag still saved.
-      }
-    }
-    notify(`Voucher ${sale.receiptNo} အတွက် Owner ထံ Void တောင်းဆိုချက် ပို့ပြီးပါပြီ။`);
-  };
   const handleVoidSale = async (sale: Sale) => {
-    if (!authorize('Voucher ပယ်ဖျက်ရန်')) return;
+    if (sale.status !== 'completed') return;
+    if (!cashierMode && !authorize('Voucher ပယ်ဖျက်ရန်')) return;
+    if ((sale.returnCount || 0) > 0 || (sale.returnedTotal || 0) > 0) {
+      notify('Return ပြုလုပ်ပြီးသား Voucher ကို Void မလုပ်နိုင်ပါ။ Owner ကို ဆက်သွယ်ပါ။');
+      return;
+    }
     const reason = window.prompt('Voucher ပယ်ဖျက်ရသည့် အကြောင်းပြချက်ကို ဖြည့်ပါ။', sale.voidRequestReason || '');
     if (!reason || reason.trim().length < 3) { notify('Void အကြောင်းပြချက် အနည်းဆုံး ၃ လုံး ဖြည့်ပါ။'); return; }
-    if (!window.confirm(`Voucher ${sale.receiptNo} ကို Void လုပ်မလား။ Cloud Stock ကို တစ်ကြိမ်တည်း ပြန်ပေါင်းပါမယ်။ ဤလုပ်ဆောင်ချက်သည် ငွေပြန်အမ်းခြင်း မဟုတ်ပါ။`)) return;
+    if (!window.confirm(`Voucher ${sale.receiptNo} ကို Void လုပ်မလား။ Stock ကို Cloud မှာ တစ်ကြိမ်တည်း ပြန်ပေါင်းပါမယ်။ ငွေပြန်အမ်းမှု Status ကို သီးခြား မှတ်တမ်းတင်ပါမယ်။`)) return;
     const actor = {
       uid: access.uid || firebaseAuth?.currentUser?.uid || '',
       email: access.email || firebaseAuth?.currentUser?.email || '',
-      name: access.displayName || firebaseAuth?.currentUser?.displayName || access.email || 'Owner',
+      name: access.displayName || firebaseAuth?.currentUser?.displayName || access.email || (cashierMode ? 'Cashier' : 'Owner'),
     };
+    if (adjustmentBusy) return;
+    setAdjustmentBusy(true);
     try {
-      if (firebaseAuth && access.status === 'active' && access.role === 'owner') {
-        const auditEvent = await voidCloudSaleWithAudit(sale, reason.trim(), actor);
-        const applied = voidSale(sale.id, reason.trim(), actor, auditEvent.occurredAt);
+      if (firebaseAuth?.currentUser && access.status === 'active') {
+        const response = await voidSaleOnServer({
+          saleId: sale.id, branchId: sale.branchId || activeBranchId,
+          requestId: makeAdjustmentRequestId('void', sale.id), reason: reason.trim(),
+        });
+        const applied = voidSale(sale.id, reason.trim(), actor, response.occurredAt);
         if (!applied) throw new Error('Cloud Void အောင်မြင်သော်လည်း Local Sale ကို ပြင်မရပါ။ Refresh လုပ်ပြီး အခြေအနေကို စစ်ပါ။');
-        notify('Voucher ကို ပယ်ဖျက်ပြီး Stock ပြန်ပေါင်းထားပါတယ်။ Audit Log သိမ်းပြီးပါပြီ။');
+        const refundText = response.refundStatus === 'kpay-pending'
+          ? ' KPay ငွေပြန်အမ်းမှုကို Pending အဖြစ် မှတ်ထားပါတယ်။'
+          : response.refundStatus === 'cash-refunded' ? ' Cash ငွေပြန်အမ်းမှုကို မှတ်တမ်းတင်ထားပါတယ်။' : '';
+        notify(`Voucher ကို Void လုပ်ပြီး Stock ပြန်ပေါင်းထားပါတယ်။${refundText} Audit Log သိမ်းပြီးပါပြီ။`);
         return;
-      } else if (firebaseAuth) {
-        throw new Error('Firebase Owner Business Access မရှိပါ။ Owner အကောင့်ဖြင့် ပြန်ဝင်ပါ။');
       }
+      if (cashierMode) throw new Error('Void အတွက် Firebase Cloud Login လိုအပ်ပါတယ်။');
       const applied = voidSale(sale.id, reason.trim(), actor);
-      if (!applied) throw new Error('Cloud Void အောင်မြင်သော်လည်း ဒီ Device ရဲ့ Local Sale ကို ပြင်မရပါ။ Data ကို Refresh လုပ်ပြီး စစ်ဆေးပါ။');
-      notify('Voucher ကို ပယ်ဖျက်ပြီး Stock ပြန်ပေါင်းထားပါတယ်။ Audit Log သိမ်းပြီးပါပြီ။');
+      if (!applied) throw new Error('ဒီ Device ရဲ့ Local Sale ကို ပြင်မရပါ။ Data ကို Refresh လုပ်ပြီး စစ်ဆေးပါ။');
+      notify('Voucher ကို ဒီ Device တွင် Void လုပ်ပြီး Stock ပြန်ပေါင်းထားပါတယ်။ Cloud မချိတ်ထားလို့ Audit ကို Local သာ သိမ်းထားပါတယ်။');
     } catch (error) {
       notify(error instanceof Error ? error.message : 'Voucher Void မအောင်မြင်ပါ။');
+    } finally {
+      setAdjustmentBusy(false);
+    }
+  };
+  const handleReturnSubmit = async (submission: SaleReturnSubmission) => {
+    if (!returnSale || adjustmentBusy) return;
+    if (!firebaseAuth?.currentUser || access.status !== 'active') {
+      notify('Return အတွက် Firebase Cloud Login လိုအပ်ပါတယ်။');
+      return;
+    }
+    setAdjustmentBusy(true);
+    try {
+      const actor = {
+        uid: access.uid || firebaseAuth.currentUser.uid,
+        email: access.email || firebaseAuth.currentUser.email || '',
+        name: access.displayName || firebaseAuth.currentUser.displayName || access.email || 'User',
+      };
+      const response = await returnSaleOnServer({
+        saleId: returnSale.id, branchId: returnSale.branchId || activeBranchId,
+        requestId: submission.requestId, reason: submission.reason,
+        items: submission.items, refundReference: submission.refundReference,
+      });
+      const applied = applySaleReturn({
+        returnId: response.returnId || submission.requestId,
+        saleId: returnSale.id, branchId: returnSale.branchId || activeBranchId,
+        at: response.occurredAt || new Date().toISOString(), actor,
+        reason: submission.reason, items: response.items || [],
+        returnedValue: response.value || 0,
+        refundStatus: response.refundStatus || 'none',
+        refundAmount: response.refundAmount || 0,
+        dueAmount: response.dueAmount,
+        returnedProductQuantities: response.returnedProductQuantities,
+        returnedBatchQuantities: response.returnedBatchQuantities,
+      });
+      if (!applied) throw new Error('Cloud Return အောင်မြင်သော်လည်း Local Sale ကို ပြင်မရပါ။ Refresh လုပ်ပြီး အခြေအနေကို စစ်ပါ။');
+      const refundText = response.refundStatus === 'kpay-pending'
+        ? ' KPay Refund ကို Pending အဖြစ် မှတ်ထားပါတယ်။'
+        : response.refundStatus === 'credit-adjusted' || response.refundStatus === 'credit-refund-review'
+          ? ' Credit လက်ကျန်ကို ချိန်ညှိထားပါတယ်။' : '';
+      notify(`Return ကို မှတ်တမ်းတင်ပြီးပါပြီ။${refundText}`);
+      setReturnSale(null);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'Return မအောင်မြင်ပါ။');
+    } finally {
+      setAdjustmentBusy(false);
     }
   };
   const confirmBranchChange = (targetName: string) => {
@@ -387,13 +494,22 @@ function App() {
     stockBatches.forEach((batch) => { if (batch.expiryDate && batch.expiryDate < today() && batch.quantity > 0) totals.set(batch.productId, (totals.get(batch.productId) || 0) + batch.quantity); });
     return totals;
   }, [stockBatches]);
-  const sellableStock = (product: Product) => Math.max(0, product.stock - (expiredBatchUnits.get(product.id) || 0));
-  const lowStockProducts = products.filter((product) => sellableStock(product) <= product.lowStockAt);
-  const filteredProducts = products.filter((product) => {
-    const query = productSearch.trim().toLowerCase();
-    const match = !query || product.name.toLowerCase().includes(query) || product.sku.toLowerCase().includes(query) || normalizeBarcode(product.barcode).toLowerCase().includes(normalizeBarcode(query));
-    return match && (categoryFilter === 'အားလုံး' || product.category === categoryFilter);
-  });
+  const sellableStock = (product: Product) => sellableStockFor(product, expiredBatchUnits);
+  const lowStockProducts = useMemo(
+    () => products.filter((product) => Math.max(0, product.stock - (expiredBatchUnits.get(product.id) || 0)) <= product.lowStockAt),
+    [products, expiredBatchUnits],
+  );
+  const filteredProducts = useMemo(
+    () => filterPosProducts(products, productSearch, categoryFilter),
+    [products, productSearch, categoryFilter],
+  );
+  // Branch-scoped search/category state must not hide products after a branch switch.
+  useEffect(() => {
+    setCategoryFilter(POS_ALL_CATEGORIES);
+    setProductSearch('');
+    setVisibleProductCount(POS_PRODUCT_PAGE_SIZE);
+  }, [activeBranchId]);
+  const visibleProducts = useMemo(() => filteredProducts.slice(0, visibleProductCount), [filteredProducts, visibleProductCount]);
   const subtotal = cart.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
   const maxCashierDiscountPercent = Math.max(0, Math.min(100, Number(settings.maxCashierDiscountPercent ?? 10)));
   const maxAllowedDiscount = cashierMode ? Math.floor(subtotal * (maxCashierDiscountPercent / 100)) : subtotal;
@@ -444,6 +560,7 @@ function App() {
       costPrice: String(product.costPrice), retailPrice: String(product.retailPrice),
       wholesalePrice: String(product.wholesalePrice), stock: String(product.stock),
       lowStockAt: String(product.lowStockAt), unit: product.unit, quantityMode: quantityModeForProduct(product),
+      tracksIndividualUnits: productIsUnitTracked(product, stockUnitRegistries, activeBranchId),
     });
     setShowProductModal(true);
   };
@@ -453,10 +570,16 @@ function App() {
     if (!categories.includes(productDraft.category)) { notify('လက်ရှိဆိုင်အတွက် Category ရွေးပါ သို့မဟုတ် အသစ်ထည့်ပါ။'); return; }
     const unit = productDraft.unit.trim() || 'ခု';
     const quantityMode = productDraft.quantityMode || inferQuantityMode(unit);
+    const tracksIndividualUnits = productDraft.tracksIndividualUnits;
     const stock = Math.max(0, Number(productDraft.stock) || 0);
     const lowStockAt = Math.max(0, Number(productDraft.lowStockAt) || 0);
     const stockChanged = !editingProduct || Math.abs(stock - editingProduct.stock) > 1e-8;
     const modeChanged = !!editingProduct && quantityMode !== quantityModeForProduct(editingProduct);
+    const hasRegisteredUnits = !!editingProduct && stockUnitRegistries.some((registry) => registry.branchId === activeBranchId && registry.productId === editingProduct.id && registry.units.length > 0);
+    const wasTracked = !!editingProduct && productIsUnitTracked(editingProduct, stockUnitRegistries, activeBranchId);
+    if (tracksIndividualUnits && quantityMode !== 'whole') { notify('Individual Unit Tracking ကို ပြည့်ကိန်းယူနစ်ပစ္စည်းများတွင်သာ ဖွင့်နိုင်ပါတယ်။'); return; }
+    if (tracksIndividualUnits && !wasTracked && stock !== 0) { notify('Unit Tracking ဖွင့်မည့် Product မှာ လက်ရှိ Stock မရှိရပါ။ ကုန်ကို Unit Barcode Scan Receiving ဖြင့်သာ လက်ခံပါ။'); return; }
+    if (!tracksIndividualUnits && hasRegisteredUnits) { notify('Unit Barcode History ရှိနေသေးလို့ Individual Unit Tracking ကို ပိတ်မရပါ။'); return; }
     if ((stockChanged || modeChanged) && !isValidQuantity(stock, quantityMode, true)) {
       notify(quantityMode === 'whole' ? 'ဒီပစ္စည်းကို အရေအတွက်ပြည့်ကိန်းသာ ထည့်နိုင်ပါတယ်။ လက်ရှိလက်ကျန် ဒသမရှိပါက တကယ်ရေတွက်ပြီး Stock ကို ပြင်ပါ။' : 'ဒသမအရေအတွက်ကို အများဆုံး ၃ နေရာအထိ ထည့်နိုင်ပါတယ်။');
       return;
@@ -468,7 +591,7 @@ function App() {
       category: productDraft.category, costPrice: Math.max(0, Number(productDraft.costPrice) || 0),
       retailPrice: Math.max(0, Number(productDraft.retailPrice) || 0),
       wholesalePrice: Math.max(0, Number(productDraft.wholesalePrice) || 0),
-      stock, lowStockAt, unit, quantityMode,
+      stock, lowStockAt, unit, quantityMode, tracksIndividualUnits,
     };
     const normalizedSku = normalizeBarcode(payload.sku);
     const normalizedBarcode = normalizeBarcode(payload.barcode);
@@ -490,7 +613,9 @@ function App() {
     notify(editingProduct ? 'ပစ္စည်းအချက်အလက် ပြင်ဆင်ပြီးပါပြီ။' : 'ပစ္စည်းအသစ် ထည့်ပြီးပါပြီ။');
   };
 
+  const isTrackedProduct = (product: Product) => productIsUnitTracked(product, stockUnitRegistries, activeBranchId);
   const addToCart = (product: Product) => {
+    if (isTrackedProduct(product)) { notify('ဒီပစ္စည်းကို Sticker Barcode Scan ဖြင့်သာ Cart ထဲထည့်နိုင်ပါတယ်။ Factory EAN/UPC နဲ့ မရောင်းပါ။'); return; }
     if (!(product.retailPrice > 0)) { notify('ဒီပစ္စည်းရဲ့ လက်လီဈေး မသတ်မှတ်ရသေးပါ။ Inventory မှာ ဈေးထည့်ပါ။'); return; }
     if (sellableStock(product) <= 0) { notify('ရောင်းချနိုင်သော Stock မရှိပါ။ Expiry Date ကို စစ်ဆေးပါ။'); return; }
     setCart((current) => {
@@ -510,8 +635,64 @@ function App() {
   const addScannedProductToCart = (rawCode: string) => {
     const code = normalizeBarcode(rawCode);
     if (!code) return;
+    const allUnitMatches = findUnitMatches(stockUnitRegistries, code);
+    const branchUnitMatches = allUnitMatches.filter((entry) => entry.branchId === activeBranchId);
+    if (allUnitMatches.length > 0 && branchUnitMatches.length === 0) {
+      notify('ဒီ Sticker Unit က အခြားဆိုင်ခွဲမှာ ရှိနေပါတယ်။ လက်ရှိ POS ဆိုင်နဲ့ မကိုက်ညီပါ။');
+      setProductSearch('');
+      return;
+    }
+    if (branchUnitMatches.length > 1) {
+      notify('ဒီ Barcode ကို Unit နှစ်ခုမှာ တွေ့နေပါတယ်။ Owner က Barcode Registry ကို စစ်ဆေးရန်လိုပါတယ်။');
+      setProductSearch('');
+      return;
+    }
+    if (branchUnitMatches.length === 1) {
+      const match = branchUnitMatches[0];
+      const product = productMap.get(match.productId);
+      if (!product) { notify('Sticker Unit ရဲ့ Product ကို ဒီဆိုင်မှာ မတွေ့ပါ။'); setProductSearch(''); return; }
+      if (!isUnitSellable(match.unit)) { notify(unitAvailabilityMessage(match.unit.status)); setProductSearch(''); return; }
+      if (!(product.retailPrice > 0)) { notify('ဒီပစ္စည်းရဲ့ လက်လီဈေး မသတ်မှတ်ရသေးပါ။'); setProductSearch(''); return; }
+      if (sellableStock(product) <= 0) { notify('ရောင်းချနိုင်သော Stock မရှိပါ။'); setProductSearch(''); return; }
+      const selection: StockUnitSelection = {
+        registryId: match.registryId, unitId: match.unit.id, barcode: normalizeBarcode(match.unit.barcode),
+        ...(match.unit.batchId ? { batchId: match.unit.batchId } : {}),
+      };
+      let duplicateScan = false;
+      let insufficient = false;
+      setCart((current) => {
+        if (current.some((item) => (item.stockUnitSelections || []).some((entry) => entry.unitId === selection.unitId))) {
+          duplicateScan = true;
+          return current;
+        }
+        const found = current.find((item) => item.productId === product.id);
+        if (found) {
+          if (found.quantity + 1 > sellableStock(product) + 1e-8) { insufficient = true; return current; }
+          return current.map((item) => item.productId === product.id ? {
+            ...item, quantity: item.quantity + 1,
+            stockUnitSelections: [...(item.stockUnitSelections || []), selection],
+          } : item);
+        }
+        return [...current, {
+          productId: product.id, name: product.name, sku: product.sku, quantity: 1,
+          unitPrice: product.retailPrice, costPrice: product.costPrice, mode: 'retail', stockAtAdd: product.stock,
+          unit: product.unit, quantityMode: quantityModeForProduct(product), priceGroupId: product.priceGroupId,
+          priceVersion: product.priceVersion, stockUnitSelections: [selection],
+        }];
+      });
+      if (duplicateScan) notify('ဒီ Sticker Unit ကို Cart ထဲ ထည့်ပြီးသားဖြစ်ပါတယ်။ ထပ်မရောင်းနိုင်ပါ။');
+      else if (insufficient) notify('သက်တမ်းမကုန်သေးသော လက်ကျန် Stock ထက် ပိုမရောင်းနိုင်ပါ။');
+      else notify(`${product.name} · Unit ${selection.barcode} ကို Cart ထဲ ထည့်ပြီးပါပြီ။`);
+      setProductSearch('');
+      return;
+    }
     const match = products.find((product) => normalizeBarcode(product.barcode) === code || normalizeBarcode(product.sku) === code);
     if (!match) { notify(`Barcode မတွေ့ပါ: ${code}`); setProductSearch(''); return; }
+    if (isTrackedProduct(match)) {
+      notify('ဒီပစ္စည်းက Individual Unit Tracking သုံးထားပါတယ်။ Factory EAN/UPC မဟုတ်ဘဲ ပစ္စည်းတစ်ခုချင်း Sticker Barcode ကို Scan ပါ။');
+      setProductSearch('');
+      return;
+    }
     addToCart(match);
     setProductSearch('');
   };
@@ -528,6 +709,21 @@ function App() {
   const changeCartQty = (productId: string, quantity: number) => {
     const product = productMap.get(productId);
     if (quantity <= 0) { setCart((items) => items.filter((item) => item.productId !== productId)); return; }
+    const tracked = !!product && isTrackedProduct(product);
+    if (tracked) {
+      const current = cart.find((item) => item.productId === productId);
+      if (!current) return;
+      if (quantity > current.quantity + 1e-8) { notify('Unit Tracking ပစ္စည်းကို Sticker Barcode Scan ဖြင့်သာ တစ်ခုချင်း ထပ်ထည့်နိုင်ပါတယ်။'); return; }
+      const removeCount = Math.round(current.quantity - quantity);
+      const selections = current.stockUnitSelections || [];
+      if (removeCount <= 0) return;
+      if (selections.length < removeCount) { notify('Barcode Unit Selection နဲ့ ပမာဏ မကိုက်ညီပါ။ Cart ကို ရှင်းပြီး ပြန် Scan ပါ။'); return; }
+      setCart((items) => items.map((item) => item.productId === productId ? {
+        ...item, quantity: Math.round(quantity * 1000) / 1000,
+        stockUnitSelections: selections.slice(0, selections.length - removeCount),
+      } : item));
+      return;
+    }
     if (product && (!isValidQuantity(quantity, quantityModeForProduct(product)) || quantity > sellableStock(product) + 1e-8)) { notify(quantityModeForProduct(product) === 'whole' ? 'ဒီပစ္စည်းကို အရေအတွက်ပြည့်ကိန်းသာ ရောင်းနိုင်ပါတယ်။' : 'အရေအတွက်ကို ဒသမ ၃ နေရာအထိ ထည့်ပါ။ Stock ထက် မပိုရပါ။'); return; }
     setCart((items) => items.map((item) => item.productId === productId ? { ...item, quantity: Math.round(quantity * 1000) / 1000 } : item));
   };
@@ -538,11 +734,17 @@ function App() {
     setCart((items) => items.map((entry) => entry.productId === item.productId ? { ...entry, mode, unitPrice } : entry));
   };
   const setAside = (item: CartItem) => {
+    if ((item.stockUnitSelections || []).length) {
+      notify('Sticker Unit ပါဝင်တဲ့ Cart Line ကို မယူတော့စာရင်းသိမ်းမရပါ။ မလိုချင်တဲ့ Unit ကို အနုတ်ခလုတ်နဲ့ ဖယ်ပါ။');
+      return;
+    }
     holdItem(item);
     setCart((items) => items.filter((entry) => entry.productId !== item.productId));
     notify('မယူတော့သောပစ္စည်းစာရင်းထဲ သိမ်းပြီးပါပြီ။');
   };
   const restoreHeld = (productId: string) => {
+    const heldProduct = productMap.get(productId);
+    if (heldProduct && isTrackedProduct(heldProduct)) { notify('Unit Tracking ပစ္စည်းကို Sticker Barcode ပြန် Scan ပြီးမှ Cart ထဲထည့်ပါ။'); return; }
     const held = restoreHeldItem(productId);
     if (!held) return;
     setCart((items) => {
@@ -599,8 +801,32 @@ function App() {
     if (cart.some((item) => !Number.isFinite(item.unitPrice) || item.unitPrice <= 0)) { notify('ဈေးနှုန်း မသတ်မှတ်ရသေးသော ပစ္စည်းရှိနေပါတယ်။ အရင်ဆုံး ဈေးဖြည့်ပါ။'); return false; }
     const insufficient = cart.find((item) => { const product = productMap.get(item.productId); return !product || sellableStock(product) < item.quantity; });
     if (insufficient) { notify(`${insufficient.name} Stock မလုံလောက်ပါ။`); return false; }
+    const seenUnits = new Set<string>();
+    for (const item of cart) {
+      const product = productMap.get(item.productId);
+      const selections = item.stockUnitSelections || [];
+      if (product && isTrackedProduct(product)) {
+        if (!Number.isInteger(item.quantity) || selections.length !== item.quantity) {
+          notify(`${item.name}: Sticker Unit စာရင်းနဲ့ ပမာဏ မကိုက်ညီပါ။ Cart ကို ပြန်စစ်ပါ။`);
+          return false;
+        }
+      } else if (selections.length > 0) {
+        notify(`${item.name}: Unit Tracking မဖွင့်ထားတဲ့ Product မှာ Sticker Unit မပါရပါ။`);
+        return false;
+      }
+      for (const selection of selections) {
+        if (seenUnits.has(selection.unitId)) { notify('Cart ထဲမှာ Sticker Unit တစ်ခုတည်းကို နှစ်ကြိမ် ပါဝင်နေပါတယ်။'); return false; }
+        seenUnits.add(selection.unitId);
+        const registry = stockUnitRegistries.find((entry) => entry.id === selection.registryId);
+        const unit = registry?.units.find((entry) => entry.id === selection.unitId);
+        if (!registry || !unit || registry.branchId !== activeBranchId || registry.productId !== item.productId || unit.status !== 'in_stock') {
+          notify(`${item.name}: Sticker Unit ${selection.barcode} ကို မရောင်းနိုင်တော့ပါ။ ပြန် Scan ပါ။`);
+          return false;
+        }
+      }
+    }
     if (paymentMethod === 'Credit' && (!customer.trim() || customer.trim() === 'လက်လီဝယ်သူ')) { notify('အကြွေးဝယ်သူအမည်ကို မှန်ကန်စွာ ဖြည့်ပါ။'); return false; }
-    if (paymentMethod === 'KPay' && (!activeBranch?.settings.kpayAccountName?.trim() || !activeBranch.settings.kpayAccountNumber?.trim())) { notify('ဒီ Branch ရဲ့ KPay Account ကို Owner က အရင်သတ်မှတ်ပေးရပါမယ်။'); return false; }
+    if (paymentMethod === 'KPay' && !branchKpayEnabled) { notify('ဒီ Branch ရဲ့ KPay လက်ခံမှုကို ပိတ်ထားသည် သို့မဟုတ် Account မသတ်မှတ်ရသေးပါ။'); return false; }
     return true;
   };
   const startCheckout = () => {
@@ -609,6 +835,7 @@ function App() {
     // the cart to reduce quantities, but start blank for a new checkout.
     setShowPaymentModal(true);
   };
+  const kpayReferenceCheck = checkKpayReference(kpayTransactionReference);
   const cashReceivedValue = Math.max(0, Math.floor(Number(cashReceived) || 0));
   const cashShortfall = paymentMethod === 'Cash' ? Math.max(0, Math.round(checkoutTotal - cashReceivedValue)) : 0;
   const cashChange = paymentMethod === 'Cash' ? Math.max(0, Math.round(cashReceivedValue - checkoutTotal)) : 0;
@@ -637,11 +864,12 @@ function App() {
   };
 
   const completeSale = async () => {
-    if (savingSale) return;
+    if (savingSale || checkoutInFlight.current) return;
 
     // A previous write may have failed after the sale was added to memory.
     // Retry that same snapshot; never create a second sale for the same checkout.
     if (pendingPersistenceSale) {
+      checkoutInFlight.current = true;
       setSavingSale(true);
       try {
         const backend = await flushPosStorePersistence();
@@ -651,6 +879,7 @@ function App() {
       } catch (error) {
         notify(error instanceof Error ? `Local Save မအောင်မြင်သေးပါ။ Sale ကို ထပ်မဖန်တီးထားပါ။ ${error.message} Storage ပြန်ကောင်းမှ ဒီခလုတ်ကို ထပ်နှိပ်ပါ။` : 'Local Save မအောင်မြင်သေးပါ။ App ကို မပိတ်ဘဲ Storage ပြန်စစ်ပြီး ထပ်ကြိုးစားပါ။');
       } finally {
+        checkoutInFlight.current = false;
         setSavingSale(false);
       }
       return;
@@ -661,20 +890,22 @@ function App() {
       notify(`ငွေ ${money(Math.ceil(checkoutTotal - cashReceivedValue), settings.currency)} လိုနေသေးပါတယ်။ Cart ကို ပြန်ပြင်နိုင်ပါတယ်။`);
       return;
     }
-    if (paymentMethod === 'KPay' && !kpayTransactionReference.trim()) { notify('KPay ငွေလွှဲ Transaction ID ဖြည့်ပါ။'); return; }
+    if (paymentMethod === 'KPay' && !kpayReferenceCheck.ok) { notify(kpayReferenceCheck.message); return; }
     const sale: Sale = {
       id: makeSortableId('sale'), receiptNo: makeReceiptNo(), date: new Date().toISOString(),
       customer: customer.trim() || 'လက်လီဝယ်သူ', paymentMethod, items: cart.map((item) => ({ ...item })),
       subtotal, discount: discountValue, total: checkoutTotal, profit: cartProfit, status: 'completed',
       ...(paymentMethod === 'Cash' ? { cashReceivedAmount: cashReceivedValue, changeAmount: cashChange } : {}),
-      ...(paymentMethod === 'KPay' ? { kpayTransactionReference: kpayTransactionReference.trim() } : {}),
+      ...(paymentMethod === 'KPay' ? { kpayTransactionReference: normalizeKpayReference(kpayTransactionReference) } : {}),
       createdByUid: access.uid || firebaseAuth?.currentUser?.uid || '',
       createdByEmail: access.email || firebaseAuth?.currentUser?.email || '',
       createdByName: access.displayName || firebaseAuth?.currentUser?.displayName || access.email || 'Owner',
       ...(cashierMode ? { cloudSyncStatus: 'pending' as const } : {}),
     };
+    // Synchronous lock: two taps in the same frame must only create one sale.
+    checkoutInFlight.current = true;
     const savedSale = addSale(sale);
-    if (!savedSale) { notify('Stock သို့မဟုတ် Stock Batch လက်ကျန် မလုံလောက်ပါ၊ သို့မဟုတ် Data မကိုက်ညီပါ။ Branch Sync ပြီးကြောင်း စစ်ပြီး Cart ကို ပြန်စစ်ပါ။'); return; }
+    if (!savedSale) { checkoutInFlight.current = false; notify('Stock သို့မဟုတ် Stock Batch လက်ကျန် မလုံလောက်ပါ၊ သို့မဟုတ် Data မကိုက်ညီပါ။ Branch Sync ပြီးကြောင်း စစ်ပြီး Cart ကို ပြန်စစ်ပါ။'); return; }
 
     setPendingPersistenceSale(savedSale);
     setSavingSale(true);
@@ -685,6 +916,7 @@ function App() {
     } catch (error) {
       notify(error instanceof Error ? `အရောင်းကို Browser Storage ထဲ မသိမ်းနိုင်သေးပါ။ Sale ကို ထပ်မဖန်တီးထားပါ။ Storage ပြန်ကောင်းမှ “Local Save ပြန်ကြိုးစားရန်” ကို နှိပ်ပါ။ ${error.message}` : 'အရောင်းကို Browser Storage ထဲ မသိမ်းနိုင်သေးပါ။ App ကို မပိတ်ဘဲ Storage ပြန်စစ်ပါ။');
     } finally {
+      checkoutInFlight.current = false;
       setSavingSale(false);
     }
   };
@@ -709,7 +941,7 @@ function App() {
     setAmountOnlyMode(false);
   };
   const copyReceipt = async (sale: Sale) => {
-    const lines = [settings.storeName, `Voucher: ${sale.receiptNo}`, dateLabel(sale.date), `Customer: ${sale.customer}`, '------------------------', ...sale.items.map((item) => { const product = productMap.get(item.productId); const quantityMode = item.quantityMode || (product ? quantityModeForProduct(product) : 'whole'); const quantityText = `${formatQuantity(item.quantity, quantityMode)} ${item.unit || product?.unit || ''}`.trim(); return `${item.name}\n${quantityText} x ${money(item.unitPrice, settings.currency)} = ${money(item.unitPrice * item.quantity, settings.currency)}`; }), '------------------------', `Subtotal: ${money(sale.subtotal, settings.currency)}`, `Discount: ${money(sale.discount, settings.currency)}`, `Total: ${money(sale.total, settings.currency)}`, `Payment: ${sale.paymentMethod}`, ...(sale.paymentMethod === 'KPay' && sale.kpayTransactionReference ? [`KPay Transaction ID: ${sale.kpayTransactionReference}`] : []), `Paid: ${money(sale.paidAmount ?? (sale.paymentMethod === 'Cash' || sale.paymentMethod === 'KPay' ? sale.total : 0), settings.currency)}`, ...(sale.paymentMethod === 'Cash' ? [`Cash Received: ${money(sale.cashReceivedAmount ?? sale.total, settings.currency)}`, `Change: ${money(sale.changeAmount ?? 0, settings.currency)}`] : []), `Due: ${money(sale.dueAmount ?? (sale.paymentMethod === 'Credit' ? sale.total : 0), settings.currency)}`, settings.receiptFooter];
+    const lines = [settings.storeName, `Voucher: ${sale.receiptNo}`, dateLabel(sale.date), `Customer: ${sale.customer}`, '------------------------', ...sale.items.map((item) => { const product = productMap.get(item.productId); const quantityMode = item.quantityMode || (product ? quantityModeForProduct(product) : 'whole'); const quantityText = `${formatQuantity(item.quantity, quantityMode)} ${item.unit || product?.unit || ''}`.trim(); return `${item.name}\n${quantityText} x ${money(item.unitPrice, settings.currency)} = ${money(item.unitPrice * item.quantity, settings.currency)}`; }), '------------------------', `Subtotal: ${money(sale.subtotal, settings.currency)}`, `Discount: ${money(sale.discount, settings.currency)}`, `Total: ${money(sale.total, settings.currency)}`, `Payment: ${sale.paymentMethod}`, ...(sale.paymentMethod === 'KPay' && sale.kpayTransactionReference ? [`KPay Transaction ID: ${sale.kpayTransactionReference}`] : []), ...(sale.paymentMethod === 'KPay' && (sale.kpayAccountNameSnapshot || sale.kpayAccountNumberSnapshot) ? [`KPay Account: ${sale.kpayAccountNameSnapshot || '-'}`, `KPay Account No: ${sale.kpayAccountNumberSnapshot || '-'}`] : []), `Paid: ${money(sale.paidAmount ?? (sale.paymentMethod === 'Cash' || sale.paymentMethod === 'KPay' ? sale.total : 0), settings.currency)}`, ...(sale.paymentMethod === 'Cash' ? [`Cash Received: ${money(sale.cashReceivedAmount ?? sale.total, settings.currency)}`, `Change: ${money(sale.changeAmount ?? 0, settings.currency)}`] : []), `Due: ${money(sale.dueAmount ?? (sale.paymentMethod === 'Credit' ? sale.total : 0), settings.currency)}`, settings.receiptFooter];
     try { await navigator.clipboard.writeText(lines.join('\n')); notify('Voucher စာသား Copy လုပ်ပြီးပါပြီ။ Viber / Telegram မှာ Paste လုပ်နိုင်ပါတယ်။'); }
     catch { notify('Clipboard အသုံးမပြုနိုင်ပါ။ Browser Permission စစ်ပါ။'); }
   };
@@ -729,12 +961,12 @@ function App() {
   ]);
   const exportSalesCsv = () => downloadCsv(`minimart-sales-${today()}.csv`, cashierMode
     ? [
-      ['Voucher', 'Date', 'Customer', 'Payment', 'Items', 'Subtotal', 'Discount', 'Total', 'Paid', 'Cash Received', 'Change', 'Due', 'Status'],
-      ...visibleSales.map((sale) => [sale.receiptNo, sale.date, sale.customer, sale.paymentMethod, sale.items.length, sale.subtotal, sale.discount, sale.total, sale.paidAmount ?? (sale.paymentMethod === 'Cash' || sale.paymentMethod === 'KPay' ? sale.total : 0), sale.cashReceivedAmount ?? (sale.paymentMethod === 'Cash' ? sale.total : 0), sale.changeAmount ?? 0, sale.dueAmount ?? (sale.paymentMethod === 'Credit' ? sale.total : 0), sale.status]),
+      ['Voucher', 'Date', 'Customer', 'Payment', 'Items', 'Subtotal', 'Discount', 'Total', 'Paid', 'Cash Received', 'Change', 'Due', 'Status', 'KPay Account', 'KPay Account No'],
+      ...visibleSales.map((sale) => [sale.receiptNo, sale.date, sale.customer, sale.paymentMethod, sale.items.length, sale.subtotal, sale.discount, sale.total, sale.paidAmount ?? (sale.paymentMethod === 'Cash' || sale.paymentMethod === 'KPay' ? sale.total : 0), sale.cashReceivedAmount ?? (sale.paymentMethod === 'Cash' ? sale.total : 0), sale.changeAmount ?? 0, sale.dueAmount ?? (sale.paymentMethod === 'Credit' ? sale.total : 0), sale.status, sale.kpayAccountNameSnapshot || '', sale.kpayAccountNumberSnapshot || '']),
     ]
     : [
-      ['Voucher', 'Date', 'Customer', 'Payment', 'Items', 'Subtotal', 'Discount', 'Total', 'Gross Profit', 'Paid', 'Cash Received', 'Change', 'Due', 'Status'],
-      ...visibleSales.map((sale) => [sale.receiptNo, sale.date, sale.customer, sale.paymentMethod, sale.items.length, sale.subtotal, sale.discount, sale.total, sale.profit, sale.paidAmount ?? (sale.paymentMethod === 'Cash' || sale.paymentMethod === 'KPay' ? sale.total : 0), sale.cashReceivedAmount ?? (sale.paymentMethod === 'Cash' ? sale.total : 0), sale.changeAmount ?? 0, sale.dueAmount ?? (sale.paymentMethod === 'Credit' ? sale.total : 0), sale.status]),
+      ['Voucher', 'Date', 'Customer', 'Payment', 'Items', 'Subtotal', 'Discount', 'Total', 'Gross Profit', 'Paid', 'Cash Received', 'Change', 'Due', 'Status', 'KPay Account', 'KPay Account No'],
+      ...visibleSales.map((sale) => [sale.receiptNo, sale.date, sale.customer, sale.paymentMethod, sale.items.length, sale.subtotal, sale.discount, sale.total, sale.profit, sale.paidAmount ?? (sale.paymentMethod === 'Cash' || sale.paymentMethod === 'KPay' ? sale.total : 0), sale.cashReceivedAmount ?? (sale.paymentMethod === 'Cash' ? sale.total : 0), sale.changeAmount ?? 0, sale.dueAmount ?? (sale.paymentMethod === 'Credit' ? sale.total : 0), sale.status, sale.kpayAccountNameSnapshot || '', sale.kpayAccountNumberSnapshot || '']),
     ]);
   const exportExpensesCsv = () => downloadCsv(`minimart-expenses-${today()}.csv`, [
     ['Date', 'Branch', 'Cashier', 'Title', 'Category', 'Amount', 'Funding Source', 'Payment Method', 'Approval Status', 'Report Status', 'Note'],
@@ -891,7 +1123,11 @@ function App() {
           sale.dueAmount ??= Math.max(0, sale.total - (sale.paidAmount ?? 0));
         }
       }
+      // Mark the replacement before the import so the owner sync layer rebaselines
+      // instead of treating every record absent from the backup as a cloud deletion.
+      const replacementMarker = markLocalDataReplacement('backup-restore');
       importData({ branches: importedBranches as never[] | undefined, activeBranchId: typeof data.activeBranchId === 'string' ? data.activeBranchId : undefined, categories: Array.isArray(data.categories) ? data.categories as never[] : undefined, products: data.products as Product[], priceGroups: Array.isArray(data.priceGroups) ? data.priceGroups as never[] : [], sales: importedSales, expenses: data.expenses as Expense[], cashierSettlements: Array.isArray(data.cashierSettlements) ? data.cashierSettlements as CashierSettlementRecord[] : [], branchFinanceLedgerEntries: Array.isArray(data.branchFinanceLedgerEntries) ? data.branchFinanceLedgerEntries as never[] : [], cashierAdvanceReconciliations: Array.isArray(data.cashierAdvanceReconciliations) ? data.cashierAdvanceReconciliations as never[] : [], branchFinanceReconciliations: Array.isArray(data.branchFinanceReconciliations) ? data.branchFinanceReconciliations as never[] : undefined, heldItems: Array.isArray(data.heldItems) ? data.heldItems as never[] : [], customers: importedCustomers, suppliers: Array.isArray(data.suppliers) ? data.suppliers as never[] : [], customerPayments: Array.isArray(data.customerPayments) ? data.customerPayments as never[] : [], purchases: Array.isArray(data.purchases) ? data.purchases as never[] : [], supplierPayments: Array.isArray(data.supplierPayments) ? data.supplierPayments as never[] : [], purchaseReturns: Array.isArray(data.purchaseReturns) ? data.purchaseReturns as never[] : [], stockBatches: Array.isArray(data.stockBatches) ? data.stockBatches as never[] : [], stockReceipts: Array.isArray(data.stockReceipts) ? data.stockReceipts as never[] : [], stockTransfers: Array.isArray(data.stockTransfers) ? data.stockTransfers as never[] : [], stockShipments: Array.isArray(data.stockShipments) ? data.stockShipments as never[] : [], stockUnitRegistries: Array.isArray(data.stockUnitRegistries) ? data.stockUnitRegistries as never[] : [], cashShifts: Array.isArray(data.cashShifts) ? data.cashShifts as never[] : [], cashMovements: Array.isArray(data.cashMovements) ? data.cashMovements as never[] : [], activityLogs: Array.isArray(data.activityLogs) ? data.activityLogs as never[] : [], ownerProfile: importedOwnerProfile as never, settings: data.settings as never });
+      announceLocalDataReplacement(replacementMarker);
       notify('Backup Restore အောင်မြင်ပါပြီ။');
     } catch { notify('Backup ဖိုင် မမှန်ကန်ပါ။ JSON Backup ကို ရွေးပါ။'); }
     finally { if (importRef.current) importRef.current.value = ''; }
@@ -905,6 +1141,7 @@ function App() {
     { id: 'inventory', label: 'ပစ္စည်းစာရင်း', icon: <Boxes size={18} /> },
     ...(canManageSharedPricing ? [{ id: 'pricing' as Page, label: 'မျှဝေဈေးနှုန်း', icon: <CircleDollarSign size={18} /> }] : []),
     { id: 'receiving', label: 'ကုန်ဝင်စာရင်း', icon: <PackagePlus size={18} /> },
+    ...(!cashierMode ? [{ id: 'unitReceiving' as Page, label: 'Unit Barcode ကုန်လက်ခံ', icon: <ScanLine size={18} /> }] : []),
     ...(activeBranches.length > 1 ? [{ id: 'shipments' as Page, label: 'ကုန်ပို့ / လက်ခံစီမံ', icon: <Send size={18} /> }] : []),
     ...(cashierMode && access.canReceiveStock ? [{ id: 'branchReceiving' as Page, label: 'ရောက်လာသောကုန် စစ်ဆေးရန်', icon: <PackageCheck size={18} /> }] : []),
     { id: 'sales', label: 'အရောင်းမှတ်တမ်း', icon: <Receipt size={18} /> },
@@ -949,7 +1186,7 @@ function App() {
   }
 
   if (access.status === 'loading') {
-    return <main className="access-gate"><section className="panel access-gate-card"><div className="panel-icon"><LockKeyhole size={22} /></div><h1>Access စစ်ဆေးနေပါတယ်</h1><p>Firebase Server သို့မဟုတ် ယခင်သိမ်းထားသော Offline Cache မှ Owner / Cashier Access ကို စစ်ဆေးနေပါတယ်။</p></section></main>;
+    return <main className="access-gate" aria-busy="true"><section className="panel access-gate-card" role="status" aria-live="polite"><div className="access-gate-progress"><div className="panel-icon"><ShieldCheck size={22} /></div><span className="public-login-spinner is-brand" aria-hidden="true" /></div><h1>Access စစ်ဆေးနေပါတယ်</h1><p>Firebase Server သို့မဟုတ် ယခင်သိမ်းထားသော Offline Cache မှ Owner / Cashier Access ကို စစ်ဆေးနေပါတယ်။</p></section></main>;
   }
 
   if (access.status === 'unassigned' || access.status === 'disabled' || access.status === 'error') {
@@ -974,7 +1211,7 @@ function App() {
           <p className="nav-caption">WORKSPACE</p>
           {navItems.map((item) => <button key={item.id} className={`nav-item ${page === item.id ? 'active' : ''}`} onClick={() => navTo(item.id)}>{item.icon}<span>{item.label}</span>{item.id === 'pos' && cart.length > 0 && <b className="nav-count">{cart.length}</b>}</button>)}
         </nav>
-        <div className="sidebar-bottom"><div className="offline-card"><div className="offline-icon"><Activity size={17} /></div><div><strong>Local Cache</strong><small>Cloud Sync အခြေအနေကို သီးခြားစစ်ဆေးပါ</small></div><span className="live-dot" /></div><small className="version">MINIMART POS · v3.2.5 DATA RELIABILITY</small></div>
+        <div className="sidebar-bottom"><div className="offline-card"><div className="offline-icon"><Activity size={17} /></div><div><strong>Local Cache</strong><small>Cloud Sync အခြေအနေကို သီးခြားစစ်ဆေးပါ</small></div><span className="live-dot" /></div><small className="version">MINIMART POS · v3.3.0 RELEASE HARDENING</small></div>
       </aside>
       {mobileMenu && <button className="sidebar-backdrop" onClick={() => setMobileMenu(false)} aria-label="Close navigation" />}
 
@@ -986,6 +1223,7 @@ function App() {
 
         <div className="content-area">
           <Suspense fallback={<div className="page-stack"><div className="panel"><p>စာမျက်နှာ ဖွင့်နေပါတယ်…</p></div></div>}>
+          <ContentErrorBoundary resetKey={page}>
           {page === 'profile' && <ProfileManagementPage authorize={authorize} notify={notify} />}
           {page === 'branches' && <BranchManagementPage authorize={authorize} notify={notify} onOpenBranch={switchBranch} />}
           {page === 'pricing' && !cashierMode && <SharedPricingPage branches={branches} products={allProducts} notify={notify} actorUid={access.uid} />}
@@ -1014,28 +1252,35 @@ function App() {
 
           {page === 'pos' && <section className="pos-layout pos-layout-mobile-split">
             <div className="pos-products-panel">
-              <div className="section-heading"><div><h2>ပစ္စည်းရွေးချယ်ရန်</h2><p>ရောင်းချမည့်ပစ္စည်းကို ရွေးပြီး Cart ထဲထည့်ပါ။</p></div><span className="subtle-count">ပစ္စည်း {filteredProducts.length} မျိုး</span></div>
-              <div className="toolbar barcode-pos-toolbar"><div className="search-box"><Search size={17} /><input value={productSearch} onChange={(e) => setProductSearch(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addScannedProductToCart(productSearch); } }} placeholder="ပစ္စည်းအမည် / SKU / Barcode scan..." /><button className="barcode-inline-camera" type="button" title="Phone Camera ဖြင့် Barcode ဖတ်ရန်" onClick={() => setCameraScannerTarget('pos')}><Camera size={17} /></button></div><select className="select-control category-select" value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}><option>အားလုံး</option>{categories.map((c) => <option key={c}>{c}</option>)}</select></div>{cashierMode && access.uid && <CashierSalesQueueStatus uid={access.uid} branchId={activeBranchId} />}<small className="barcode-scan-hint">Bluetooth Scanner သုံးလျှင် Search Box ကို တစ်ချက်နှိပ်ပြီး Scan ဖတ်ပါ။ Scanner မှ Enter ပို့လျှင် Product ကို Cart ထဲထည့်ပါမယ်။</small>
-              {products.length === 0 ? <EmptyState icon={<ShoppingBag size={25} />} title="ပစ္စည်း မရှိသေးပါ" text="အရင်ဆုံး Inventory ထဲမှာ ပစ္စည်းထည့်ပြီးမှ POS မှာ ရောင်းချနိုင်ပါမယ်။" action="ပစ္စည်းထည့်ရန်" onAction={() => navTo('inventory')} /> :
+              <div className="section-heading"><div><h2>ပစ္စည်းရွေးချယ်ရန်</h2><p>ရောင်းချမည့်ပစ္စည်းကို ရွေးပြီး Cart ထဲထည့်ပါ။</p></div><span className="subtle-count">{posDataLoading ? 'ပစ္စည်းစာရင်း ရယူနေသည်' : `ပစ္စည်း ${filteredProducts.length} မျိုး`} · {activeBranch?.name || settings.storeName}</span></div>
+              <div className="toolbar barcode-pos-toolbar"><div className="search-box"><Search size={17} /><input value={productSearch} onChange={(e) => setProductSearch(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addScannedProductToCart(productSearch); } }} placeholder="ပစ္စည်းအမည် / SKU / Barcode scan..." /><button className="barcode-inline-camera" type="button" title="Phone Camera ဖြင့် Barcode ဖတ်ရန်" onClick={() => setCameraScannerTarget('pos')}><Camera size={17} /></button></div><select className="select-control category-select" value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}><option>{POS_ALL_CATEGORIES}</option>{categories.map((c) => <option key={c}>{c}</option>)}</select></div>{cashierMode && access.uid && <CashierSalesQueueStatus uid={access.uid} branchId={activeBranchId} />}<small className="barcode-scan-hint">Bluetooth Scanner သုံးလျှင် Search Box ကို တစ်ချက်နှိပ်ပြီး Scan ဖတ်ပါ။ Unit Tracking ပစ္စည်းများကို ပစ္စည်းတစ်ခုချင်း Sticker Barcode ဖြင့်သာ ထည့်နိုင်ပါတယ်။</small>
+              {products.length === 0 ? (posDataLoading
+                ? <EmptyState icon={<Activity size={25} />} title="Cloud မှ ပစ္စည်းစာရင်း ရယူနေပါတယ်" text="Initial Sync လုပ်နေပါတယ်။ ဒီအချိန်မှာ Product 0 မျိုးလို့ မသတ်မှတ်သေးပါ။ Sync ပြီးလျှင် စာရင်းအလိုအလျောက် ပြပါမယ်။" />
+                : posDataUnavailable
+                  ? <EmptyState icon={<AlertTriangle size={25} />} title="Cloud မှ ပစ္စည်းစာရင်း မရနိုင်သေးပါ" text={`${autoSyncStatus.message} Internet ချိတ်ဆက်မှုကို စစ်ပြီး ပြန်စမ်းပါ။`} />
+                  : <EmptyState icon={<ShoppingBag size={25} />} title={`${activeBranch?.name || 'ဒီဆိုင်'} တွင် ပစ္စည်း မရှိသေးပါ`} text={otherBranchProducts.length > 0 ? `ဒီဆိုင်အတွက် ပြသနိုင်တဲ့ Product မရှိပါ။ ${otherBranchProducts.map((branch) => `${branch.name} (${branch.count} မျိုး)`).join(' · ')} တွင် ပစ္စည်းရှိပါတယ်။ ဆိုင်ခွဲ ပြောင်းပြီး POS ပြန်ဖွင့်ပါ။` : 'အရင်ဆုံး ဒီဆိုင်ရဲ့ Inventory ထဲမှာ ပစ္စည်းထည့်ပြီးမှ POS မှာ ရောင်းချနိုင်ပါမယ်။'} action={otherBranchProducts.length > 0 ? 'ဆိုင်ခွဲ ရွေးချယ်ရန်' : 'ပစ္စည်းထည့်ရန်'} onAction={() => setPage(otherBranchProducts.length > 0 ? 'overview' : 'inventory')} />) :
                 filteredProducts.length === 0 ? <EmptyState icon={<Search size={25} />} title="မတွေ့ပါ" text="ရှာဖွေမှု စကားလုံး သို့မဟုတ် Category ကို ပြောင်းကြည့်ပါ။" /> :
-                <div className="product-grid">{filteredProducts.map((product) => <button key={product.id} className={`product-tile ${sellableStock(product) <= 0 ? 'out-of-stock' : ''}`} onClick={() => addToCart(product)} disabled={sellableStock(product) <= 0}><div className="product-tile-icon"><ShoppingBag size={22} /></div><strong>{product.name}</strong><span className="product-sku">{product.sku}</span><div className="product-tile-bottom"><b>{product.retailPrice > 0 ? money(product.retailPrice, settings.currency) : 'ဈေးမသတ်မှတ်ရသေး'}</b><span className={sellableStock(product) <= product.lowStockAt ? 'stock-warning' : 'stock-ok'}>{formatQuantity(sellableStock(product), quantityModeForProduct(product))} {product.unit} ရောင်းနိုင်</span></div></button>)}</div>}
+                <><div className="product-grid">{visibleProducts.map((product) => <button key={product.id} className={`product-tile ${!isProductSelectable(product, expiredBatchUnits) ? 'out-of-stock' : ''}`} onClick={() => addToCart(product)} disabled={!isProductSelectable(product, expiredBatchUnits)}><div className="product-tile-icon"><ShoppingBag size={22} /></div><strong>{product.name}</strong><span className="product-sku">{product.sku}</span><div className="product-tile-bottom"><b>{product.retailPrice > 0 ? money(product.retailPrice, settings.currency) : 'ဈေးမသတ်မှတ်ရသေး'}</b><span className={sellableStock(product) <= product.lowStockAt ? 'stock-warning' : 'stock-ok'}>{formatQuantity(sellableStock(product), quantityModeForProduct(product))} {product.unit} ရောင်းနိုင်</span></div></button>)}</div>{visibleProducts.length < filteredProducts.length && <div className="product-grid-more"><span>ပြသနေသည် {visibleProducts.length} / {filteredProducts.length}</span><button className="button button-outline" type="button" onClick={() => setVisibleProductCount((count) => count + POS_PRODUCT_PAGE_SIZE)}>နောက်ထပ် {Math.min(POS_PRODUCT_PAGE_SIZE, filteredProducts.length - visibleProducts.length)} မျိုး ပြမယ်</button></div>}</>}
             </div>
             <aside className="cart-panel">
               <div className="cart-title"><div><h2><ShoppingCart size={19} /> Current Cart</h2><p>{cart.length} မျိုး</p></div><button className="text-button" onClick={() => { setCart([]); setDiscount('0'); setCashReceived(''); setShowPaymentModal(false); }}>Clear</button></div>
-              <div className="cart-customer"><label>Customer</label><input list="pos-customer-options" value={customer} onChange={(e) => { setCustomer(e.target.value); setCashReceived(''); }} placeholder="ဝယ်သူအမည်" /><datalist id="pos-customer-options">{customers.map((entry) => <option key={entry.id} value={entry.name} />)}</datalist><div className="payment-switch"><button type="button" className={paymentMethod === 'Cash' ? 'selected' : ''} onClick={() => { setPaymentMethod('Cash'); setCashReceived(''); setKpayTransactionReference(''); }}><Wallet size={15} /> Cash</button><button type="button" className={paymentMethod === 'KPay' ? 'selected' : ''} disabled={!activeBranch?.settings.kpayAccountNumber || !activeBranch?.settings.kpayAccountName} title={!activeBranch?.settings.kpayAccountNumber ? 'Owner က Branch KPay Account သတ်မှတ်ရန်လိုသည်' : ''} onClick={() => { setPaymentMethod('KPay'); setCashReceived(''); }}><CreditCard size={15} /> KPay</button><button type="button" className={paymentMethod === 'Credit' ? 'selected' : ''} onClick={() => { setPaymentMethod('Credit'); setCashReceived(''); setKpayTransactionReference(''); }}><CreditCard size={15} /> Credit</button></div></div>
-              <div className="cart-items">{cart.length === 0 ? <div className="cart-empty"><ShoppingCart size={27} /><strong>Cart ထဲမှာ ဘာမှမရှိသေးပါ</strong><span>ဘယ်ဘက်က ပစ္စည်းတစ်ခုကို ရွေးပါ။</span></div> : cart.map((item) => <div className="cart-line" key={item.productId}><div className="cart-line-top"><div><strong>{item.name}</strong><small>{item.sku}</small></div><button className="icon-btn danger-icon" onClick={() => setAside(item)} title="Not buying list ထဲသိမ်း"><ArchiveRestore size={16} /></button></div><div className="price-mode"><button className={item.mode === 'retail' ? 'active' : ''} onClick={() => changePriceMode(item, 'retail')}>လက်လီ</button><button className={item.mode === 'wholesale' ? 'active' : ''} onClick={() => changePriceMode(item, 'wholesale')}>လက်ကား</button><span>{money(item.unitPrice, settings.currency)}</span></div><div className="cart-line-bottom"><div className="qty-control"><button onClick={() => { const product = productMap.get(item.productId); const step = product && quantityModeForProduct(product) === 'decimal' ? 0.1 : 1; changeCartQty(item.productId, Math.round((item.quantity - step) * 1000) / 1000); }}><Minus size={13} /></button><b>{formatQuantity(item.quantity, productMap.get(item.productId) ? quantityModeForProduct(productMap.get(item.productId)!) : 'whole')}</b><button onClick={() => { const product = productMap.get(item.productId); const step = product && quantityModeForProduct(product) === 'decimal' ? 0.1 : 1; changeCartQty(item.productId, Math.round((item.quantity + step) * 1000) / 1000); }}><Plus size={13} /></button></div><strong>{money(item.unitPrice * item.quantity, settings.currency)}</strong></div></div>)}</div>
+              <div className="cart-scroll">
+              <div className="cart-customer"><label>Customer</label><input list="pos-customer-options" value={customer} onChange={(e) => { setCustomer(e.target.value); setCashReceived(''); }} placeholder="ဝယ်သူအမည်" /><datalist id="pos-customer-options">{customers.map((entry) => <option key={entry.id} value={entry.name} />)}</datalist><div className="payment-switch"><button type="button" className={paymentMethodsEnabled && paymentMethod === 'Cash' ? 'selected' : ''} disabled={!paymentMethodsEnabled} onClick={() => { setPaymentMethod('Cash'); setCashReceived(''); setKpayTransactionReference(''); }}><Wallet size={15} /> Cash</button><button type="button" className={paymentMethodsEnabled && paymentMethod === 'KPay' ? 'selected' : ''} disabled={!kpaySelectable} title={!kpaySelectable ? (kpayUnavailable ? describeKpayUnavailable(kpayUnavailable) : 'Cart ထဲ ပစ္စည်းထည့်မှ KPay ရွေးနိုင်ပါမယ်။') : ''} onClick={() => { setPaymentMethod('KPay'); setCashReceived(''); }}><CreditCard size={15} /> KPay</button><button type="button" className={paymentMethodsEnabled && paymentMethod === 'Credit' ? 'selected' : ''} disabled={!paymentMethodsEnabled} onClick={() => { setPaymentMethod('Credit'); setCashReceived(''); setKpayTransactionReference(''); }}><CreditCard size={15} /> Credit</button></div>{cart.length === 0 && <small className="payment-switch-hint">Cart ထဲ ပစ္စည်းတစ်ခု ထည့်မှ ငွေပေးချေနည်း ရွေးနိုင်ပါမယ်။</small>}{kpayUnavailable && <small className="payment-switch-hint payment-switch-warning">KPay ရွေးလို့မရပါ — {describeKpayUnavailable(kpayUnavailable)}</small>}</div>
+              <div className="cart-items">{cart.length === 0 ? <div className="cart-empty"><ShoppingCart size={27} /><strong>Cart ထဲမှာ ဘာမှမရှိသေးပါ</strong><span>ဘယ်ဘက်က ပစ္စည်းတစ်ခုကို ရွေးပါ။</span></div> : cart.map((item) => <div className="cart-line" key={item.productId}><div className="cart-line-top"><div><strong>{item.name}</strong><small>{item.sku}{(item.stockUnitSelections || []).length ? ` · Sticker Unit ${item.stockUnitSelections!.length}` : ''}</small></div><button className="icon-btn danger-icon" onClick={() => setAside(item)} title="Not buying list ထဲသိမ်း"><ArchiveRestore size={16} /></button></div><div className="price-mode"><button className={item.mode === 'retail' ? 'active' : ''} onClick={() => changePriceMode(item, 'retail')}>လက်လီ</button><button className={item.mode === 'wholesale' ? 'active' : ''} onClick={() => changePriceMode(item, 'wholesale')}>လက်ကား</button><span>{money(item.unitPrice, settings.currency)}</span></div><div className="cart-line-bottom"><div className="qty-control"><button onClick={() => { const product = productMap.get(item.productId); const step = product && quantityModeForProduct(product) === 'decimal' ? 0.1 : 1; changeCartQty(item.productId, Math.round((item.quantity - step) * 1000) / 1000); }}><Minus size={13} /></button><b>{formatQuantity(item.quantity, productMap.get(item.productId) ? quantityModeForProduct(productMap.get(item.productId)!) : 'whole')}</b><button disabled={!!productMap.get(item.productId) && isTrackedProduct(productMap.get(item.productId)!)} title={productMap.get(item.productId) && isTrackedProduct(productMap.get(item.productId)!) ? 'Sticker Barcode ထပ်မံ Scan ပါ' : undefined} onClick={() => { const product = productMap.get(item.productId); if (product && isTrackedProduct(product)) { notify('ဒီပစ္စည်းအတွက် Sticker Barcode တစ်ခု ထပ်မံ Scan ပါ။'); return; } const step = product && quantityModeForProduct(product) === 'decimal' ? 0.1 : 1; changeCartQty(item.productId, Math.round((item.quantity + step) * 1000) / 1000); }}><Plus size={13} /></button></div><strong>{money(item.unitPrice * item.quantity, settings.currency)}</strong></div></div>)}</div>
               {heldItems.length > 0 && <div className={`held-section ${showHeldItems ? 'held-section-open' : ''}`}><button className="held-heading held-toggle" type="button" onClick={() => setShowHeldItems((current) => !current)} aria-expanded={showHeldItems}><span>မယူတော့သောပစ္စည်းစာရင်း</span><b>{heldItems.length} မျိုး</b><ChevronDown size={15} className={showHeldItems ? 'held-chevron-open' : ''} /></button>{showHeldItems && <div className="held-list">{heldItems.map((item) => <div className="held-row" key={item.productId}><span>{item.name} × {formatQuantity(item.quantity, productMap.get(item.productId) ? quantityModeForProduct(productMap.get(item.productId)!) : 'whole')}</span><button type="button" onClick={() => restoreHeld(item.productId)}>Cart ထဲပြန်ထည့်</button></div>)}</div>}</div>}
+              </div>
               <div className="cart-summary"><div><span>Subtotal</span><b>{money(subtotal, settings.currency)}</b></div><div className="discount-row"><label htmlFor="discount-input">Discount (MMK){cashierMode ? ` · Max ${maxCashierDiscountPercent}%` : ''}</label><input id="discount-input" type="number" min="0" max={maxAllowedDiscount} value={discount} onChange={(e) => setDiscount(e.target.value)} /></div><div className="total-row"><span>Total</span><strong>{money(checkoutTotal, settings.currency)}</strong></div><div className="printer-tools"><label>Receipt စက္ကူ<select aria-label="Receipt paper width" value={paperWidth} onChange={(event) => setPaperWidth(event.target.value === '58' ? '58' : '80')}><option value="58">58 mm</option><option value="80">80 mm</option></select></label><button className="button button-outline printer-test-button" type="button" onClick={printTestReceipt}><Printer size={15} /> Test Print</button></div><button className="button button-primary checkout-button" type="button" onClick={startCheckout} disabled={!cart.length}><Check size={17} /> ငွေရှင်းမယ်</button><small className="cart-note">ငွေလက်ခံပမာဏကို အတည်ပြုပြီးမှ Sale သိမ်းပါမယ်။</small></div>
             </aside>
           </section>}
 
-          {page === 'receiving' && <StockReceivingPage notify={notify} />}
+          {page === 'receiving' && <StockReceivingPage notify={notify} onOpenUnitReceiving={() => navTo('unitReceiving')} />}
+          {page === 'unitReceiving' && <StockUnitRegistrationPage notify={notify} />}
           {page === 'transfers' && <StockTransferPage authorize={authorize} notify={notify} onViewDestination={viewBranchInventory} />}
           {page === 'shipments' && <BranchShipmentManagementPage authorize={authorize} notify={notify} />}
           {page === 'branchReceiving' && <BranchStockReceivingPage notify={notify} />}
-          {page === 'inventory' && <section className="page-stack"><div className="section-heading"><div><h2>Inventory Management</h2><p>ပစ္စည်း၊ ဈေးနှုန်းနှင့် လက်ကျန် Stock ကို စီမံပါ။</p></div><div className="heading-actions">{canManageSharedPricing && <button className="button button-outline" onClick={() => navTo('pricing')}><CircleDollarSign size={15} /> မျှဝေဈေးနှုန်း</button>}<button className="button button-outline" onClick={exportProductsCsv}><Download size={15} /> CSV</button><button className="button button-primary" onClick={openNewProduct}><Plus size={17} /> ပစ္စည်းအသစ်</button></div></div><div className="mini-stats"><MiniStat icon={<Boxes size={17} />} label="ပစ္စည်းအမျိုးအစား" value={String(products.length)} /><MiniStat icon={<PackagePlus size={17} />} label="လက်ကျန်ရှိသော ပစ္စည်း" value={String(stockedProductCount)} /><MiniStat icon={<AlertTriangle size={17} />} label="Stock နည်းနေသောပစ္စည်း" value={String(lowStockProducts.length)} tone="warning" /></div><div className="panel">{legacyFractionalStockCount > 0 && <div className="backup-warning"><AlertTriangle size={16} /><span>အရေအတွက်ယူနစ်ဖြစ်သော်လည်း ဒသမလက်ကျန်ရှိသော Product {legacyFractionalStockCount} မျိုးရှိပါတယ်။ လက်တွေ့ရေတွက်ပြီး Stock ± ဖြင့် အမှန်တကယ်လက်ကျန်ကို ပြင်ပါ။ App က ဒသမကို အလိုအလျောက် Round မလုပ်ပါ။</span></div>}<div className="table-toolbar"><div className="search-box"><Search size={16} /><input value={productSearch} onChange={(e) => setProductSearch(e.target.value)} placeholder="ပစ္စည်း / SKU ရှာရန်..." /></div><span className="subtle-count">{filteredProducts.length} records</span></div><div className="table-wrap"><table><thead><tr><th>ပစ္စည်း</th><th>Category</th><th>Cost</th><th>လက်လီ</th><th>လက်ကား</th><th>ရောင်းနိုင် / စုစုပေါင်း</th><th>လုပ်ဆောင်ချက်</th></tr></thead><tbody>{filteredProducts.map((product) => <tr key={product.id}><td><div className="table-product"><span className="table-product-icon"><ShoppingBag size={17} /></span><span><strong>{product.name}</strong><small>SKU: {product.sku || '—'}{product.barcode ? ` · Barcode: ${product.barcode}` : ' · Barcode မထည့်ရသေး'}{product.priceGroupId ? ' · မျှဝေဈေးနှုန်းချိတ်ထားသည်' : ' · သီးခြားဈေးနှုန်း'}</small></span></div></td><td><span className="tag">{product.category}</span></td><td>{money(product.costPrice, settings.currency)}</td><td><b>{money(product.retailPrice, settings.currency)}</b></td><td>{money(product.wholesalePrice, settings.currency)}</td><td><span className={sellableStock(product) <= product.lowStockAt ? 'stock-warning' : 'stock-ok'}>{formatQuantity(sellableStock(product), quantityModeForProduct(product))} / {formatQuantity(product.stock, quantityModeForProduct(product))} {product.unit}{hasLegacyFractionalQuantity(product.stock, quantityModeForProduct(product)) ? <small className="stock-warning">ဒသမလက်ကျန် · ပြန်စစ်ရန်</small> : null}</span></td><td><div className="table-actions"><button className="small-action" onClick={() => openEditProduct(product)}>ပြင်ရန်</button><button className="small-action" onClick={() => { const amountText = window.prompt(`Stock ဘယ်လောက် တိုး/လျှော့မလဲ။ ${quantityModeForProduct(product) === 'whole' ? 'နောက်ဆုံးလက်ကျန်က အရေအတွက်ပြည့်ကိန်း ဖြစ်ရပါမယ်။ ဒသမလက်ကျန်ကို မှန်ကန်အောင် ပြင်ရန် 0.012 လို correction amount ထည့်နိုင်ပါတယ်။' : 'ဒသမ ၃ နေရာအထိ ထည့်နိုင်ပါတယ်။'}`); if (amountText !== null) { const amount = Number(amountText); if (Number.isFinite(amount) && amount !== 0) { if (adjustStock(product.id, amount)) notify('Stock ပြင်ဆင်ပြီးပါပြီ။'); else notify('Stock ပြင်မရပါ။ ယူနစ်၊ လက်ကျန်နဲ့ အရေအတွက်ကို ပြန်စစ်ပါ။'); } } }}>Stock ±</button><button className="icon-btn danger-icon" title="Delete" onClick={() => { if (authorize('ပစ္စည်းဖျက်ရန်') && window.confirm(`${product.name} ကို ဖျက်မလား။`)) { if (!deleteProduct(product.id)) { notify(product.priceGroupId ? 'ဒီ Product ကို မျှဝေဈေးနှုန်းအုပ်စုမှ အရင်ဖြုတ်ပါ။' : 'ပစ္စည်းဖျက်မရပါ။'); return; } setCart((items) => items.filter((item) => item.productId !== product.id)); notify('ပစ္စည်းဖျက်ပြီးပါပြီ။'); } }}><Trash2 size={15} /></button></div></td></tr>)}</tbody></table>{filteredProducts.length === 0 && <EmptyState icon={<Boxes size={24} />} title="စာရင်းမရှိသေးပါ" text="ပစ္စည်းအသစ်ထည့်ပြီး စတင်အသုံးပြုပါ။" action="ပစ္စည်းထည့်ရန်" onAction={openNewProduct} />}</div></div></section>}
+          {page === 'inventory' && <section className="page-stack"><div className="section-heading"><div><h2>Inventory Management</h2><p>ပစ္စည်း၊ ဈေးနှုန်းနှင့် လက်ကျန် Stock ကို စီမံပါ။</p></div><div className="heading-actions">{canManageSharedPricing && <button className="button button-outline" onClick={() => navTo('pricing')}><CircleDollarSign size={15} /> မျှဝေဈေးနှုန်း</button>}<button className="button button-outline" onClick={exportProductsCsv}><Download size={15} /> CSV</button><button className="button button-primary" onClick={openNewProduct}><Plus size={17} /> ပစ္စည်းအသစ်</button></div></div><div className="mini-stats"><MiniStat icon={<Boxes size={17} />} label="ပစ္စည်းအမျိုးအစား" value={String(products.length)} /><MiniStat icon={<PackagePlus size={17} />} label="လက်ကျန်ရှိသော ပစ္စည်း" value={String(stockedProductCount)} /><MiniStat icon={<AlertTriangle size={17} />} label="Stock နည်းနေသောပစ္စည်း" value={String(lowStockProducts.length)} tone="warning" /></div><div className="panel">{legacyFractionalStockCount > 0 && <div className="backup-warning"><AlertTriangle size={16} /><span>အရေအတွက်ယူနစ်ဖြစ်သော်လည်း ဒသမလက်ကျန်ရှိသော Product {legacyFractionalStockCount} မျိုးရှိပါတယ်။ လက်တွေ့ရေတွက်ပြီး Stock ± ဖြင့် အမှန်တကယ်လက်ကျန်ကို ပြင်ပါ။ App က ဒသမကို အလိုအလျောက် Round မလုပ်ပါ။</span></div>}<div className="table-toolbar"><div className="search-box"><Search size={16} /><input value={productSearch} onChange={(e) => setProductSearch(e.target.value)} placeholder="ပစ္စည်း / SKU ရှာရန်..." /></div><span className="subtle-count">{filteredProducts.length} records</span></div><div className="table-wrap table-cards"><table><thead><tr><th>ပစ္စည်း</th><th>Category</th><th>Cost</th><th>လက်လီ</th><th>လက်ကား</th><th>ရောင်းနိုင် / စုစုပေါင်း</th><th>လုပ်ဆောင်ချက်</th></tr></thead><tbody>{filteredProducts.map((product) => <tr key={product.id}><td data-label="ပစ္စည်း"><div className="table-product"><span className="table-product-icon"><ShoppingBag size={17} /></span><span><strong>{product.name}</strong><small>SKU: {product.sku || '—'}{product.barcode ? ` · Barcode: ${product.barcode}` : ' · Barcode မထည့်ရသေး'}{product.priceGroupId ? ' · မျှဝေဈေးနှုန်းချိတ်ထားသည်' : ' · သီးခြားဈေးနှုန်း'}</small></span></div></td><td data-label="Category"><span className="tag">{product.category}</span></td><td data-label="Cost">{money(product.costPrice, settings.currency)}</td><td data-label="လက်လီ"><b>{money(product.retailPrice, settings.currency)}</b></td><td data-label="လက်ကား">{money(product.wholesalePrice, settings.currency)}</td><td data-label="ရောင်းနိုင် / စုစုပေါင်း"><span className={sellableStock(product) <= product.lowStockAt ? 'stock-warning' : 'stock-ok'}>{formatQuantity(sellableStock(product), quantityModeForProduct(product))} / {formatQuantity(product.stock, quantityModeForProduct(product))} {product.unit}{hasLegacyFractionalQuantity(product.stock, quantityModeForProduct(product)) ? <small className="stock-warning">ဒသမလက်ကျန် · ပြန်စစ်ရန်</small> : null}</span></td><td className="table-card-actions" data-label="လုပ်ဆောင်ချက်"><div className="table-actions"><button className="small-action" onClick={() => openEditProduct(product)}>ပြင်ရန်</button><button className="small-action" onClick={() => { if (productIsUnitTracked(product, stockUnitRegistries, activeBranchId)) { notify('Unit Tracking ပစ္စည်းဖြစ်လို့ Stock ကို ဒီနေရာမှ မပြင်နိုင်ပါ။ Unit Barcode ကုန်လက်ခံစာမျက်နှာတွင် Sticker Scan ဖြင့်သာ တိုးပါ။'); return; } const amountText = window.prompt(`Stock ဘယ်လောက် တိုး/လျှော့မလဲ။ ${quantityModeForProduct(product) === 'whole' ? 'နောက်ဆုံးလက်ကျန်က အရေအတွက်ပြည့်ကိန်း ဖြစ်ရပါမယ်။ ဒသမလက်ကျန်ကို မှန်ကန်အောင် ပြင်ရန် 0.012 လို correction amount ထည့်နိုင်ပါတယ်။' : 'ဒသမ ၃ နေရာအထိ ထည့်နိုင်ပါတယ်။'}`); if (amountText !== null) { const amount = Number(amountText); if (Number.isFinite(amount) && amount !== 0) { if (adjustStock(product.id, amount)) notify('Stock ပြင်ဆင်ပြီးပါပြီ။'); else notify('Stock ပြင်မရပါ။ ယူနစ်၊ လက်ကျန်နဲ့ အရေအတွက်ကို ပြန်စစ်ပါ။'); } } }}>Stock ±</button><button className="icon-btn danger-icon" title="Delete" onClick={() => { if (authorize('ပစ္စည်းဖျက်ရန်') && window.confirm(`${product.name} ကို ဖျက်မလား။`)) { if (!deleteProduct(product.id)) { notify(product.priceGroupId ? 'ဒီ Product ကို မျှဝေဈေးနှုန်းအုပ်စုမှ အရင်ဖြုတ်ပါ။' : productIsUnitTracked(product, stockUnitRegistries, activeBranchId) ? 'Unit Barcode History ရှိနေသေးလို့ ဒီ Product ကို မဖျက်နိုင်ပါ။' : 'ပစ္စည်းဖျက်မရပါ။'); return; } setCart((items) => items.filter((item) => item.productId !== product.id)); notify('ပစ္စည်းဖျက်ပြီးပါပြီ။'); } }}><Trash2 size={15} /></button></div></td></tr>)}</tbody></table>{filteredProducts.length === 0 && <EmptyState icon={<Boxes size={24} />} title="စာရင်းမရှိသေးပါ" text="ပစ္စည်းအသစ်ထည့်ပြီး စတင်အသုံးပြုပါ။" action="ပစ္စည်းထည့်ရန်" onAction={openNewProduct} />}</div></div></section>}
 
-          {page === 'sales' && <section className="page-stack"><div className="section-heading"><div><h2>Sales History</h2><p>{cashierMode ? 'မိမိ UID ဖြင့် မှတ်တမ်းတင်ထားသော အရောင်းများကိုသာ ကြည့်ရှုနိုင်ပါတယ်။' : 'ပြီးခဲ့သော ရောင်းချမှုများကို ကြည့်ရှု၊ Voucher ပြန်ထုတ်နိုင်ပါတယ်။'}</p></div><div className="heading-actions"><button className="button button-outline" onClick={exportSalesCsv}><Download size={15} /> CSV</button><div className="sales-summary-chip"><TrendingUp size={17} /> {visibleSales.filter((sale) => sale.status === 'completed').length} completed sales</div></div></div><div className="panel"><div className="table-toolbar"><div className="search-box"><Search size={16} /><input value={saleSearch} onChange={(e) => setSaleSearch(e.target.value)} placeholder="Voucher No / Customer ရှာရန်..." /></div><span className="subtle-count">{filteredSales.length} records</span></div><div className="table-wrap"><table><thead><tr><th>Voucher</th><th>နေ့စွဲ</th><th>Customer</th><th>Items</th><th>Payment</th><th>Total</th><th>Due</th><th>Status / Action</th></tr></thead><tbody>{filteredSales.map((sale) => <tr key={sale.id}><td><strong className="mono">{sale.receiptNo}</strong></td><td>{dateLabel(sale.date)}</td><td>{sale.customer}</td><td>{sale.items.length} မျိုး</td><td><span className={`tag ${sale.paymentMethod === 'Credit' ? 'tag-warn' : ''}`}>{sale.paymentMethod}</span>{sale.paymentMethod === 'KPay' && sale.kpayTransactionReference && <small>TX: {sale.kpayTransactionReference}</small>}</td><td><b>{money(sale.total, settings.currency)}</b></td><td>{money(sale.dueAmount ?? (sale.paymentMethod === 'Credit' ? sale.total : 0), settings.currency)}</td><td><div className="table-actions">{sale.status === 'voided' ? <span className="tag tag-danger">Voided</span> : sale.voidRequested ? <span className="tag tag-warn" title={sale.voidRequestReason}>Void တောင်းဆိုထား ({sale.voidRequestReason})</span> : cashierMode && sale.cloudSyncStatus === 'pending' ? <span className="tag tag-warn" title={sale.cloudSyncError || 'Cloud Sync စောင့်နေပါတယ်။'}>Cloud Sync စောင့်နေ</span> : <span className="tag tag-success">Completed</span>}<button className="icon-btn" title="Print" onClick={() => printReceipt(sale)}><Printer size={15} /></button><button className="icon-btn" title="Copy voucher" onClick={() => void copyReceipt(sale)}><FileJson size={15} /></button>{cashierMode && sale.status === 'completed' && !sale.voidRequested && <button className="small-action" type="button" title="Owner ထံ Void တောင်းဆိုရန်" onClick={() => void handleRequestVoidSale(sale)}>Void တောင်းဆို</button>}{!cashierMode && sale.status === 'completed' && (sale.paymentMethod === 'Cash' || (sale.paidAmount ?? 0) === 0) && <button className="icon-btn danger-icon" title="Void sale (Owner only)" onClick={() => void handleVoidSale(sale)}><X size={15} /></button>}</div></td></tr>)}</tbody></table>{filteredSales.length === 0 && <EmptyState icon={<Receipt size={24} />} title="အရောင်းမှတ်တမ်း မရှိသေးပါ" text={cashierMode ? 'v2.9.0 မတိုင်မီ မှတ်တမ်းဟောင်းများတွင် Cashier UID မပါသည့်အတွက် မိမိစာရင်းအဖြစ် မပြပါ။ ဒီ Version မှ စတင်သော မိမိ၏ရောင်းချမှုများကို ဒီနေရာမှာ ကြည့်နိုင်ပါမယ်။' : 'POS မှာ Checkout လုပ်ပြီးနောက် မှတ်တမ်းတွေ ဒီနေရာမှာ ပေါ်လာပါမယ်။'} />}</div></div></section>}
+          {page === 'sales' && <section className="page-stack"><div className="section-heading"><div><h2>Sales History</h2><p>{cashierMode ? 'မိမိ UID ဖြင့် မှတ်တမ်းတင်ထားသော အရောင်းများကိုသာ ကြည့်ရှုနိုင်ပါတယ်။' : 'ပြီးခဲ့သော ရောင်းချမှုများကို ကြည့်ရှု၊ Voucher ပြန်ထုတ်နိုင်ပါတယ်။'}</p></div><div className="heading-actions"><button className="button button-outline" onClick={exportSalesCsv}><Download size={15} /> CSV</button><div className="sales-summary-chip"><TrendingUp size={17} /> {visibleSales.filter((sale) => sale.status === 'completed').length} completed sales</div></div></div><div className="panel"><div className="table-toolbar"><div className="search-box"><Search size={16} /><input value={saleSearch} onChange={(e) => setSaleSearch(e.target.value)} placeholder="Voucher No / Customer ရှာရန်..." /></div><span className="subtle-count">{filteredSales.length} records</span></div><div className="table-wrap table-cards"><table><thead><tr><th>Voucher</th><th>နေ့စွဲ</th><th>Customer</th><th>Items</th><th>Payment</th><th>Total</th><th>Due</th><th>Status / Action</th></tr></thead><tbody>{filteredSales.map((sale) => <tr key={sale.id}><td data-label="Voucher"><strong className="mono">{sale.receiptNo}</strong></td><td data-label="နေ့စွဲ">{dateLabel(sale.date)}</td><td data-label="Customer">{sale.customer}</td><td data-label="Items">{sale.items.length} မျိုး</td><td data-label="Payment"><span className={`tag ${sale.paymentMethod === 'Credit' ? 'tag-warn' : ''}`}>{sale.paymentMethod}</span>{sale.paymentMethod === 'KPay' && sale.kpayTransactionReference && <small>TX: {sale.kpayTransactionReference}</small>}{sale.paymentMethod === 'KPay' && (sale.kpayAccountNameSnapshot || sale.kpayAccountNumberSnapshot) && <small>KPay: {sale.kpayAccountNameSnapshot || '-'} · {sale.kpayAccountNumberSnapshot || '-'}</small>}</td><td data-label="Total"><b>{money(sale.total, settings.currency)}</b></td><td data-label="Due">{money(sale.dueAmount ?? (sale.paymentMethod === 'Credit' ? sale.total : 0), settings.currency)}</td><td className="table-card-actions" data-label="Status / Action"><div className="table-actions">{sale.status === 'voided' ? <span className="tag tag-danger">Voided</span> : sale.voidRequested ? <span className="tag tag-warn" title={sale.voidRequestReason}>Void တောင်းဆိုထား ({sale.voidRequestReason})</span> : cashierMode && sale.cloudSyncStatus === 'pending' ? <span className="tag tag-warn" title={sale.cloudSyncError || 'Cloud Sync စောင့်နေပါတယ်။'}>Cloud Sync စောင့်နေ</span> : <span className="tag tag-success">Completed</span>}<button className="icon-btn" title="Print" onClick={() => printReceipt(sale)}><Printer size={15} /></button><button className="icon-btn" title="Copy voucher" onClick={() => void copyReceipt(sale)}><FileJson size={15} /></button>{sale.returnCount ? <span className="tag tag-warn">Returned ×{sale.returnCount}</span> : null}{sale.voidRefundStatus ? <small>Refund: {sale.voidRefundStatus}</small> : null}{sale.status === 'completed' && canUseCloudAdjustments && sale.cloudSyncStatus !== 'pending' && !sale.voidRequested && <button className="small-action" type="button" title="Return / ပြန်အမ်းရန်" onClick={() => setReturnSale(sale)}><RotateCcw size={14} /> Return</button>}{(!cashierMode || canUseCloudAdjustments) && sale.status === 'completed' && (sale.paymentMethod === 'Cash' || (sale.paidAmount ?? 0) === 0) && <button className="icon-btn danger-icon" title={cashierMode ? 'Void sale' : 'Void sale (Owner)'} onClick={() => void handleVoidSale(sale)}><X size={15} /></button>}</div></td></tr>)}</tbody></table>{filteredSales.length === 0 && <EmptyState icon={<Receipt size={24} />} title="အရောင်းမှတ်တမ်း မရှိသေးပါ" text={cashierMode ? 'v2.9.0 မတိုင်မီ မှတ်တမ်းဟောင်းများတွင် Cashier UID မပါသည့်အတွက် မိမိစာရင်းအဖြစ် မပြပါ။ ဒီ Version မှ စတင်သော မိမိ၏ရောင်းချမှုများကို ဒီနေရာမှာ ကြည့်နိုင်ပါမယ်။' : 'POS မှာ Checkout လုပ်ပြီးနောက် မှတ်တမ်းတွေ ဒီနေရာမှာ ပေါ်လာပါမယ်။'} />}</div></div></section>}
 
           {page === 'customers' && <CustomerCreditPage />}
 
@@ -1084,8 +1329,8 @@ function App() {
             cashierUid={access.uid}
             cashierName={access.displayName || access.email || 'Cashier'}
             onCreate={handleCreateCashierSettlement}
-            branchKpayAccountName={activeBranch?.settings.kpayAccountName || ''}
-            branchKpayAccountNumber={activeBranch?.settings.kpayAccountNumber || ''}
+            branchKpayAccountName={branchKpayEnabled ? activeBranch?.settings.kpayAccountName || '' : ''}
+            branchKpayAccountNumber={branchKpayEnabled ? activeBranch?.settings.kpayAccountNumber || '' : ''}
           />}
           {page === 'finance' && <BranchFinanceManagementPage authorize={authorize} notify={notify} />}
 
@@ -1104,6 +1349,7 @@ function App() {
           />}
 
           {page === 'settings' && <section className="page-stack"><div className="section-heading"><div><h2>Settings & Data</h2><p>ဆိုင်အချက်အလက်၊ Admin PIN နှင့် Backup ကို စီမံပါ။</p></div></div><div className="settings-grid"><div className="panel form-panel"><div className="panel-heading"><div className="panel-icon"><Settings size={18} /></div><div><h3>Store Preferences</h3><p>Receipt နဲ့ POS မှာ အသုံးပြုမည့် အချက်အလက်များ</p></div></div><label>ဆိုင်အမည်<input value={settings.storeName} onChange={(e) => updateSettings({ storeName: e.target.value })} /></label><label>ငွေကြေးအတိုကောက်<input value={settings.currency} onChange={(e) => updateSettings({ currency: e.target.value.toUpperCase() || 'MMK' })} /></label><label>Receipt အောက်ခြေစာသား<input value={settings.receiptFooter} onChange={(e) => updateSettings({ receiptFooter: e.target.value })} /></label><div className="printer-settings-card"><div><strong>Receipt Printer စမ်းသပ်ခြင်း</strong><small>ဒီ Device အတွက် စက္ကူအကျယ်ရွေးပြီး Test Print ထုတ်ကြည့်နိုင်ပါတယ်။</small></div><label>Paper Width<select value={paperWidth} onChange={(event) => setPaperWidth(event.target.value === '58' ? '58' : '80')}><option value="58">58 mm</option><option value="80">80 mm</option></select></label><button className="button button-outline" type="button" onClick={printTestReceipt}><Printer size={15} /> Test Print</button><p>Print ခလုတ်နှိပ်လျှင် Browser/System Print Dialog ပွင့်ပါမယ်။ Bluetooth Printer ကို ဖုန်း/ကွန်ပျူတာရဲ့ Print Service က ပြသမှ ရွေးထုတ်နိုင်ပါတယ်။ App ထဲမှာ Direct Bluetooth Pairing ကို ဒီ Version မှာ မထည့်ရသေးပါ။</p></div><label>Cashier အများဆုံး Discount ကန့်သတ်ချက် (%)<input type="number" min="0" max="100" step="1" value={settings.maxCashierDiscountPercent ?? 10} onChange={(e) => updateSettings({ maxCashierDiscountPercent: Math.max(0, Math.min(100, Number(e.target.value) || 0)) })} /><small className="field-hint">Cashier များ POS တွင် ပေးနိုင်သော အများဆုံး လျှော့ဈေး ရာခိုင်နှုန်း (Default: 10%)။</small></label><label>Admin PIN အသစ်<input type="password" inputMode="numeric" value={settings.adminPin} onChange={(e) => updateSettings({ adminPin: e.target.value.replace(/\D/g, '').slice(0, 12) })} /><small className="field-hint">Default PIN: 1234။ စတင်အသုံးပြုပြီးသည်နှင့် ပြောင်းလဲပါ။</small></label></div><div className="panel form-panel"><div className="panel-heading"><div className="panel-icon"><FileJson size={18} /></div><div><h3>Backup & Restore</h3><p>Data ကို JSON ဖိုင်အဖြစ် သိမ်းပြီး ပြန်တင်နိုင်ပါတယ်။</p></div></div><div className="backup-card"><div><strong>Export Backup</strong><small>Products, Sales, Customer Credit, Payments, Suppliers, Purchases, Expiry Batches, Expenses, Cash Shifts နှင့် Activity Logs ပါဝင်မည်။</small></div><button className="button button-primary" onClick={exportBackup}><Download size={16} /> Export JSON</button></div><div className="backup-card"><div><strong>Import / Restore</strong><small>အရင် Export လုပ်ထားသော JSON ဖိုင်ကို ပြန်တင်ပါ။ လက်ရှိ Data ကို အစားထိုးပါမယ်။</small></div><button className="button button-outline" onClick={() => importRef.current?.click()}><ArrowDownToLine size={16} /> Choose File</button><input ref={importRef} type="file" accept="application/json,.json" hidden onChange={(e) => void importBackup(e.target.files?.[0])} /></div><div className="csv-export-row"><strong>CSV Report Export</strong><div><button className="button button-outline" onClick={exportProductsCsv}>Products CSV</button><button className="button button-outline" onClick={exportSalesCsv}>Sales CSV</button><button className="button button-outline" onClick={exportExpensesCsv}>Expenses CSV</button></div></div><div className="backup-warning"><AlertTriangle size={17} /><span>Backup ဖိုင်ကို ဖုန်းထဲတင်မကဘဲ အခြားလုံခြုံသောနေရာတွင်လည်း သိမ်းထားပါ။ Browser Data ရှင်းလိုက်လျှင် Local Data ပျောက်နိုင်ပါတယ်။</span></div><div className="danger-zone"><div><strong>Reset Local Data</strong><small>Products, Sales, Credit Ledger, Supplier, Purchase, Expiry Batch, Expenses, Cash Shifts နှင့် Activity Logs အားလုံးကို ဒီ Device မှ ဖယ်ရှားပါမယ်။</small></div><button className="button button-danger" onClick={() => { if (authorize('Data အားလုံး Reset လုပ်ရန်') && window.confirm('ဒီ Browser ထဲရှိ POS Data အားလုံးကို အပြီးဖျက်မလား။ Backup မရှိလျှင် ပြန်မရနိုင်ပါ။')) { clearAllData(); setCart([]); notify('Local Data အားလုံး Reset လုပ်ပြီးပါပြီ။'); } }}><Trash2 size={16} /> Reset</button></div></div></div><CloudSyncPanel onOpenProfile={() => navTo('profile')} /><div className="panel security-note"><LockKeyhole size={19} /><div><strong>လုံခြုံရေးနှင့် သိမ်းဆည်းမှုအကြောင်း</strong><p>ဒီဗားရှင်းမှာ PIN ကို Browser Local Storage ထဲမှာသာ စစ်ဆေးပါတယ်။ Shared device သို့မဟုတ် အင်တာနက်ကနေ Admin Access ကို လုံခြုံစွာကာကွယ်ပေးနိုင်တဲ့ Server-side Authentication မဟုတ်ပါ။ Firebase Cloud Sync ကို Settings မှာ Firebase Config ထည့်ပြီး Owner Account Login လုပ်မှ အသုံးပြုနိုင်ပါတယ်။ ဒီ PIN သည် UI Guard သာဖြစ်ပြီး Server-side Admin Permission မဟုတ်ပါ။</p></div></div></section>}
+          </ContentErrorBoundary>
           </Suspense>
         </div>
       </main>
@@ -1118,13 +1364,18 @@ function App() {
         {cashierMode && <button type="button" className={page === 'customers' ? 'active' : ''} onClick={() => navTo('customers')}><Users size={19} /><span>အကြွေး</span></button>}
       </nav>
 
-      {showPaymentModal && <div className="modal-backdrop payment-confirm-backdrop" role="presentation" onMouseDown={(event) => { if (!pendingPersistenceSale && !savingSale && event.target === event.currentTarget) setShowPaymentModal(false); }}><section className="modal-card payment-confirm-card" role="dialog" aria-modal="true" aria-labelledby="payment-confirm-title"><div className="modal-header"><div><h2 id="payment-confirm-title">ငွေရှင်းအတည်ပြုရန်</h2><p>ပစ္စည်းစာရင်းနဲ့ Customer ပေးငွေကို နောက်ဆုံးစစ်ဆေးပါ။</p></div><button className="icon-btn" type="button" onClick={() => setShowPaymentModal(false)} disabled={Boolean(pendingPersistenceSale) || savingSale} aria-label="ပိတ်ရန်"><X size={19} /></button></div><div className="payment-confirm-total"><small>ကျသင့်ငွေ စုစုပေါင်း</small><strong>{money(checkoutTotal, settings.currency)}</strong><span>{cart.length} မျိုး ရွေးထားပါတယ်</span></div>{paymentMethod === 'Cash' ? <><label className="payment-cash-field">Customer ပေးငွေ ({settings.currency})<input type="number" min="0" step="1" inputMode="numeric" value={cashReceived} onChange={(event) => setCashReceived(event.target.value)} placeholder="Customer ပေးလိုက်တဲ့ငွေ ထည့်ပါ" /></label><button className="payment-exact-button" type="button" onClick={() => setCashReceived(String(Math.round(checkoutTotal)))}>ကျသင့်ငွေအတိအကျ ထည့်မယ်</button>{cashShortfall > 0 ? <div className="payment-shortfall"><strong>ငွေမလောက်သေးပါ</strong><span>{money(cashShortfall, settings.currency)} ထပ်လိုနေပါတယ်။ Sale မသိမ်းရသေးပါ၊ Stock လည်း မလျှော့ထားပါ။</span><button className="button button-outline" type="button" onClick={() => setShowPaymentModal(false)}>ပစ္စည်းလျှော့ / Cart ပြန်ပြင်မယ်</button></div> : <div className="payment-change"><span>ပြန်အမ်းရမည့်ငွေ</span><strong>{money(cashChange, settings.currency)}</strong></div>}</> : paymentMethod === 'KPay' ? <div className="payment-kpay-panel"><strong>Branch KPay Account</strong><div className="payment-kpay-account"><span>Account အမည်</span><b>{activeBranch?.settings.kpayAccountName}</b></div><div className="payment-kpay-account"><span>ဖုန်းနံပါတ် / Account</span><b>{activeBranch?.settings.kpayAccountNumber}</b></div>{activeBranch?.settings.kpayAccountLabel && <small>{activeBranch.settings.kpayAccountLabel}</small>}<button className="payment-exact-button" type="button" onClick={() => void copyAccessValue(activeBranch?.settings.kpayAccountNumber || '', 'Branch KPay Account')}>KPay Account နံပါတ် ကူးရန်</button><label className="payment-cash-field">KPay Transaction ID *<input required value={kpayTransactionReference} onChange={(event) => setKpayTransactionReference(event.target.value)} placeholder="KPay ငွေလွှဲပြီးနောက် Transaction ID ထည့်ပါ" maxLength={120}/></label><small className="field-hint">KPay App မှ ငွေလွှဲပြီး Transaction အောင်မြင်ကြောင်း စစ်ဆေးပြီးမှ Sale ကို အတည်ပြုပါ။</small></div> : <div className="payment-credit-note"><strong>Credit Sale</strong><span>{customer.trim()} အမည်ဖြင့် {money(checkoutTotal, settings.currency)} အကြွေးစာရင်းထဲ ထည့်သိမ်းပါမယ်။</span></div>}<div className="payment-confirm-actions"><button className="button button-outline" type="button" onClick={() => setShowPaymentModal(false)} disabled={Boolean(pendingPersistenceSale) || savingSale}>ပြန်စစ်မယ်</button><button className="button button-primary" type="button" onClick={() => void completeSale()} disabled={savingSale || (!pendingPersistenceSale && ((paymentMethod === 'Cash' && cashShortfall > 0) || (paymentMethod === 'KPay' && !kpayTransactionReference.trim())))}><Check size={16} /> {savingSale ? 'သိမ်းဆည်းနေသည်…' : pendingPersistenceSale ? 'Local Save ပြန်ကြိုးစားရန်' : 'Sale အတည်ပြုပြီး သိမ်းမယ်'}</button></div><small className="payment-confirm-footnote">အတည်ပြုမှသာ အရောင်းစာရင်းသိမ်းပြီး Stock လျှော့ပါမယ်။ KPay ငွေကို App က အလိုအလျောက် မလွှဲပါ။</small></section></div>}
-      {showCheckoutResult && checkoutResultSale && <div className="modal-backdrop checkout-result-backdrop" role="presentation"><section className="modal-card checkout-result-card" role="dialog" aria-modal="true" aria-labelledby="checkout-result-title"><div className="checkout-result-icon"><Check size={24} /></div><div className="checkout-result-heading"><h2 id="checkout-result-title">{amountOnlyMode ? 'ကျသင့်ငွေ' : 'ငွေရှင်းအောင်မြင်ပါပြီ'}</h2><p>{amountOnlyMode ? 'Receipt မထုတ်ဘဲ ယူထားတဲ့ပစ္စည်းစာရင်းနဲ့ စုစုပေါင်းပမာဏကို ပြထားပါတယ်။' : 'အရောင်းစာရင်းကို သိမ်းဆည်းပြီးပါပြီ။ ယူထားတဲ့ပစ္စည်းတွေကို စစ်ပြီး Receipt ထုတ်နိုင်ပါတယ်။'}</p></div><div className="checkout-result-total"><small>စုစုပေါင်းကျသင့်ငွေ</small><strong>{money(checkoutResultSale.total, settings.currency)}</strong><span>Voucher: {checkoutResultSale.receiptNo}</span></div><div className="checkout-result-meta"><span>ပစ္စည်း {checkoutResultSale.items.length} မျိုး</span><span>{checkoutResultSale.paymentMethod === 'Credit' ? 'အကြွေး' : checkoutResultSale.paymentMethod === 'KPay' ? 'KPay' : 'ငွေသား'}</span></div><div className="checkout-result-items"><div className="checkout-result-items-heading"><strong>ယူထားတဲ့ပစ္စည်းများ</strong><small>{checkoutResultSale.items.length} မျိုး</small></div>{checkoutResultSale.items.map((item, index) => { const product = productMap.get(item.productId); const quantityMode = item.quantityMode || (product ? quantityModeForProduct(product) : 'whole'); const quantityText = `${formatQuantity(item.quantity, quantityMode)} ${item.unit || product?.unit || ''}`.trim(); return <div className="checkout-result-item" key={`${item.productId}-${index}`}><div className="checkout-result-item-info"><strong>{item.name}</strong><small>{quantityText} × {money(item.unitPrice, settings.currency)} · {item.mode === 'wholesale' ? 'လက်ကား' : 'လက်လီ'}</small></div><b>{money(item.unitPrice * item.quantity, settings.currency)}</b></div>; })}</div><div className="checkout-result-breakdown"><div><span>ပစ္စည်းဖိုး</span><b>{money(checkoutResultSale.subtotal, settings.currency)}</b></div>{checkoutResultSale.discount > 0 && <div><span>လျှော့ဈေး</span><b>−{money(checkoutResultSale.discount, settings.currency)}</b></div>}<div className="checkout-result-breakdown-total"><span>ကျသင့်ငွေ</span><b>{money(checkoutResultSale.total, settings.currency)}</b></div>{checkoutResultSale.paymentMethod === 'Cash' && <><div><span>လက်ခံရရှိငွေ</span><b>{money(checkoutResultSale.cashReceivedAmount ?? checkoutResultSale.total, settings.currency)}</b></div><div><span>ပြန်အမ်းငွေ</span><b>{money(checkoutResultSale.changeAmount ?? 0, settings.currency)}</b></div></>}</div>{amountOnlyMode ? <div className="checkout-result-actions"><button className="button button-primary" type="button" onClick={closeCheckoutResult}>ပြီးပါပြီ</button></div> : <div className="checkout-result-actions"><button className="button button-primary" type="button" onClick={() => { const sale = checkoutResultSale; setShowCheckoutResult(false); setCheckoutResultSale(null); setAmountOnlyMode(false); printReceipt(sale); }}><Printer size={17} /> Printer နဲ့ Receipt ထုတ်မယ်</button><button className="button button-outline" type="button" onClick={finishWithoutPrinting}>မထုတ်တော့ဘူး · ပစ္စည်းစာရင်းပဲကြည့်မယ်</button></div>}<small className="checkout-result-note">Printer မချိတ်ထားပါက Print Dialog ထဲမှာ Save as PDF သို့မဟုတ် ချိတ်ထားသော Printer ကို ရွေးနိုင်ပါတယ်။</small></section></div>}
+      {showPaymentModal && <div className="modal-backdrop payment-confirm-backdrop" role="presentation" onMouseDown={(event) => { if (!pendingPersistenceSale && !savingSale && event.target === event.currentTarget) setShowPaymentModal(false); }}><section className="modal-card payment-confirm-card" role="dialog" aria-modal="true" aria-labelledby="payment-confirm-title"><div className="modal-header"><div><h2 id="payment-confirm-title">ငွေရှင်းအတည်ပြုရန်</h2><p>ပစ္စည်းစာရင်းနဲ့ Customer ပေးငွေကို နောက်ဆုံးစစ်ဆေးပါ။</p></div><button className="icon-btn" type="button" onClick={() => setShowPaymentModal(false)} disabled={Boolean(pendingPersistenceSale) || savingSale} aria-label="ပိတ်ရန်"><X size={19} /></button></div><div className="payment-confirm-total"><small>ကျသင့်ငွေ စုစုပေါင်း</small><strong>{money(checkoutTotal, settings.currency)}</strong><span>{cart.length} မျိုး ရွေးထားပါတယ်</span></div>{paymentMethod === 'Cash' ? <><label className="payment-cash-field">Customer ပေးငွေ ({settings.currency})<input type="number" min="0" step="1" inputMode="numeric" value={cashReceived} onChange={(event) => setCashReceived(event.target.value)} placeholder="Customer ပေးလိုက်တဲ့ငွေ ထည့်ပါ" /></label><button className="payment-exact-button" type="button" onClick={() => setCashReceived(String(Math.round(checkoutTotal)))}>ကျသင့်ငွေအတိအကျ ထည့်မယ်</button>{cashShortfall > 0 ? <div className="payment-shortfall"><strong>ငွေမလောက်သေးပါ</strong><span>{money(cashShortfall, settings.currency)} ထပ်လိုနေပါတယ်။ Sale မသိမ်းရသေးပါ၊ Stock လည်း မလျှော့ထားပါ။</span><button className="button button-outline" type="button" onClick={() => setShowPaymentModal(false)}>ပစ္စည်းလျှော့ / Cart ပြန်ပြင်မယ်</button></div> : <div className="payment-change"><span>ပြန်အမ်းရမည့်ငွေ</span><strong>{money(cashChange, settings.currency)}</strong></div>}</> : paymentMethod === 'KPay' ? <div className="payment-kpay-panel"><strong>Branch KPay Account</strong><div className="payment-kpay-account"><span>Account အမည်</span><b>{activeBranch?.settings.kpayAccountName}</b></div><div className="payment-kpay-account"><span>ဖုန်းနံပါတ် / Account</span><b>{activeBranch?.settings.kpayAccountNumber}</b></div>{activeBranch?.settings.kpayAccountLabel && <small>{activeBranch.settings.kpayAccountLabel}</small>}{branchKpayQrSource && <div className="payment-kpay-qr-wrap"><img className="payment-kpay-qr" src={branchKpayQrSource} alt="Branch KPay QR" /><small>ဒီ QR ကို Customer ဖုန်းနဲ့ Scan ဖတ်ပြီး ငွေလွှဲနိုင်ပါတယ်။</small></div>}<button className="payment-exact-button" type="button" onClick={() => void copyAccessValue(activeBranch?.settings.kpayAccountNumber || '', 'Branch KPay Account')}>KPay Account နံပါတ် ကူးရန်</button><label className="payment-cash-field">KPay Transaction ID *<input required value={kpayTransactionReference} onChange={(event) => setKpayTransactionReference(event.target.value)} placeholder="KPay ငွေလွှဲပြီးနောက် Transaction ID ထည့်ပါ" maxLength={120} aria-invalid={kpayTransactionReference.trim() !== '' && !kpayReferenceCheck.ok} aria-describedby="kpay-reference-state" /></label><div className="payment-verification" id="kpay-reference-state">{kpayReferenceCheck.ok ? <><span className="tag tag-success">Transaction ID ဖြည့်ပြီး · အတည်ပြုနိုင်သည်</span><small>Cashier က KPay App မှ ငွေလွှဲအောင်မြင်ကြောင်း စစ်ဆေးပြီး မှတ်တမ်းတင်ထားပါသည်။</small></> : <><span className="tag tag-warn">ငွေလွှဲအတည်ပြုချက် · မစစ်ဆေးရသေးပါ</span><small>Transaction ID မှန်ကန်စွာ မထည့်မချင်း Sale ကို သိမ်း၍ မရပါ။</small></>}</div>{kpayTransactionReference.trim() !== '' && !kpayReferenceCheck.ok && <p className="payment-verify-error" role="alert">{kpayReferenceCheck.message}</p>}<small className="field-hint">KPay App မှ ငွေလွှဲပြီး Transaction အောင်မြင်ကြောင်း စစ်ဆေးပြီးမှ Sale ကို အတည်ပြုပါ။</small></div> : <div className="payment-credit-note"><strong>Credit Sale</strong><span>{customer.trim()} အမည်ဖြင့် {money(checkoutTotal, settings.currency)} အကြွေးစာရင်းထဲ ထည့်သိမ်းပါမယ်။</span></div>}<div className="payment-confirm-actions"><button className="button button-outline" type="button" onClick={() => setShowPaymentModal(false)} disabled={Boolean(pendingPersistenceSale) || savingSale}>ပြန်စစ်မယ်</button><button className="button button-primary" type="button" onClick={() => void completeSale()} disabled={savingSale || (!pendingPersistenceSale && ((paymentMethod === 'Cash' && cashShortfall > 0) || (paymentMethod === 'KPay' && !kpayReferenceCheck.ok)))}><Check size={16} /> {savingSale ? 'သိမ်းဆည်းနေသည်…' : pendingPersistenceSale ? 'Local Save ပြန်ကြိုးစားရန်' : paymentMethod === 'KPay' ? 'KPay အတည်ပြုပြီး သိမ်းမယ်' : 'Sale အတည်ပြုပြီး သိမ်းမယ်'}</button></div><small className="payment-confirm-footnote">အတည်ပြုမှသာ အရောင်းစာရင်းသိမ်းပြီး Stock လျှော့ပါမယ်။ KPay ငွေကို App က အလိုအလျောက် မလွှဲပါ။</small></section></div>}
+      {showCheckoutResult && checkoutResultSale && <div className="modal-backdrop checkout-result-backdrop" role="presentation"><section className="modal-card checkout-result-card" role="dialog" aria-modal="true" aria-labelledby="checkout-result-title"><div className="checkout-result-icon"><Check size={24} /></div><div className="checkout-result-heading"><h2 id="checkout-result-title">{amountOnlyMode ? 'ကျသင့်ငွေ' : 'ငွေရှင်းအောင်မြင်ပါပြီ'}</h2><p>{amountOnlyMode ? 'Receipt မထုတ်ဘဲ ယူထားတဲ့ပစ္စည်းစာရင်းနဲ့ စုစုပေါင်းပမာဏကို ပြထားပါတယ်။' : 'အရောင်းစာရင်းကို သိမ်းဆည်းပြီးပါပြီ။ ယူထားတဲ့ပစ္စည်းတွေကို စစ်ပြီး Receipt ထုတ်နိုင်ပါတယ်။'}</p></div><div className="checkout-result-total"><small>စုစုပေါင်းကျသင့်ငွေ</small><strong>{money(checkoutResultSale.total, settings.currency)}</strong><span>Voucher: {checkoutResultSale.receiptNo}</span></div><div className="checkout-result-meta"><span>ပစ္စည်း {checkoutResultSale.items.length} မျိုး</span><span>{checkoutResultSale.paymentMethod === 'Credit' ? 'အကြွေး' : checkoutResultSale.paymentMethod === 'KPay' ? 'KPay' : 'ငွေသား'}</span></div>{checkoutResultSale.paymentMethod === 'KPay' && <div className="payment-verification"><span className="tag tag-warn">Manual verification</span><small>TX {checkoutResultSale.kpayTransactionReference} · KPay နှင့် အလိုအလျောက် အတည်ပြုခြင်း မဟုတ်ပါ။</small></div>}<div className="checkout-result-items"><div className="checkout-result-items-heading"><strong>ယူထားတဲ့ပစ္စည်းများ</strong><small>{checkoutResultSale.items.length} မျိုး</small></div>{checkoutResultSale.items.map((item, index) => { const product = productMap.get(item.productId); const quantityMode = item.quantityMode || (product ? quantityModeForProduct(product) : 'whole'); const quantityText = `${formatQuantity(item.quantity, quantityMode)} ${item.unit || product?.unit || ''}`.trim(); return <div className="checkout-result-item" key={`${item.productId}-${index}`}><div className="checkout-result-item-info"><strong>{item.name}</strong><small>{quantityText} × {money(item.unitPrice, settings.currency)} · {item.mode === 'wholesale' ? 'လက်ကား' : 'လက်လီ'}</small></div><b>{money(item.unitPrice * item.quantity, settings.currency)}</b></div>; })}</div><div className="checkout-result-breakdown"><div><span>ပစ္စည်းဖိုး</span><b>{money(checkoutResultSale.subtotal, settings.currency)}</b></div>{checkoutResultSale.discount > 0 && <div><span>လျှော့ဈေး</span><b>−{money(checkoutResultSale.discount, settings.currency)}</b></div>}<div className="checkout-result-breakdown-total"><span>ကျသင့်ငွေ</span><b>{money(checkoutResultSale.total, settings.currency)}</b></div>{checkoutResultSale.paymentMethod === 'Cash' && <><div><span>လက်ခံရရှိငွေ</span><b>{money(checkoutResultSale.cashReceivedAmount ?? checkoutResultSale.total, settings.currency)}</b></div><div><span>ပြန်အမ်းငွေ</span><b>{money(checkoutResultSale.changeAmount ?? 0, settings.currency)}</b></div></>}</div>{amountOnlyMode ? <div className="checkout-result-actions"><button className="button button-primary" type="button" onClick={closeCheckoutResult}>ပြီးပါပြီ</button></div> : <div className="checkout-result-actions"><button className="button button-primary" type="button" onClick={() => { const sale = checkoutResultSale; setShowCheckoutResult(false); setCheckoutResultSale(null); setAmountOnlyMode(false); printReceipt(sale); }}><Printer size={17} /> Printer နဲ့ Receipt ထုတ်မယ်</button><button className="button button-outline" type="button" onClick={finishWithoutPrinting}>မထုတ်တော့ဘူး · ပစ္စည်းစာရင်းပဲကြည့်မယ်</button></div>}<small className="checkout-result-note">Printer မချိတ်ထားပါက Print Dialog ထဲမှာ Save as PDF သို့မဟုတ် ချိတ်ထားသော Printer ကို ရွေးနိုင်ပါတယ်။</small></section></div>}
 
-      {showProductModal && <div className="modal-backdrop" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget) setShowProductModal(false); }}><form className="modal-card" onSubmit={saveProduct}><div className="modal-header"><div><h2>{editingProduct ? 'ပစ္စည်းပြင်ဆင်ရန်' : 'ပစ္စည်းအသစ်ထည့်ရန်'}</h2><p>အရင်းဈေးနဲ့ Stock ကို ဆိုင်အလိုက် စီမံပါ။ မျှဝေဈေးနှုန်းချိတ်ထားသော Product ၏ ရောင်းဈေးကို ဒီ Form မှာ မပြင်နိုင်ပါ။</p></div><button className="icon-btn" type="button" onClick={() => setShowProductModal(false)}><X size={19} /></button></div><div className="form-grid"><label className="span-2">ပစ္စည်းအမည် *<input required value={productDraft.name} onChange={(e) => setProductDraft({ ...productDraft, name: e.target.value })} placeholder="ဥပမာ - Drinking Water" /></label><label>SKU / Product Code<input value={productDraft.sku} onChange={(e) => setProductDraft({ ...productDraft, sku: e.target.value })} placeholder="SKU အမှတ် (မဖြည့်လည်းရ)" /></label><label>Barcode (EAN / UPC)<div className="barcode-field-control"><input value={productDraft.barcode} onChange={(e) => setProductDraft({ ...productDraft, barcode: e.target.value })} placeholder="Bluetooth Scanner သို့မဟုတ် ကိုယ်တိုင်ထည့်ပါ" inputMode="text" onKeyDown={(event) => { if (event.key === 'Enter') event.preventDefault(); }} /><button className="button button-outline barcode-camera-button" type="button" onClick={() => setCameraScannerTarget('product')} title="Camera ဖြင့် Barcode ဖတ်ရန်"><Camera size={15} /> Scan</button></div></label><label>Category<select value={productDraft.category} onChange={(e) => { if (e.target.value === '__add_category__') { const name = window.prompt('Category အသစ်အမည်'); if (name?.trim()) { if (addCategory(name.trim())) { setProductDraft((current) => ({ ...current, category: name.trim() })); notify('Category အသစ် ထည့်ပြီးပါပြီ။'); } else notify('Category အမည် ရှိပြီးသား သို့မဟုတ် မမှန်ကန်ပါ။'); } } else setProductDraft({ ...productDraft, category: e.target.value }); }}><option value="">Category ရွေးပါ</option>{categories.map((category) => <option key={category}>{category}</option>)}<option value="__add_category__">＋ Category အသစ်ထည့်ရန်</option></select></label><label>အရင်းဈေး (Cost Price)<input type="number" min="0" value={productDraft.costPrice} onChange={(e) => setProductDraft({ ...productDraft, costPrice: e.target.value })} /></label><label>လက်လီရောင်းဈေး (Retail Price)<input type="number" min="0" disabled={!!editingProduct?.priceGroupId} value={productDraft.retailPrice} onChange={(e) => setProductDraft({ ...productDraft, retailPrice: e.target.value })} /></label><label>လက်ကားရောင်းဈေး (Wholesale Price)<input type="number" min="0" disabled={!!editingProduct?.priceGroupId} value={productDraft.wholesalePrice} onChange={(e) => setProductDraft({ ...productDraft, wholesalePrice: e.target.value })} /></label><label>လက်ကျန် Stock<input type="number" min="0" step={quantityStep(productDraft.quantityMode)} value={productDraft.stock} onChange={(e) => setProductDraft({ ...productDraft, stock: e.target.value })} /></label><label>Low Stock Alert<input type="number" min="0" step={quantityStep(productDraft.quantityMode)} value={productDraft.lowStockAt} onChange={(e) => setProductDraft({ ...productDraft, lowStockAt: e.target.value })} /></label><label>Unit<input value={productDraft.unit} onChange={(e) => setProductDraft({ ...productDraft, unit: e.target.value, quantityMode: inferQuantityMode(e.target.value) })} placeholder="ခု / ဘူး / ထုပ် / kg / L" /></label><label>အရေအတွက်တွက်ချက်ပုံ<select value={productDraft.quantityMode} onChange={(e) => setProductDraft({ ...productDraft, quantityMode: e.target.value as QuantityMode })}><option value="whole">ပြည့်ကိန်းသာ (ခု / ဘူး / ထုပ်)</option><option value="decimal">ဒသမခွင့်ပြု (kg / L / m)</option></select></label></div>{editingProduct?.priceGroupId && <div className="backup-warning"><CircleDollarSign size={16} /><span>ဒီ Product သည် မျှဝေဈေးနှုန်းအုပ်စုနှင့် ချိတ်ထားပါတယ်။ ဆိုင်အားလုံး၏ ရောင်းဈေးကို မပြောင်းမီ 'မျှဝေဈေးနှုန်း' စာမျက်နှာမှ ပြင်ဆင်ပါ။</span></div>}<div className="modal-actions"><button className="button button-outline" type="button" onClick={() => setShowProductModal(false)}>ပယ်ဖျက်</button><button className="button button-primary" type="submit"><Check size={16} /> သိမ်းဆည်းမည်</button></div></form></div>}
+      {showProductModal && <div className="modal-backdrop" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget) setShowProductModal(false); }}><form className="modal-card" onSubmit={saveProduct}><div className="modal-header"><div><h2>{editingProduct ? 'ပစ္စည်းပြင်ဆင်ရန်' : 'ပစ္စည်းအသစ်ထည့်ရန်'}</h2><p>အရင်းဈေးနဲ့ Stock ကို ဆိုင်အလိုက် စီမံပါ။ မျှဝေဈေးနှုန်းချိတ်ထားသော Product ၏ ရောင်းဈေးကို ဒီ Form မှာ မပြင်နိုင်ပါ။</p></div><button className="icon-btn" type="button" onClick={() => setShowProductModal(false)}><X size={19} /></button></div><div className="form-grid"><label className="span-2">ပစ္စည်းအမည် *<input required value={productDraft.name} onChange={(e) => setProductDraft({ ...productDraft, name: e.target.value })} placeholder="ဥပမာ - Drinking Water" /></label><label>SKU / Product Code<input value={productDraft.sku} onChange={(e) => setProductDraft({ ...productDraft, sku: e.target.value })} placeholder="SKU အမှတ် (မဖြည့်လည်းရ)" /></label><label>Factory Barcode (EAN / UPC)<div className="barcode-field-control"><input value={productDraft.barcode} onChange={(e) => setProductDraft({ ...productDraft, barcode: e.target.value })} placeholder="Bluetooth Scanner သို့မဟုတ် ကိုယ်တိုင်ထည့်ပါ" inputMode="text" onKeyDown={(event) => { if (event.key === 'Enter') event.preventDefault(); }} /><button className="button button-outline barcode-camera-button" type="button" onClick={() => setCameraScannerTarget('product')} title="Camera ဖြင့် Barcode ဖတ်ရန်"><Camera size={15} /> Scan</button></div></label><label>Category<select value={productDraft.category} onChange={(e) => { if (e.target.value === '__add_category__') { const name = window.prompt('Category အသစ်အမည်'); if (name?.trim()) { if (addCategory(name.trim())) { setProductDraft((current) => ({ ...current, category: name.trim() })); notify('Category အသစ် ထည့်ပြီးပါပြီ။'); } else notify('Category အမည် ရှိပြီးသား သို့မဟုတ် မမှန်ကန်ပါ။'); } } else setProductDraft({ ...productDraft, category: e.target.value }); }}><option value="">Category ရွေးပါ</option>{categories.map((category) => <option key={category}>{category}</option>)}<option value="__add_category__">＋ Category အသစ်ထည့်ရန်</option></select></label><label>အရင်းဈေး (Cost Price)<input type="number" min="0" value={productDraft.costPrice} onChange={(e) => setProductDraft({ ...productDraft, costPrice: e.target.value })} /></label><label>လက်လီရောင်းဈေး (Retail Price)<input type="number" min="0" disabled={!!editingProduct?.priceGroupId} value={productDraft.retailPrice} onChange={(e) => setProductDraft({ ...productDraft, retailPrice: e.target.value })} /></label><label>လက်ကားရောင်းဈေး (Wholesale Price)<input type="number" min="0" disabled={!!editingProduct?.priceGroupId} value={productDraft.wholesalePrice} onChange={(e) => setProductDraft({ ...productDraft, wholesalePrice: e.target.value })} /></label><label>လက်ကျန် Stock<input type="number" min="0" step={quantityStep(productDraft.quantityMode)} value={productDraft.stock} disabled={productDraft.tracksIndividualUnits} onChange={(e) => setProductDraft({ ...productDraft, stock: e.target.value })} /><small className="field-hint">{productDraft.tracksIndividualUnits ? 'Unit Tracking ပစ္စည်းများကို Stock Receiving → Unit Barcode Scan မှသာ တိုးနိုင်ပါတယ်။' : ''}</small></label><label>Low Stock Alert<input type="number" min="0" step={quantityStep(productDraft.quantityMode)} value={productDraft.lowStockAt} onChange={(e) => setProductDraft({ ...productDraft, lowStockAt: e.target.value })} /></label><label>Unit<input value={productDraft.unit} onChange={(e) => setProductDraft({ ...productDraft, unit: e.target.value, quantityMode: inferQuantityMode(e.target.value) })} placeholder="ခု / ဘူး / ထုပ် / kg / L" /></label><label>အရေအတွက်တွက်ချက်ပုံ<select value={productDraft.quantityMode} disabled={productDraft.tracksIndividualUnits} onChange={(e) => setProductDraft({ ...productDraft, quantityMode: e.target.value as QuantityMode })}><option value="whole">ပြည့်ကိန်းသာ (ခု / ဘူး / ထုပ်)</option><option value="decimal">ဒသမခွင့်ပြု (kg / L / m)</option></select></label><label className="span-2 unit-tracking-setting"><input type="checkbox" checked={productDraft.tracksIndividualUnits} onChange={(e) => {
+                const enabled = e.target.checked;
+                const currentlyTracked = !!editingProduct && productIsUnitTracked(editingProduct, stockUnitRegistries, activeBranchId);
+                setProductDraft({ ...productDraft, tracksIndividualUnits: enabled, ...(enabled ? { quantityMode: 'whole' as const, ...(!currentlyTracked ? { stock: '0' } : {}) } : {}) });
+              }} /><span><b>Individual Unit Tracking</b><small>ဖွင့်ထားလျှင် ပစ္စည်းတစ်ခုချင်းစီအတွက် Sticker Barcode မဖြစ်မနေ Scan ရပါမယ်။ Factory EAN/UPC သည် optional သာဖြစ်ပြီး ရောင်းချရန် မသုံးပါ။</small></span></label></div>{editingProduct?.priceGroupId && <div className="backup-warning"><CircleDollarSign size={16} /><span>ဒီ Product သည် မျှဝေဈေးနှုန်းအုပ်စုနှင့် ချိတ်ထားပါတယ်။ ဆိုင်အားလုံး၏ ရောင်းဈေးကို မပြောင်းမီ 'မျှဝေဈေးနှုန်း' စာမျက်နှာမှ ပြင်ဆင်ပါ။</span></div>}<div className="modal-actions"><button className="button button-outline" type="button" onClick={() => setShowProductModal(false)}>ပယ်ဖျက်</button><button className="button button-primary" type="submit"><Check size={16} /> သိမ်းဆည်းမည်</button></div></form></div>}
 
       {(lastSale || printTestMode) && <div className="receipt-print-area"><div className={`receipt-paper receipt-paper-${paperWidth}`}>
-        {printTestMode ? <><h2>{activeBranch?.name || settings.storeName}</h2><p className="receipt-test-title">*** PRINTER TEST ***</p><p>{new Date().toLocaleString()}</p><hr /><div className="receipt-item"><span>စမ်းသပ်ပစ္စည်း × 1</span><b>1,000 {settings.currency}</b></div><hr /><div className="receipt-total receipt-grand"><span>TEST TOTAL</span><b>1,000 {settings.currency}</b></div><p className="receipt-footer">မြန်မာစာ စမ်းသပ်ခြင်း · {settings.receiptFooter}</p></> : lastSale && <>{activeBranchLogoSource && <img className="receipt-shop-logo" src={activeBranchLogoSource} alt="Shop logo" />}<h2>{activeBranch?.name || settings.storeName}</h2>{activeBranch?.settings.receiptHeader && <p className="receipt-shop-extra">{activeBranch.settings.receiptHeader}</p>}{activeBranch?.address && <p>{activeBranch.address}</p>}{activeBranch?.phone && <p>ဖုန်း: {activeBranch.phone}</p>}<p>Voucher: {lastSale.receiptNo}</p><p>{dateLabel(lastSale.date)}</p><p>Customer: {lastSale.customer}</p><hr />{lastSale.items.map((item, index) => { const product = productMap.get(item.productId); const quantityMode = item.quantityMode || (product ? quantityModeForProduct(product) : 'whole'); const quantityText = `${formatQuantity(item.quantity, quantityMode)} ${item.unit || product?.unit || ''}`.trim(); return <div className="receipt-item receipt-item-detailed" key={`${item.productId}-${index}`}><div className="receipt-item-info"><strong>{item.name}</strong><small>{quantityText} × {money(item.unitPrice, settings.currency)} · {item.mode === 'wholesale' ? 'လက်ကား' : 'လက်လီ'}</small></div><b>{money(item.unitPrice * item.quantity, settings.currency)}</b></div>; })}<hr /><div className="receipt-total"><span>Subtotal</span><b>{money(lastSale.subtotal, settings.currency)}</b></div><div className="receipt-total"><span>Discount</span><b>{money(lastSale.discount, settings.currency)}</b></div><div className="receipt-total receipt-grand"><span>Total</span><b>{money(lastSale.total, settings.currency)}</b></div><p>Payment: {lastSale.paymentMethod}</p>{lastSale.paymentMethod === 'KPay' && lastSale.kpayTransactionReference && <p>KPay Transaction ID: {lastSale.kpayTransactionReference}</p>}<p>Paid: {money(lastSale.paidAmount ?? (lastSale.paymentMethod === 'Cash' || lastSale.paymentMethod === 'KPay' ? lastSale.total : 0), settings.currency)}</p>{lastSale.paymentMethod === 'Cash' && <><p>Cash Received: {money(lastSale.cashReceivedAmount ?? lastSale.total, settings.currency)}</p><p>Change: {money(lastSale.changeAmount ?? 0, settings.currency)}</p></>}<p>Due: {money(lastSale.dueAmount ?? (lastSale.paymentMethod === 'Credit' ? lastSale.total : 0), settings.currency)}</p><p className="receipt-footer">{settings.receiptFooter}</p></>}</div></div>}
+        {printTestMode ? <><h2>{activeBranch?.name || settings.storeName}</h2><p className="receipt-test-title">*** PRINTER TEST ***</p><p>{new Date().toLocaleString()}</p><hr /><div className="receipt-item"><span>စမ်းသပ်ပစ္စည်း × 1</span><b>1,000 {settings.currency}</b></div><hr /><div className="receipt-total receipt-grand"><span>TEST TOTAL</span><b>1,000 {settings.currency}</b></div><p className="receipt-footer">မြန်မာစာ စမ်းသပ်ခြင်း · {settings.receiptFooter}</p></> : lastSale && <>{activeBranchLogoSource && <img className="receipt-shop-logo" src={activeBranchLogoSource} alt="Shop logo" />}<h2>{activeBranch?.name || settings.storeName}</h2>{activeBranch?.settings.receiptHeader && <p className="receipt-shop-extra">{activeBranch.settings.receiptHeader}</p>}{activeBranch?.address && <p>{activeBranch.address}</p>}{activeBranch?.phone && <p>ဖုန်း: {activeBranch.phone}</p>}<p>Voucher: {lastSale.receiptNo}</p><p>{dateLabel(lastSale.date)}</p><p>Customer: {lastSale.customer}</p><hr />{lastSale.items.map((item, index) => { const product = productMap.get(item.productId); const quantityMode = item.quantityMode || (product ? quantityModeForProduct(product) : 'whole'); const quantityText = `${formatQuantity(item.quantity, quantityMode)} ${item.unit || product?.unit || ''}`.trim(); return <div className="receipt-item receipt-item-detailed" key={`${item.productId}-${index}`}><div className="receipt-item-info"><strong>{item.name}</strong><small>{quantityText} × {money(item.unitPrice, settings.currency)} · {item.mode === 'wholesale' ? 'လက်ကား' : 'လက်လီ'}</small></div><b>{money(item.unitPrice * item.quantity, settings.currency)}</b></div>; })}<hr /><div className="receipt-total"><span>Subtotal</span><b>{money(lastSale.subtotal, settings.currency)}</b></div><div className="receipt-total"><span>Discount</span><b>{money(lastSale.discount, settings.currency)}</b></div><div className="receipt-total receipt-grand"><span>Total</span><b>{money(lastSale.total, settings.currency)}</b></div><p>Payment: {lastSale.paymentMethod}</p>{lastSale.paymentMethod === 'KPay' && lastSale.kpayTransactionReference && <p>KPay Transaction ID: {lastSale.kpayTransactionReference}</p>}{lastSale.paymentMethod === 'KPay' && (lastSale.kpayAccountNameSnapshot || lastSale.kpayAccountNumberSnapshot) && <><p>KPay Account: {lastSale.kpayAccountNameSnapshot || '-'}</p><p>KPay Account No: {lastSale.kpayAccountNumberSnapshot || '-'}</p></>}<p>Paid: {money(lastSale.paidAmount ?? (lastSale.paymentMethod === 'Cash' || lastSale.paymentMethod === 'KPay' ? lastSale.total : 0), settings.currency)}</p>{lastSale.paymentMethod === 'Cash' && <><p>Cash Received: {money(lastSale.cashReceivedAmount ?? lastSale.total, settings.currency)}</p><p>Change: {money(lastSale.changeAmount ?? 0, settings.currency)}</p></>}<p>Due: {money(lastSale.dueAmount ?? (lastSale.paymentMethod === 'Credit' ? lastSale.total : 0), settings.currency)}</p><p className="receipt-footer">{settings.receiptFooter}</p></>}</div></div>}
+      {returnSale && <SaleReturnDialog key={returnSale.id} sale={returnSale} registries={stockUnitRegistries} products={products} currency={settings.currency} busy={adjustmentBusy} onClose={() => { if (!adjustmentBusy) setReturnSale(null); }} onSubmit={handleReturnSubmit} />}
       {cameraScannerTarget !== null && <Suspense fallback={<div className="modal-backdrop"><section className="modal-card"><p>Barcode Scanner ဖွင့်နေပါတယ်…</p></section></div>}><BarcodeCameraScanner open onClose={() => setCameraScannerTarget(null)} onDetected={handleCameraBarcodeDetected} title={cameraScannerTarget === 'product' ? 'ပစ္စည်း Barcode ထည့်ရန်' : 'POS Barcode ဖတ်ရန်'} /></Suspense>}
       {toast && (toastActionPage
         ? <button className="toast toast-action" type="button" onClick={() => { setPage(toastActionPage); setMobileMenu(false); setToast(''); setToastActionPage(null); }}><PackageCheck size={17} /> {toast}</button>
@@ -1136,6 +1387,23 @@ function App() {
 function MiniStat({ icon, label, value, tone }: { icon: ReactNode; label: string; value: string; tone?: 'warning' }) {
   return <div className="mini-stat"><div className={`mini-stat-icon ${tone === 'warning' ? 'warning' : ''}`}>{icon}</div><div><small>{label}</small><strong>{value}</strong></div></div>;
 }
+class ContentErrorBoundary extends Component<{ resetKey: string; children: ReactNode }, { message: string }> {
+  state = { message: '' };
+  static getDerivedStateFromError(error: unknown) {
+    return { message: error instanceof Error ? error.message : 'Unknown error' };
+  }
+  componentDidCatch(error: unknown) {
+    console.error('[Minimart Page Error]', error);
+  }
+  componentDidUpdate(previous: { resetKey: string }) {
+    if (previous.resetKey !== this.props.resetKey && this.state.message) this.setState({ message: '' });
+  }
+  render() {
+    if (!this.state.message) return this.props.children;
+    return <section className="page-stack"><div className="panel empty-state"><div className="empty-icon"><AlertTriangle size={22} /></div><strong>ဒီစာမျက်နှာကို ဖွင့်မရပါ</strong><p>အခြားစာမျက်နှာများနှင့် သိမ်းထားသော Data များ မထိခိုက်ပါ။ ပြန်စမ်းကြည့်ပါ။</p><button className="button button-outline" type="button" onClick={() => this.setState({ message: '' })}>ပြန်စမ်းရန်</button></div></section>;
+  }
+}
+
 function EmptyState({ icon, title, text, action, onAction }: { icon: ReactNode; title: string; text: string; action?: string; onAction?: () => void }) {
   return <div className="empty-state"><div className="empty-icon">{icon}</div><strong>{title}</strong><p>{text}</p>{action && onAction && <button className="button button-outline" onClick={onAction}>{action}</button>}</div>;
 }
@@ -1158,44 +1426,13 @@ function BranchOverviewPage({
   onResumePos: () => void;
 }) {
   const todayDate = today();
-  const branchSummaries = branches.map((branch) => {
-    const branchProducts = products.filter((product) => product.branchId === branch.id);
-    const branchSales = sales.filter((sale) => sale.branchId === branch.id && sale.status === 'completed');
-    const todayBranchSales = branchSales.filter((sale) => dayKey(new Date(sale.date)) === todayDate);
-    const branchExpenses = expenses.filter((expense) => expense.branchId === branch.id);
-    const pendingExpenses = branchExpenses.filter((expense) => expense.approvalStatus === 'pending').length;
-    const branchExpiredUnits = new Map<string, number>();
-    stockBatches.forEach((batch) => {
-      if (batch.branchId === branch.id && batch.expiryDate && batch.expiryDate < todayDate && batch.quantity > 0) {
-        branchExpiredUnits.set(batch.productId, (branchExpiredUnits.get(batch.productId) || 0) + batch.quantity);
-      }
-    });
-    const lowStockCount = branchProducts.filter((product) => Math.max(0, product.stock - (branchExpiredUnits.get(product.id) || 0)) <= product.lowStockAt).length;
-    const openShiftCount = cashShifts.filter((shift) => shift.branchId === branch.id && !shift.closedAt).length;
-    return {
-      branch,
-      productCount: branchProducts.length,
-      lowStockCount,
-      salesCount: todayBranchSales.length,
-      revenue: todayBranchSales.reduce((sum, sale) => sum + sale.total, 0),
-      profit: todayBranchSales.reduce((sum, sale) => sum + sale.profit, 0),
-      pendingExpenses,
-      openShiftCount,
-    };
-  });
-  const activeBranchIds = new Set(branches.map((branch) => branch.id));
-  const activeBranchSales = sales.filter((sale) => Boolean(sale.branchId && activeBranchIds.has(sale.branchId)));
-  const completedToday = activeBranchSales.filter((sale) => sale.status === 'completed' && dayKey(new Date(sale.date)) === todayDate);
-  const totalRevenue = completedToday.reduce((sum, sale) => sum + sale.total, 0);
-  const totalProfit = completedToday.reduce((sum, sale) => sum + sale.profit, 0);
-  const totalProducts = branchSummaries.reduce((sum, item) => sum + item.productCount, 0);
-  const totalLowStock = branchSummaries.reduce((sum, item) => sum + item.lowStockCount, 0);
-  const totalPendingExpenses = branchSummaries.reduce((sum, item) => sum + item.pendingExpenses, 0);
-  const recentSales = activeBranchSales
-    .filter((sale) => sale.status === 'completed')
-    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-    .slice(0, 8);
-  const branchNameById = new Map(branches.map((branch) => [branch.id, branch.name]));
+  const overview = useMemo(() => buildBranchOverview({
+    branches, products, sales, expenses, stockBatches, cashShifts, todayKey: todayDate,
+  }), [branches, products, sales, expenses, stockBatches, cashShifts, todayDate]);
+  const branchSummaries = overview.summaries;
+  const summaryTotals = overview.totals;
+  const recentSales = overview.recentSales;
+  const branchNameById = useMemo(() => new Map(branches.map((branch) => [branch.id, branch.name])), [branches]);
 
   return <section className="page-stack branch-overview-page">
     <div className="section-heading">
@@ -1210,26 +1447,26 @@ function BranchOverviewPage({
     <div className="branch-overview-summary-grid">
       <div className="metric-card metric-primary">
         <div className="metric-head"><span>ဆိုင်အားလုံး ယနေ့အရောင်း</span><div><TrendingUp size={17} /></div></div>
-        <strong>{money(totalRevenue, currency)}</strong>
-        <small>{completedToday.length} transactions</small>
+        <strong>{money(summaryTotals.revenue, currency)}</strong>
+        <small>{summaryTotals.salesCount} transactions</small>
         <div className="metric-foot">Active Branch အားလုံး၏ စုစုပေါင်း</div>
       </div>
       <div className="metric-card">
         <div className="metric-head"><span>ယနေ့ ခန့်မှန်းအမြတ်</span><div><CircleDollarSign size={17} /></div></div>
-        <strong>{money(totalProfit, currency)}</strong>
+        <strong>{money(summaryTotals.profit, currency)}</strong>
         <small>ပြီးစီးပြီးသော အရောင်းများသာ</small>
         <div className="metric-foot">Branch cost snapshot အပေါ် အခြေခံသည်</div>
       </div>
       <div className="metric-card">
         <div className="metric-head"><span>ဆိုင်ခွဲ / Product</span><div><Store size={17} /></div></div>
         <strong>{branches.length} ဆိုင်</strong>
-        <small>စုစုပေါင်း Product {totalProducts} မျိုး</small>
+        <small>စုစုပေါင်း Product {summaryTotals.products} မျိုး</small>
         <div className="metric-foot">Product Catalog သီးခြားစီ</div>
       </div>
       <div className="metric-card">
         <div className="metric-head"><span>စစ်ဆေးရန် လိုအပ်ချက်</span><div className="metric-alert"><AlertTriangle size={17} /></div></div>
-        <strong>{totalLowStock + totalPendingExpenses}</strong>
-        <small>Stock Alert {totalLowStock} · Approval {totalPendingExpenses}</small>
+        <strong>{summaryTotals.lowStock + summaryTotals.pendingExpenses}</strong>
+        <small>Stock Alert {summaryTotals.lowStock} · Approval {summaryTotals.pendingExpenses}</small>
         <div className="metric-foot">ဆိုင်တစ်ဆိုင်ချင်း ဝင်ရောက်စစ်ဆေးပါ</div>
       </div>
     </div>
@@ -1263,7 +1500,7 @@ function BranchOverviewPage({
 
     <div className="panel recent-panel">
       <div className="panel-heading"><div><h3>ဆိုင်အားလုံး၏ နောက်ဆုံးအရောင်း</h3><p>Branch တစ်ခုချင်းစီရဲ့ နောက်ဆုံး Voucher များ</p></div></div>
-      {recentSales.length === 0 ? <EmptyState icon={<Receipt size={23} />} title="အရောင်းမှတ်တမ်း မရှိသေးပါ" text="ဆိုင်ခွဲတစ်ခုချင်းစီတွင် POS အသုံးပြုပြီးနောက် မှတ်တမ်းများ ဒီနေရာမှာ ပေါ်လာပါမယ်။" /> : <div className="table-wrap"><table><thead><tr><th>ဆိုင်</th><th>Voucher</th><th>Customer</th><th>နေ့စွဲ</th><th>Payment</th><th>စုစုပေါင်း</th></tr></thead><tbody>{recentSales.map((sale) => <tr key={`${sale.branchId || 'legacy'}-${sale.id}`}><td>{sale.branchId ? (branchNameById.get(sale.branchId) || 'Archived Branch') : 'Branch မသတ်မှတ်ထား'}</td><td><strong className="mono">{sale.receiptNo}</strong></td><td>{sale.customer}</td><td>{dateLabel(sale.date)}</td><td><span className={`tag ${sale.paymentMethod === 'Credit' ? 'tag-warn' : ''}`}>{sale.paymentMethod}</span></td><td><b>{money(sale.total, currency)}</b></td></tr>)}</tbody></table></div>}
+      {recentSales.length === 0 ? <EmptyState icon={<Receipt size={23} />} title="အရောင်းမှတ်တမ်း မရှိသေးပါ" text="ဆိုင်ခွဲတစ်ခုချင်းစီတွင် POS အသုံးပြုပြီးနောက် မှတ်တမ်းများ ဒီနေရာမှာ ပေါ်လာပါမယ်။" /> : <div className="table-wrap table-cards"><table><thead><tr><th>ဆိုင်</th><th>Voucher</th><th>Customer</th><th>နေ့စွဲ</th><th>Payment</th><th>စုစုပေါင်း</th></tr></thead><tbody>{recentSales.map((sale) => <tr key={`${sale.branchId || 'legacy'}-${sale.id}`}><td data-label="ဆိုင်">{sale.branchId ? (branchNameById.get(sale.branchId) || 'Archived Branch') : 'Branch မသတ်မှတ်ထား'}</td><td data-label="Voucher"><strong className="mono">{sale.receiptNo}</strong></td><td data-label="Customer">{sale.customer}</td><td data-label="နေ့စွဲ">{dateLabel(sale.date)}</td><td data-label="Payment"><span className={`tag ${sale.paymentMethod === 'Credit' ? 'tag-warn' : ''}`}>{sale.paymentMethod}</span></td><td data-label="စုစုပေါင်း"><b>{money(sale.total, currency)}</b></td></tr>)}</tbody></table></div>}
     </div>
 
     <div className="analytics-note"><Activity size={18} /><div><strong>Branch Data ခွဲခြားထားခြင်း</strong><p>ဒီ Overview မှာ Active Branch များ၏ Local/Cloud မှ ရရှိထားသော Data ကိုသာ စုစည်းပြသပါတယ်။ Stock၊ Cost၊ Cash၊ KPay နဲ့ Expense ကို Branch တစ်ခုချင်းစီအလိုက် သီးခြားစီမံထားပြီး ဆိုင်တစ်ဆိုင်သို့ ဝင်မှသာ အဲဒီဆိုင်၏လုပ်ငန်းများကို ဆောင်ရွက်နိုင်ပါတယ်။</p></div></div>
@@ -1282,7 +1519,7 @@ function DashboardPage({
 }) {
   const recentSales = sales.slice(0, 5);
   const productCountLabel = `${productCount} items`;
-  return <section className="page-stack"><div className={`welcome-banner${bannerSource ? ' has-shop-banner' : ''}`}>{bannerSource && <img className="welcome-banner-image" src={bannerSource} alt="Shop banner" />}<div className="welcome-banner-copy"><span className="welcome-kicker">GOOD BUSINESS STARTS HERE</span><h2>မင်္ဂလာပါ 👋</h2><p>{settings.storeName} ရဲ့ ယနေ့လုပ်ငန်းအခြေအနေကို ကြည့်ရှုနိုင်ပါတယ်။</p></div><div className="welcome-decoration"><Store size={48} /></div></div><div className="dashboard-stats"><div className="metric-card metric-primary"><div className="metric-head"><span>ယနေ့ ရောင်းအား</span><div><TrendingUp size={17} /></div></div><strong>{money(todayRevenue, settings.currency)}</strong><small>{todayCount} transactions today</small><div className="metric-foot"><ArrowUpRight size={14} /> Today’s sales revenue</div></div><div className="metric-card"><div className="metric-head"><span>ယနေ့ ခန့်မှန်းအမြတ်</span><div><CircleDollarSign size={17} /></div></div><strong>{money(todayProfit, settings.currency)}</strong><small>Discount ပါဝင်ပြီး</small><div className="metric-foot">Gross profit estimate</div></div><div className="metric-card"><div className="metric-head"><span>ပစ္စည်းအမျိုးအစား</span><div><Boxes size={17} /></div></div><strong>{productCountLabel}</strong><small>လက်ကျန်ရှိသော Product {totalStockUnits} မျိုး</small><div className="metric-foot">Inventory overview</div></div><div className="metric-card"><div className="metric-head"><span>Stock သတိပေးချက်</span><div className="metric-alert"><AlertTriangle size={17} /></div></div><strong>{lowStockProducts.length} items</strong><small>ပြန်လည်မှာယူရန် စစ်ဆေးပါ</small><button className="metric-link" onClick={() => navTo('inventory')}>Inventory ကြည့်ရန် <ArrowUpRight size={13} /></button></div></div><div className="dashboard-grid"><div className="panel chart-panel"><div className="panel-heading"><div><h3>Sales Overview</h3><p>နေ့စဉ် ရောင်းအား အခြေအနေ</p></div><div className="period-switch"><button className={chartPeriod === '7' ? 'active' : ''} onClick={() => setChartPeriod('7')}>7D</button><button className={chartPeriod === '30' ? 'active' : ''} onClick={() => setChartPeriod('30')}>30D</button><button className={chartPeriod === '365' ? 'active' : ''} onClick={() => setChartPeriod('365')}>12M</button></div></div><div className="bar-chart dashboard-chart">{trend.map((item) => <div className="bar-column" key={item.key}><div className="bar-track"><div className="bar-fill" style={{ height: `${Math.max(item.value ? 4 : 0, item.value / trendMax * 100)}%` }} title={money(item.value, settings.currency)} /></div><small>{item.label}</small></div>)}</div></div><div className="panel low-stock-panel"><div className="panel-heading"><div><h3>Low Stock Alert</h3><p>လက်ကျန်နည်းနေသောပစ္စည်း</p></div><AlertTriangle className="warning-text" size={18} /></div>{lowStockProducts.length === 0 ? <EmptyState icon={<Check size={23} />} title="အားလုံး အဆင်ပြေပါတယ်" text="Stock နည်းနေသော ပစ္စည်းမရှိပါ။" /> : <div className="low-stock-list">{lowStockProducts.slice(0, 5).map((product) => <div className="low-stock-row" key={product.id}><div className="table-product-icon"><ShoppingBag size={16} /></div><div><strong>{product.name}</strong><small>{product.sku}</small></div><b className="stock-warning">{formatQuantity(sellableStock(product), quantityModeForProduct(product))} {product.unit} ရောင်းနိုင်</b></div>)}</div>}<button className="panel-link" onClick={() => navTo('inventory')}>Inventory အားလုံးကြည့်ရန် <ArrowUpRight size={14} /></button></div></div><div className="panel recent-panel"><div className="panel-heading"><div><h3>Recent Transactions</h3><p>နောက်ဆုံး အရောင်းမှတ်တမ်းများ</p></div><button className="text-button" onClick={() => navTo('sales')}>အားလုံးကြည့်ရန် <ArrowUpRight size={14} /></button></div>{recentSales.length === 0 ? <EmptyState icon={<Receipt size={23} />} title="အရောင်းမှတ်တမ်း မရှိသေးပါ" text="POS မှာ ပထမဆုံး အရောင်းပြုလုပ်လိုက်ပါ။" action="POS သို့သွားရန်" onAction={() => navTo('pos')} /> : <div className="table-wrap"><table><thead><tr><th>Voucher</th><th>Customer</th><th>အချိန်</th><th>Payment</th><th>စုစုပေါင်း</th><th>Status</th></tr></thead><tbody>{recentSales.map((sale) => <tr key={sale.id}><td><strong className="mono">{sale.receiptNo}</strong></td><td>{sale.customer}</td><td>{dateLabel(sale.date)}</td><td><span className={`tag ${sale.paymentMethod === 'Credit' ? 'tag-warn' : ''}`}>{sale.paymentMethod}</span>{sale.paymentMethod === 'KPay' && sale.kpayTransactionReference && <small>TX: {sale.kpayTransactionReference}</small>}</td><td><b>{money(sale.total, settings.currency)}</b></td><td><span className="tag tag-success">Completed</span></td></tr>)}</tbody></table></div>}</div></section>;
+  return <section className="page-stack"><div className={`welcome-banner${bannerSource ? ' has-shop-banner' : ''}`}>{bannerSource && <img className="welcome-banner-image" src={bannerSource} alt="Shop banner" />}<div className="welcome-banner-copy"><span className="welcome-kicker">GOOD BUSINESS STARTS HERE</span><h2>မင်္ဂလာပါ 👋</h2><p>{settings.storeName} ရဲ့ ယနေ့လုပ်ငန်းအခြေအနေကို ကြည့်ရှုနိုင်ပါတယ်။</p></div><div className="welcome-decoration"><Store size={48} /></div></div><div className="dashboard-stats"><div className="metric-card metric-primary"><div className="metric-head"><span>ယနေ့ ရောင်းအား</span><div><TrendingUp size={17} /></div></div><strong>{money(todayRevenue, settings.currency)}</strong><small>{todayCount} transactions today</small><div className="metric-foot"><ArrowUpRight size={14} /> Today’s sales revenue</div></div><div className="metric-card"><div className="metric-head"><span>ယနေ့ ခန့်မှန်းအမြတ်</span><div><CircleDollarSign size={17} /></div></div><strong>{money(todayProfit, settings.currency)}</strong><small>Discount ပါဝင်ပြီး</small><div className="metric-foot">Gross profit estimate</div></div><div className="metric-card"><div className="metric-head"><span>ပစ္စည်းအမျိုးအစား</span><div><Boxes size={17} /></div></div><strong>{productCountLabel}</strong><small>လက်ကျန်ရှိသော Product {totalStockUnits} မျိုး</small><div className="metric-foot">Inventory overview</div></div><div className="metric-card"><div className="metric-head"><span>Stock သတိပေးချက်</span><div className="metric-alert"><AlertTriangle size={17} /></div></div><strong>{lowStockProducts.length} items</strong><small>ပြန်လည်မှာယူရန် စစ်ဆေးပါ</small><button className="metric-link" onClick={() => navTo('inventory')}>Inventory ကြည့်ရန် <ArrowUpRight size={13} /></button></div></div><div className="dashboard-grid"><div className="panel chart-panel"><div className="panel-heading"><div><h3>Sales Overview</h3><p>နေ့စဉ် ရောင်းအား အခြေအနေ</p></div><div className="period-switch"><button className={chartPeriod === '7' ? 'active' : ''} onClick={() => setChartPeriod('7')}>7D</button><button className={chartPeriod === '30' ? 'active' : ''} onClick={() => setChartPeriod('30')}>30D</button><button className={chartPeriod === '365' ? 'active' : ''} onClick={() => setChartPeriod('365')}>12M</button></div></div><div className="bar-chart dashboard-chart">{trend.map((item) => <div className="bar-column" key={item.key}><div className="bar-track"><div className="bar-fill" style={{ height: `${Math.max(item.value ? 4 : 0, item.value / trendMax * 100)}%` }} title={money(item.value, settings.currency)} /></div><small>{item.label}</small></div>)}</div></div><div className="panel low-stock-panel"><div className="panel-heading"><div><h3>Low Stock Alert</h3><p>လက်ကျန်နည်းနေသောပစ္စည်း</p></div><AlertTriangle className="warning-text" size={18} /></div>{lowStockProducts.length === 0 ? <EmptyState icon={<Check size={23} />} title="အားလုံး အဆင်ပြေပါတယ်" text="Stock နည်းနေသော ပစ္စည်းမရှိပါ။" /> : <div className="low-stock-list">{lowStockProducts.slice(0, 5).map((product) => <div className="low-stock-row" key={product.id}><div className="table-product-icon"><ShoppingBag size={16} /></div><div><strong>{product.name}</strong><small>{product.sku}</small></div><b className="stock-warning">{formatQuantity(sellableStock(product), quantityModeForProduct(product))} {product.unit} ရောင်းနိုင်</b></div>)}</div>}<button className="panel-link" onClick={() => navTo('inventory')}>Inventory အားလုံးကြည့်ရန် <ArrowUpRight size={14} /></button></div></div><div className="panel recent-panel"><div className="panel-heading"><div><h3>Recent Transactions</h3><p>နောက်ဆုံး အရောင်းမှတ်တမ်းများ</p></div><button className="text-button" onClick={() => navTo('sales')}>အားလုံးကြည့်ရန် <ArrowUpRight size={14} /></button></div>{recentSales.length === 0 ? <EmptyState icon={<Receipt size={23} />} title="အရောင်းမှတ်တမ်း မရှိသေးပါ" text="POS မှာ ပထမဆုံး အရောင်းပြုလုပ်လိုက်ပါ။" action="POS သို့သွားရန်" onAction={() => navTo('pos')} /> : <div className="table-wrap table-cards"><table><thead><tr><th>Voucher</th><th>Customer</th><th>အချိန်</th><th>Payment</th><th>စုစုပေါင်း</th><th>Status</th></tr></thead><tbody>{recentSales.map((sale) => <tr key={sale.id}><td data-label="Voucher"><strong className="mono">{sale.receiptNo}</strong></td><td data-label="Customer">{sale.customer}</td><td data-label="အချိန်">{dateLabel(sale.date)}</td><td data-label="Payment"><span className={`tag ${sale.paymentMethod === 'Credit' ? 'tag-warn' : ''}`}>{sale.paymentMethod}</span>{sale.paymentMethod === 'KPay' && sale.kpayTransactionReference && <small>TX: {sale.kpayTransactionReference}</small>}{sale.paymentMethod === 'KPay' && (sale.kpayAccountNameSnapshot || sale.kpayAccountNumberSnapshot) && <small>KPay: {sale.kpayAccountNameSnapshot || '-'} · {sale.kpayAccountNumberSnapshot || '-'}</small>}</td><td data-label="စုစုပေါင်း"><b>{money(sale.total, settings.currency)}</b></td><td data-label="Status"><span className="tag tag-success">Completed</span></td></tr>)}</tbody></table></div>}</div></section>;
 }
 
 export default App;

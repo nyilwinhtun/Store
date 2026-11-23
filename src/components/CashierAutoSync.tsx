@@ -5,10 +5,11 @@ import {
   doc,
   limit,
   onSnapshot,
+  orderBy,
   query,
-  setDoc,
   where,
   type DocumentData,
+  type QueryConstraint,
   type QuerySnapshot,
 } from 'firebase/firestore';
 import { firebaseAuth, firestore, FIREBASE_BUSINESS_ID } from '../lib/firebase';
@@ -25,15 +26,37 @@ import {
   type Product,
   type Sale,
   type StockBatch,
+  type StockUnitRegistry,
   type BranchStockShipment,
 } from '../store/usePosStore';
 import type { CashierSettlementRecord } from '../types/finance';
 import { publishAutoSyncStatus } from '../lib/autoSyncStatus';
 import { recordFirestoreActivity } from '../lib/firestoreDiagnostics';
 import { flushCashierSaleQueue, listenForCashierQueue, recoverPendingCashierSales } from '../lib/cashierSalesSync';
+import { mergeCashierUnitRegistries } from '../lib/cashierUnitRegistryMerge';
 import { flushPendingCashierExpenses } from '../lib/cashierExpenseSync';
+import {
+  clearCashierCursors,
+  incrementalCursorQueryStart,
+  mergeById,
+  nextCashierCursor,
+  readCashierCursor,
+  saveCashierCursor,
+  shouldUseIncrementalCursor,
+  type CashierCursorKind,
+} from '../lib/cashierSyncCursor';
+import { isLocalDataResetPending } from '../lib/syncSafety';
+import {
+  enqueueCashierCustomerPayment,
+  enqueueCashierMovement,
+  enqueueCashierShift,
+  flushCashierCashQueue,
+  listenForCashierCashQueue,
+  listenForCashierCashStatus,
+  recoverPendingCashierCash,
+} from '../lib/cashierCashSync';
 
-const listenOptions = { includeMetadataChanges: true } as const;
+const listenOptions = { includeMetadataChanges: false } as const;
 const SESSION_UID_KEY = 'minimart-active-session-uid-v1';
 
 function decodeRecords<T extends { id: string; branchId?: string }>(snapshot: QuerySnapshot<DocumentData>, branchId?: string): T[] {
@@ -85,6 +108,7 @@ export function CashierAutoSyncProvider() {
     let categories: Category[] = [];
     let products: Product[] = [];
     let stockBatches: StockBatch[] = [];
+    let stockUnitRegistries: StockUnitRegistry[] = [];
     let stockShipments: BranchStockShipment[] = [];
     let cashShifts: CashShift[] = [];
     let cashMovements: CashMovement[] = [];
@@ -99,6 +123,12 @@ export function CashierAutoSyncProvider() {
     const firstServerSnapshot = new Set<string>();
     const unsubscribers: Array<() => void> = [];
     let queueFlushStarted = false;
+    const cashQueueError = (error: unknown) => publishAutoSyncStatus(uid, {
+      state: 'error', message: error instanceof Error ? error.message : 'Cash Record ကို Offline Queue ထဲ မသိမ်းနိုင်ပါ။ Browser Storage ကို စစ်ဆေးပါ။',
+    });
+    const flushCash = () => {
+      void flushCashierCashQueue(uid, branchId).catch(cashQueueError);
+    };
 
     const applyToStore = () => {
       if (disposed) return;
@@ -127,17 +157,11 @@ export function CashierAutoSyncProvider() {
           .forEach((entry) => mergedOwnSettlements.set(entry.id, entry));
         ownSettlements.forEach((entry) => mergedOwnSettlements.set(entry.id, { ...entry, cloudSyncStatus: 'synced', cloudSyncError: undefined }));
 
-        const mergedShifts = new Map<string, CashShift>();
-        current.cashShifts.filter((entry) => entry.branchId === branchId).forEach((entry) => mergedShifts.set(entry.id, entry));
-        cashShifts.forEach((entry) => mergedShifts.set(entry.id, entry));
-
-        const mergedMovements = new Map<string, CashMovement>();
-        current.cashMovements.filter((entry) => entry.branchId === branchId).forEach((entry) => mergedMovements.set(entry.id, entry));
-        cashMovements.forEach((entry) => mergedMovements.set(entry.id, entry));
-
-        const mergedPayments = new Map<string, CustomerPayment>();
-        current.customerPayments.filter((entry) => entry.branchId === branchId).forEach((entry) => mergedPayments.set(entry.id, entry));
-        customerPayments.forEach((entry) => mergedPayments.set(entry.id, entry));
+        // Incremental listeners deliver only changed records, so always union with
+        // the persisted dataset; shift totals and the shared ledger stay complete.
+        const mergedShifts = mergeById(current.cashShifts.filter((entry) => entry.branchId === branchId), cashShifts);
+        const mergedMovements = mergeById(current.cashMovements.filter((entry) => entry.branchId === branchId), cashMovements);
+        const mergedPayments = mergeById(current.customerPayments.filter((entry) => entry.branchId === branchId), customerPayments);
 
         const mergedCustomers = new Map<string, Customer>();
         current.customers.forEach((entry) => mergedCustomers.set(entry.id, entry));
@@ -148,11 +172,12 @@ export function CashierAutoSyncProvider() {
           categories: replaceBranchRecords(current.categories, branchId, categories),
           products: replaceBranchRecords(current.products, branchId, products),
           stockBatches: replaceBranchRecords(current.stockBatches, branchId, stockBatches),
+          stockUnitRegistries: mergeCashierUnitRegistries(current.stockUnitRegistries, stockUnitRegistries, branchId, current.sales),
           expenses: [...mergedOwnExpenses.values()].sort((a, b) => b.date.localeCompare(a.date)),
           cashierSettlements: [...mergedOwnSettlements.values()],
-          cashShifts: [...mergedShifts.values()],
-          cashMovements: [...mergedMovements.values()],
-          customerPayments: [...mergedPayments.values()],
+          cashShifts: mergedShifts,
+          cashMovements: mergedMovements,
+          customerPayments: mergedPayments,
           customers: [...mergedCustomers.values()],
           ...(access.canReceiveStock ? { stockShipments: replaceBranchRecords(current.stockShipments, branchId, stockShipments) } : {}),
           sales: [...mergedSales.values()].sort((a, b) => b.date.localeCompare(a.date)),
@@ -171,7 +196,7 @@ export function CashierAutoSyncProvider() {
         recordFirestoreActivity(uid, 'read', `cashier-listener-changes:${key}`, changes);
       }
       ready.add(key);
-      const requiredReadyCount = access.canReceiveStock ? 8 : 7;
+      const requiredReadyCount = access.canReceiveStock ? 9 : 8;
       if (ready.size >= requiredReadyCount) {
         publishAutoSyncStatus(uid, {
           state: 'synced',
@@ -188,6 +213,7 @@ export function CashierAutoSyncProvider() {
               state: 'error', message: error instanceof Error ? error.message : 'Offline Sale Queue ကို ပြန်လည်ရယူမရပါ။',
             }));
           void flushPendingCashierExpenses(uid, branchId);
+          void recoverPendingCashierCash(uid, branchId).then(flushCash).catch(cashQueueError);
         }
       }
     };
@@ -209,17 +235,48 @@ export function CashierAutoSyncProvider() {
     }));
     unsubscribers.push(unsubscribeBranch);
 
+    // A pending local reset replaces the dataset, so the old cursors no longer
+    // describe local history. Replay full snapshots for every collection.
+    const resetPending = isLocalDataResetPending();
+    if (resetPending) clearCashierCursors(FIREBASE_BUSINESS_ID, uid);
+
     const attachCollection = <T extends { id: string; branchId?: string }>(
-      kind: 'categories' | 'products' | 'stockBatches' | 'stockShipments' | 'cashShifts' | 'cashMovements' | 'customerPayments',
+      kind: 'categories' | 'products' | 'stockBatches' | 'stockUnitRegistries' | 'stockShipments' | 'cashShifts' | 'cashMovements' | 'customerPayments',
       apply: (items: T[], serverConfirmed: boolean, changedIds: string[]) => void,
       optional = false,
+      cursorKind?: CashierCursorKind,
     ) => {
-      const ref = collection(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, kind);
+      const collectionRef = collection(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, kind);
+      const localRecords: Array<{ branchId?: string }> = cursorKind === 'cashShifts'
+        ? usePosStore.getState().cashShifts
+        : cursorKind === 'cashMovements'
+          ? usePosStore.getState().cashMovements
+          : cursorKind === 'customerPayments'
+            ? usePosStore.getState().customerPayments
+            : [];
+      const storedCursor = cursorKind ? readCashierCursor(FIREBASE_BUSINESS_ID, uid, branchId, cursorKind) : null;
+      const localRecordCount = localRecords.filter((entry) => entry.branchId === branchId).length;
+      const incremental = !!cursorKind && shouldUseIncrementalCursor({
+        cursor: storedCursor,
+        localRecordCount,
+        resetPending,
+        hydrated: usePosStore.persist.hasHydrated(),
+      });
+      const ref = incremental && storedCursor
+        ? query(collectionRef, where('updatedAt', '>=', incrementalCursorQueryStart(storedCursor)))
+        : collectionRef;
       recordFirestoreActivity(uid, 'listenerStart', `cashier-listener:${kind}`, 1);
       const unsubscribe = onSnapshot(ref, listenOptions, (snapshot) => {
         if (disposed) return;
         const changed = snapshot.docChanges();
         apply(decodeRecords<T>(snapshot, branchId), !snapshot.metadata.fromCache, changed.map((change) => change.doc.id));
+        if (!snapshot.metadata.fromCache && cursorKind) {
+          const nextCursor = nextCashierCursor(storedCursor, snapshot.docs.map((record) => {
+            const updatedAt = record.get('updatedAt');
+            return typeof updatedAt === 'string' ? updatedAt : null;
+          }));
+          if (nextCursor) saveCashierCursor(FIREBASE_BUSINESS_ID, uid, branchId, cursorKind, nextCursor);
+        }
         if (!snapshot.metadata.fromCache && !optional) {
           const changes = changed.filter((change) => change.type === 'added' || change.type === 'modified').length;
           recordSnapshot(kind, snapshot.size, changes, false);
@@ -242,9 +299,10 @@ export function CashierAutoSyncProvider() {
     attachCollection<Category>('categories', (items) => { categories = items; });
     attachCollection<Product>('products', (items) => { products = items; });
     attachCollection<StockBatch>('stockBatches', (items) => { stockBatches = items; });
-    attachCollection<CashShift>('cashShifts', (items) => { cashShifts = items; }, true);
-    attachCollection<CashMovement>('cashMovements', (items) => { cashMovements = items; }, true);
-    attachCollection<CustomerPayment>('customerPayments', (items) => { customerPayments = items; }, true);
+    attachCollection<StockUnitRegistry>('stockUnitRegistries', (items) => { stockUnitRegistries = items; });
+    attachCollection<CashShift>('cashShifts', (items) => { cashShifts = items; }, true, 'cashShifts');
+    attachCollection<CashMovement>('cashMovements', (items) => { cashMovements = items; }, true, 'cashMovements');
+    attachCollection<CustomerPayment>('customerPayments', (items) => { customerPayments = items; }, true, 'customerPayments');
 
     // Optional listener for shared customers so Cashier POS & Customer Credit pages stay in sync.
     const sharedCustomersRef = collection(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'shared', 'customers', 'records');
@@ -286,91 +344,103 @@ export function CashierAutoSyncProvider() {
       });
     }
 
-    const ownExpensesQuery = query(
-      collection(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, 'expenses'),
-      where('payload.createdByUid', '==', uid),
-      limit(100),
-    );
-    recordFirestoreActivity(uid, 'listenerStart', 'cashier-listener:own-expenses', 1);
-    const unsubscribeExpenses = onSnapshot(ownExpensesQuery, listenOptions, (snapshot) => {
-      if (disposed) return;
-      ownExpenses = decodeRecords<Expense>(snapshot, branchId).map((expense) => ({ ...expense, cloudSyncStatus: 'synced', cloudSyncError: undefined }));
-      if (!snapshot.metadata.fromCache) {
-        const changes = snapshot.docChanges().filter((change) => change.type === 'added' || change.type === 'modified').length;
-        recordSnapshot('own-expenses', snapshot.size, changes, false);
-      }
-      applyToStore();
-    }, (error) => publishAutoSyncStatus(uid, {
-      state: error.code === 'unavailable' ? 'offline' : 'error',
-      message: error.code === 'permission-denied' ? 'မိမိ၏ Expense ကို Cloud မှ ဖတ်ခွင့်မရပါ။ Firestore Rules အသစ်ကို Publish လုပ်ထားကြောင်း စစ်ဆေးပါ။' : error.message,
-    }));
-    unsubscribers.push(unsubscribeExpenses);
+    // Own-record lists are ordered newest-first so the 100-document bound keeps
+    // recent history instead of an arbitrary document-ID slice. The ordering
+    // needs a composite index; until it is deployed the listener falls back to
+    // the legacy unordered query rather than losing sync entirely.
+    const attachOwnRecords = <T extends { id: string; branchId?: string }>(
+      kind: 'sales' | 'expenses' | 'cashierSettlements',
+      filterField: 'payload.createdByUid' | 'payload.cashierUid',
+      orderField: string,
+      readyKey: string,
+      apply: (items: T[]) => void,
+      permissionMessage: string,
+    ) => {
+      let activeUnsubscribe: (() => void) | null = null;
+      let usedFallback = false;
+      const attach = (ordered: boolean) => {
+        const constraints: QueryConstraint[] = [where(filterField, '==', uid)];
+        if (ordered) constraints.push(orderBy(orderField, 'desc'));
+        constraints.push(limit(100));
+        activeUnsubscribe = onSnapshot(
+          query(collection(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, kind), ...constraints),
+          listenOptions,
+          (snapshot) => {
+            if (disposed) return;
+            apply(decodeRecords<T>(snapshot, branchId));
+            if (!snapshot.metadata.fromCache) {
+              const changes = snapshot.docChanges().filter((change) => change.type === 'added' || change.type === 'modified').length;
+              recordSnapshot(readyKey, snapshot.size, changes, false);
+            }
+            applyToStore();
+          },
+          (error) => {
+            if (ordered && !usedFallback && error.code === 'failed-precondition') {
+              usedFallback = true;
+              activeUnsubscribe?.();
+              recordFirestoreActivity(uid, 'listenerStart', `cashier-listener:${readyKey}-unordered-fallback`, 1);
+              attach(false);
+              return;
+            }
+            publishAutoSyncStatus(uid, {
+              state: error.code === 'unavailable' ? 'offline' : 'error',
+              message: error.code === 'permission-denied' ? permissionMessage : error.message,
+            });
+          },
+        );
+        unsubscribers.push(activeUnsubscribe);
+      };
+      recordFirestoreActivity(uid, 'listenerStart', `cashier-listener:${readyKey}`, 1);
+      attach(true);
+    };
 
-    const ownSettlementsQuery = query(
-      collection(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, 'cashierSettlements'),
-      where('payload.cashierUid', '==', uid),
-      limit(100),
+    attachOwnRecords<Expense>(
+      'expenses', 'payload.createdByUid', 'payload.date', 'own-expenses',
+      (items) => { ownExpenses = items.map((expense) => ({ ...expense, cloudSyncStatus: 'synced', cloudSyncError: undefined })); },
+      'မိမိ၏ Expense ကို Cloud မှ ဖတ်ခွင့်မရပါ။ Firestore Rules အသစ်ကို Publish လုပ်ထားကြောင်း စစ်ဆေးပါ။',
     );
-    recordFirestoreActivity(uid, 'listenerStart', 'cashier-listener:own-settlements', 1);
-    const unsubscribeSettlements = onSnapshot(ownSettlementsQuery, listenOptions, (snapshot) => {
-      if (disposed) return;
-      ownSettlements = decodeRecords<CashierSettlementRecord>(snapshot, branchId);
-      if (!snapshot.metadata.fromCache) {
-        const changes = snapshot.docChanges().filter((change) => change.type === 'added' || change.type === 'modified').length;
-        recordSnapshot('own-settlements', snapshot.size, changes, false);
-      }
-      applyToStore();
-    }, (error) => publishAutoSyncStatus(uid, {
-      state: error.code === 'unavailable' ? 'offline' : 'error',
-      message: error.code === 'permission-denied'
-        ? 'မိမိရရှိငွေစာရင်း ဖတ်ခွင့်မရပါ။ Firestore Rules ထဲက cashierSettlements Read Rule ကို Publish လုပ်ထားကြောင်း စစ်ဆေးပါ။'
-        : error.message,
-    }));
-    unsubscribers.push(unsubscribeSettlements);
-
-    const ownSalesQuery = query(
-      collection(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, 'sales'),
-      where('payload.createdByUid', '==', uid),
-      limit(100),
+    attachOwnRecords<CashierSettlementRecord>(
+      'cashierSettlements', 'payload.cashierUid', 'payload.createdAt', 'own-settlements',
+      (items) => { ownSettlements = items; },
+      'မိမိရရှိငွေစာရင်း ဖတ်ခွင့်မရပါ။ Firestore Rules ထဲက cashierSettlements Read Rule ကို Publish လုပ်ထားကြောင်း စစ်ဆေးပါ။',
     );
-    recordFirestoreActivity(uid, 'listenerStart', 'cashier-listener:own-sales', 1);
-    const unsubscribeSales = onSnapshot(ownSalesQuery, listenOptions, (snapshot) => {
-      if (disposed) return;
-      sales = decodeRecords<Sale>(snapshot, branchId).sort((a, b) => b.date.localeCompare(a.date));
-      if (!snapshot.metadata.fromCache) {
-        const changes = snapshot.docChanges().filter((change) => change.type === 'added' || change.type === 'modified').length;
-        recordSnapshot('own-sales', snapshot.size, changes, false);
-      }
-      applyToStore();
-    }, (error) => publishAutoSyncStatus(uid, {
-      state: error.code === 'unavailable' ? 'offline' : 'error',
-      message: error.code === 'permission-denied' ? 'မိမိရဲ့ Sales History ကို ဖတ်ခွင့်မရပါ။ Cashier Sales Rules ကို စစ်ဆေးပါ။' : error.message,
-    }));
-    unsubscribers.push(unsubscribeSales);
+    attachOwnRecords<Sale>(
+      'sales', 'payload.createdByUid', 'payload.date', 'own-sales',
+      (items) => { sales = [...items].sort((a, b) => b.date.localeCompare(a.date)); },
+      'မိမိရဲ့ Sales History ကို ဖတ်ခွင့်မရပါ။ Cashier Sales Rules ကို စစ်ဆေးပါ။',
+    );
 
-    // Push Cashier-initiated Cash Shift, Cash Movement, and Customer Credit Payment records to Cloud.
+    // Queue Cashier-created Cash Shift, Cash Movement, and Customer Credit Payment
+    // records in IndexedDB first, then flush them in FIFO order. Offline records are
+    // therefore never lost when the browser closes before the network returns.
     const unsubscribeStore = usePosStore.subscribe((state, prev) => {
-      if (applyingRemote || !navigator.onLine || !firestore) return;
-      const now = new Date().toISOString();
+      if (applyingRemote) return;
+      const online = typeof navigator === 'undefined' || navigator.onLine;
+      const afterEnqueue = () => { if (online) flushCash(); };
       if (state.cashShifts !== prev.cashShifts) {
         const prevMap = new Map(prev.cashShifts.map((s) => [s.id, s]));
         state.cashShifts.filter((s) => s.branchId === branchId && s !== prevMap.get(s.id)).forEach((shift) => {
-          const ref = doc(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, 'cashShifts', shift.id);
-          void setDoc(ref, { scope: 'branchRecord', kind: 'cashShifts', branchId, deleted: false, updatedAt: now, updatedBy: uid, payload: { ...shift, branchId } }, { merge: true }).catch(() => undefined);
+          if (prevMap.get(shift.id)?.closedAt === shift.closedAt) return;
+          void enqueueCashierShift(shift, uid, branchId).then(afterEnqueue).catch(cashQueueError);
         });
       }
       if (state.cashMovements !== prev.cashMovements) {
         const prevIds = new Set(prev.cashMovements.map((m) => m.id));
         state.cashMovements.filter((m) => m.branchId === branchId && !prevIds.has(m.id)).forEach((movement) => {
-          const ref = doc(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, 'cashMovements', movement.id);
-          void setDoc(ref, { scope: 'branchRecord', kind: 'cashMovements', branchId, deleted: false, updatedAt: now, updatedBy: uid, payload: { ...movement, branchId } }, { merge: true }).catch(() => undefined);
+          void enqueueCashierMovement(movement, uid, branchId).then(afterEnqueue).catch(cashQueueError);
         });
       }
       if (state.customerPayments !== prev.customerPayments) {
         const prevIds = new Set(prev.customerPayments.map((p) => p.id));
         state.customerPayments.filter((p) => p.branchId === branchId && !prevIds.has(p.id)).forEach((payment) => {
-          const ref = doc(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, 'customerPayments', payment.id);
-          void setDoc(ref, { scope: 'branchRecord', kind: 'customerPayments', branchId, deleted: false, updatedAt: now, updatedBy: uid, payload: { ...payment, branchId } }, { merge: true }).catch(() => undefined);
+          const sale = state.sales.find((entry) => entry.id === payment.saleId && entry.branchId === branchId);
+          if (!sale || sale.paymentMethod !== 'Credit') return;
+          const settlement = {
+            saleId: sale.id,
+            paidAmount: sale.paidAmount ?? 0,
+            dueAmount: sale.dueAmount ?? Math.max(0, sale.total - (sale.paidAmount ?? 0)),
+          };
+          void enqueueCashierCustomerPayment(payment, uid, branchId, settlement).then(afterEnqueue).catch(cashQueueError);
         });
       }
     });
@@ -381,12 +451,23 @@ export function CashierAutoSyncProvider() {
         state: 'error', message: error instanceof Error ? error.message : 'Offline Sale Queue ကို Sync မလုပ်နိုင်ပါ။',
       }));
       void flushPendingCashierExpenses(uid, branchId);
+      flushCash();
     };
     window.addEventListener('online', onOnline);
     const unlistenQueue = listenForCashierQueue(uid, branchId, () => {
       void flushCashierSaleQueue(uid, branchId).catch((error) => publishAutoSyncStatus(uid, {
         state: 'error', message: error instanceof Error ? error.message : 'Offline Sale Queue ကို ဖတ်မရပါ။',
       }));
+    });
+    const unlistenCashQueue = listenForCashierCashQueue(uid, branchId, flushCash);
+    const unlistenCashStatus = listenForCashierCashStatus(uid, (state, message, detail) => {
+      if (detail.branchId !== branchId) return;
+      if (state === 'review' || state === 'rules-error' || state === 'error') {
+        publishAutoSyncStatus(uid, {
+          state: 'error',
+          message: `${message}${detail.recordId ? ` · ${detail.recordId}` : ''}`,
+        });
+      }
     });
     const onSaleQueueStatus = (event: Event) => {
       const detail = (event as CustomEvent<{ uid?: string; branchId?: string; saleId?: string; state?: string; message?: string }>).detail;
@@ -409,6 +490,8 @@ export function CashierAutoSyncProvider() {
       disposed = true;
       unsubscribers.forEach((unsubscribe) => unsubscribe());
       unlistenQueue();
+      unlistenCashQueue();
+      unlistenCashStatus();
       window.removeEventListener('minimart-cashier-sale-status', onSaleQueueStatus);
       window.removeEventListener('online', onOnline);
     };

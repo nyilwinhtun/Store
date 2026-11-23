@@ -1,0 +1,211 @@
+{
+  "runtime": "local workerd via wrangler dev",
+  "measuredAt": "2026-11-15T11:03:24.275Z",
+  "cases": {
+    "warmup": {
+      "status": 200,
+      "result": "created",
+      "wallMs": 87.40216599999985,
+      "requests": 4
+    },
+    "line1": {
+      "requests": 50,
+      "wallMsPerRequest": 17.47,
+      "cpuMsPerRequest": 5.6,
+      "maxFirestoreRequests": 4,
+      "maxDocumentReads": 9,
+      "maxWrites": 4,
+      "maxRequestBytes": 629,
+      "maxFirestoreBytesOut": 6233,
+      "result": "created"
+    },
+    "line5": {
+      "requests": 20,
+      "wallMsPerRequest": 18.41,
+      "cpuMsPerRequest": 6.5,
+      "maxFirestoreRequests": 5,
+      "maxDocumentReads": 18,
+      "maxWrites": 12,
+      "maxRequestBytes": 1532,
+      "maxFirestoreBytesOut": 16214,
+      "result": "created"
+    },
+    "line10": {
+      "requests": 10,
+      "wallMsPerRequest": 20.43,
+      "cpuMsPerRequest": 6,
+      "maxFirestoreRequests": 5,
+      "maxDocumentReads": 28,
+      "maxWrites": 22,
+      "maxRequestBytes": 2620,
+      "maxFirestoreBytesOut": 28461,
+      "result": "created"
+    },
+    "line20": {
+      "requests": 5,
+      "wallMsPerRequest": 27.61,
+      "cpuMsPerRequest": 6,
+      "maxFirestoreRequests": 5,
+      "maxDocumentReads": 48,
+      "maxWrites": 42,
+      "maxRequestBytes": 4820,
+      "maxFirestoreBytesOut": 53041,
+      "result": "created"
+    },
+    "allowanceIssuance": {
+      "wallMs": 13.32,
+      "cpuMs": 10,
+      "maxFirestoreRequests": 4,
+      "reads": 6,
+      "writes": 4,
+      "requestBytes": 150,
+      "firestoreBytesOut": 5559,
+      "result": "issued"
+    },
+    "offlineCommit": {
+      "wallMs": 15.62,
+      "cpuMs": 0,
+      "maxFirestoreRequests": 4,
+      "reads": 11,
+      "writes": 6,
+      "requestBytes": 842,
+      "firestoreBytesOut": 8401,
+      "result": "created"
+    },
+    "contention": {
+      "rounds": [
+        {
+          "round": 1,
+          "wallMs": 2124.38,
+          "statuses": [
+            200,
+            409
+          ],
+          "attempts": [
+            0,
+            1
+          ],
+          "maxFirestoreRequests": 7,
+          "results": [
+            "failed-precondition",
+            "created"
+          ]
+        },
+        {
+          "round": 2,
+          "wallMs": 2107.68,
+          "statuses": [
+            200,
+            409
+          ],
+          "attempts": [
+            0,
+            2
+          ],
+          "maxFirestoreRequests": 7,
+          "results": [
+            "failed-precondition",
+            "created"
+          ]
+        },
+        {
+          "round": 3,
+          "wallMs": 2105.14,
+          "statuses": [
+            200,
+            409
+          ],
+          "attempts": [
+            0,
+            2
+          ],
+          "maxFirestoreRequests": 7,
+          "results": [
+            "failed-precondition",
+            "created"
+          ]
+        }
+      ],
+      "maxAttempts": 2,
+      "retriedRounds": 2,
+      "maxFirestoreRequests": 7,
+      "maxWallMs": 2124.38,
+      "outcomes": [
+        {
+          "statuses": [
+            200,
+            409
+          ],
+          "results": [
+            "failed-precondition",
+            "created"
+          ]
+        },
+        {
+          "statuses": [
+            200,
+            409
+          ],
+          "results": [
+            "failed-precondition",
+            "created"
+          ]
+        },
+        {
+          "statuses": [
+            200,
+            409
+          ],
+          "results": [
+            "failed-precondition",
+            "created"
+          ]
+        }
+      ]
+    }
+  },
+  "workerdPids": [
+    98880,
+    98881
+  ],
+  "pidResolved": true,
+  "processesAtStart": [
+    {
+      "pid": 98880,
+      "cpu": "0:00.09",
+      "rssKb": 72624,
+      "command": "/Users/user/.npm/_npx/32026684e21afda6/node_modules/@cloudflare/workerd-darwin-arm64/bin/workerd serve --binary --experimental --socket-addr=entry=127.0.0.1:8787 --external-addr=loopback=127.0.0.1:58060 --control-fd=3 -"
+    },
+    {
+      "pid": 98881,
+      "cpu": "0:00.23",
+      "rssKb": 108272,
+      "command": "/Users/user/.npm/_npx/32026684e21afda6/node_modules/@cloudflare/workerd-darwin-arm64/bin/workerd serve --binary --experimental --socket-addr=entry=127.0.0.1:0 --external-addr=loopback=127.0.0.1:58061 --control-fd=3 - --inspector-addr=127.0.0.1:0 --debug-port=127.0.0.1:0"
+    }
+  ],
+  "processesAtEnd": [
+    {
+      "pid": 98880,
+      "cpu": "0:00.25",
+      "rssKb": 82688,
+      "command": "/Users/user/.npm/_npx/32026684e21afda6/node_modules/@cloudflare/workerd-darwin-arm64/bin/workerd serve --binary --experimental --socket-addr=entry=127.0.0.1:8787 --external-addr=loopback=127.0.0.1:58060 --control-fd=3 -"
+    },
+    {
+      "pid": 98881,
+      "cpu": "0:00.68",
+      "rssKb": 139488,
+      "command": "/Users/user/.npm/_npx/32026684e21afda6/node_modules/@cloudflare/workerd-darwin-arm64/bin/workerd serve --binary --experimental --socket-addr=entry=127.0.0.1:0 --external-addr=loopback=127.0.0.1:58061 --control-fd=3 - --inspector-addr=127.0.0.1:0 --debug-port=127.0.0.1:0"
+    }
+  ],
+  "rssKb": 222176,
+  "freePlanAssessment": {
+    "note": "Local workerd only, not Cloudflare metering. CPU is the OS-reported workerd process CPU delta divided by requests; it includes local server overhead and has ~10 ms sampling granularity.",
+    "cpuLimitMsPerInvocation": 10,
+    "peakLocalCpuMsPerRequest": 6.5,
+    "cpuHeadroomMs": 3.5,
+    "subrequestLimit": 50,
+    "peakFirestoreRequestsPerRequest": 7,
+    "subrequestHeadroom": 43
+  },
+  "logTail": "    status: 409,\n    code: 'failed-precondition'\n  }\n\n\n[wrangler:info] POST /api/sales/commit 409 Conflict (2106ms)\n[wrangler:info] POST /api/sales/commit 200 OK (2098ms)\n"
+}

@@ -1,14 +1,10 @@
-import {
-  doc,
-  runTransaction,
-  type DocumentData,
-  type DocumentReference,
-} from 'firebase/firestore';
-import { firebaseConfig, firestore, FIREBASE_BUSINESS_ID } from './firebase';
+import { doc, runTransaction } from 'firebase/firestore';
+import { firebaseAuth, firebaseConfig, firestore, FIREBASE_BUSINESS_ID } from './firebase';
 import { recordFirestoreActivity } from './firestoreDiagnostics';
-import { cleanQuantity, quantityModeForProduct } from './quantity';
 import { readDurableValue, writeDurableValue, removeDurableValue } from './persistentStateStorage';
-import type { Product, Sale } from '../store/usePosStore';
+import { commitCashierUnitSaleToCloud } from './cashierUnitSaleSync';
+import { commitSaleThroughWorker, WorkerSaleError, workerSalesGate } from './workerSaleClient';
+import type { Sale } from '../store/usePosStore';
 
 export type CashierSaleQueueEntry = {
   sale: Sale;
@@ -119,11 +115,12 @@ function emitStatus(uid: string, branchId: string, state: 'synced' | 'queued' | 
 
 function errorCode(error: unknown): string {
   return typeof error === 'object' && error !== null && 'code' in error
-    ? String((error as { code: unknown }).code)
+    ? String((error as { code: unknown }).code).replace(/^functions\//, '')
     : '';
 }
 
 function userFacingError(error: unknown): string {
+  if (error instanceof WorkerSaleError) return error.message;
   const code = errorCode(error);
   if (code === 'permission-denied') return 'Cashier Sales / Stock Rules ကို Firebase မှ ခွင့်မပြုပါ။ Firestore Rules ကို နောက်ဆုံး Version အတိုင်း Publish လုပ်ထားကြောင်း စစ်ပါ။';
   if (code === 'failed-precondition') return error instanceof Error ? error.message : 'Cloud Stock ပြောင်းလဲသွားသောကြောင့် အရောင်းကို အတည်မပြုနိုင်ပါ။';
@@ -137,6 +134,10 @@ function saleFingerprint(sale: Sale): string {
     id: sale.id, branchId: sale.branchId || '', receiptNo: sale.receiptNo, date: sale.date,
     customer: sale.customer, customerId: sale.customerId || '', paymentMethod: sale.paymentMethod,
     cashReceivedAmount: sale.cashReceivedAmount ?? null, kpayTransactionReference: sale.kpayTransactionReference || '',
+    kpayAccountNameSnapshot: sale.kpayAccountNameSnapshot || '',
+    kpayAccountNumberSnapshot: sale.kpayAccountNumberSnapshot || '',
+    kpayAccountLabelSnapshot: sale.kpayAccountLabelSnapshot || '',
+    kpayQrVersionSnapshot: sale.kpayQrVersionSnapshot ?? null,
     changeAmount: sale.changeAmount ?? null, paidAmount: sale.paidAmount ?? null, dueAmount: sale.dueAmount ?? null,
     subtotal: sale.subtotal, discount: sale.discount, total: sale.total, profit: sale.profit, status: sale.status,
     createdByUid: sale.createdByUid || '',
@@ -144,64 +145,16 @@ function saleFingerprint(sale: Sale): string {
       productId: item.productId, quantity: item.quantity, unitPrice: item.unitPrice, costPrice: item.costPrice,
       mode: item.mode, priceGroupId: item.priceGroupId || '', priceVersion: item.priceVersion ?? null,
       batchAllocations: (item.batchAllocations || []).map((allocation) => ({ batchId: allocation.batchId, quantity: allocation.quantity })),
+      stockUnitSelections: (item.stockUnitSelections || []).map((selection) => ({ unitId: selection.unitId, barcode: selection.barcode, batchId: selection.batchId || '' })),
     })),
   };
   return JSON.stringify(normalized);
 }
 
-function legacySaleMatches(existing: Record<string, unknown>, sale: Sale, uid: string, branchId: string): boolean {
-  if (existing.createdByUid !== uid || existing.branchId !== branchId
-    || existing.id !== sale.id || existing.receiptNo !== sale.receiptNo
-    || existing.date !== sale.date || existing.customer !== sale.customer
-    || existing.customerId !== sale.customerId
-    || existing.subtotal !== sale.subtotal || existing.discount !== sale.discount
-    || existing.total !== sale.total || existing.profit !== sale.profit
-    || existing.paymentMethod !== sale.paymentMethod || existing.status !== 'completed'
-    || (existing.cashReceivedAmount ?? null) !== (sale.cashReceivedAmount ?? null)
-    || (existing.changeAmount ?? null) !== (sale.changeAmount ?? null)
-    || (existing.paidAmount ?? null) !== (sale.paidAmount ?? null)
-    || (existing.dueAmount ?? null) !== (sale.dueAmount ?? null)
-    || (existing.kpayTransactionReference || '') !== (sale.kpayTransactionReference || '')
-    || !Array.isArray(existing.items) || existing.items.length !== sale.items.length) return false;
-
-  // Capture the validated array before entering the callback. TypeScript does not
-  // preserve a property-level Array.isArray narrowing across closures, and the
-  // Firestore payload is intentionally typed as unknown until it is validated.
-  const existingItems = existing.items as unknown[];
-  return sale.items.every((line, index) => {
-    const storedValue = existingItems[index];
-    if (!storedValue || typeof storedValue !== 'object' || Array.isArray(storedValue)) return false;
-    const stored = storedValue as Record<string, unknown>;
-    if (stored.productId !== line.productId || stored.quantity !== line.quantity
-      || stored.unitPrice !== line.unitPrice || stored.costPrice !== line.costPrice || stored.mode !== line.mode
-      || (stored.priceGroupId || '') !== (line.priceGroupId || '')
-      || (stored.priceVersion ?? null) !== (line.priceVersion ?? null)
-      || !Array.isArray(stored.batchAllocations)) return false;
-    const storedAllocations = stored.batchAllocations as Array<Record<string, unknown>>;
-    const expectedAllocations = line.batchAllocations || [];
-    return storedAllocations.length === expectedAllocations.length
-      && expectedAllocations.every((allocation, allocationIndex) => {
-        const actual = storedAllocations[allocationIndex];
-        return actual?.batchId === allocation.batchId && actual?.quantity === allocation.quantity;
-      });
-  });
-}
-
-function failedPrecondition(message: string): Error {
-  const error = new Error(message) as Error & { code?: string };
-  error.code = 'failed-precondition';
-  return error;
-}
-
-function productRef(branchId: string, productId: string): DocumentReference<DocumentData> {
-  if (!firestore) throw new Error('Firebase Firestore မချိတ်ဆက်ရသေးပါ။');
-  return doc(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, 'products', productId);
-}
-
 /**
- * Commit a Cashier sale, Product Stock, and allocated Stock Batch deductions atomically.
- * The same transaction is idempotent: a retry after a lost response verifies the
- * Sale fingerprint and does not deduct stock a second time.
+ * Cashier sales use the trusted callable until the Staging Worker gate passes.
+ * When that gate is explicitly enabled in a Staging build, the Worker becomes
+ * the only commit path; there is no direct Cashier Firestore sale writer.
  */
 export async function commitCashierSale(sale: Sale, uid: string, branchId: string): Promise<CashierSaleCommitResult> {
   if (!firestore) throw new Error('Firebase Firestore မချိတ်ဆက်ရသေးပါ။');
@@ -209,213 +162,16 @@ export async function commitCashierSale(sale: Sale, uid: string, branchId: strin
   if (!branchId || sale.branchId !== branchId) throw new Error('Cashier ရဲ့ တာဝန်ပေးထားတဲ့ Branch နဲ့ Sale Branch မကိုက်ညီပါ။');
   if (sale.status !== 'completed' || !sale.id || !sale.items.length) throw new Error('မှန်ကန်သော Completed Sale မဟုတ်ပါ။');
 
-  const productDeltas = new Map<string, number>();
-  const batchDeltas = new Map<string, number>();
-  const batchProductIds = new Map<string, string>();
-  for (const item of sale.items) {
-    if (!Number.isFinite(item.quantity) || item.quantity <= 0) throw new Error('ပစ္စည်းအရေအတွက် မမှန်ကန်ပါ။');
-    productDeltas.set(item.productId, (productDeltas.get(item.productId) || 0) + item.quantity);
-    for (const allocation of item.batchAllocations || []) {
-      if (!allocation.batchId || !Number.isFinite(allocation.quantity) || allocation.quantity <= 0) {
-        throw new Error('Stock Batch ခွဲဝေမှု မမှန်ကန်ပါ။');
-      }
-      batchDeltas.set(allocation.batchId, (batchDeltas.get(allocation.batchId) || 0) + allocation.quantity);
-      const previousProductId = batchProductIds.get(allocation.batchId);
-      if (previousProductId && previousProductId !== item.productId) throw new Error('Stock Batch တစ်ခုကို Product မတူဘဲ အသုံးပြုထားပါတယ်။');
-      batchProductIds.set(allocation.batchId, item.productId);
-    }
-  }
-  if (!productDeltas.size) throw new Error('ရောင်းချမည့် Product မရှိပါ။');
-
-  const batchAllocationByProduct = new Map<string, number>();
-  for (const [batchId, quantity] of batchDeltas) {
-    const productId = batchProductIds.get(batchId)!;
-    batchAllocationByProduct.set(productId, (batchAllocationByProduct.get(productId) || 0) + quantity);
-  }
-  for (const [productId, quantity] of batchAllocationByProduct) {
-    const soldQuantity = productDeltas.get(productId) || 0;
-    if (quantity - soldQuantity > 0.000001) throw new Error(`Stock Batch ခွဲဝေမှုက ရောင်းသည့်ပမာဏထက် များနေပါတယ်: ${productId}`);
-    if (soldQuantity - quantity > 0.000001) {
-      throw failedPrecondition(`Stock Batch အပြည့်အဝ မခွဲဝေရသေးပါ: ${productId}။ Owner က Branch Stock Batch များ Cloud Sync ပြီးကြောင်း စစ်ဆေးပါ။`);
-    }
-  }
-  for (const [productId, soldQuantity] of productDeltas) {
-    const allocatedQuantity = batchAllocationByProduct.get(productId) || 0;
-    if (Math.abs(allocatedQuantity - soldQuantity) > 0.000001) {
-      throw failedPrecondition(`Stock Batch ခွဲဝေမှု မပြည့်စုံပါ: ${productId}။ Branch Batch Data ကို Owner က ပြန်စစ်ဆေးရန်လိုပါတယ်။`);
-    }
-  }
-
-  const saleRef = doc(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, 'sales', sale.id);
-  const auditId = `${sale.id}__created`;
-  const auditRef = doc(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, 'auditEvents', auditId);
-  const productRefs = new Map([...productDeltas.keys()].map((id) => [id, productRef(branchId, id)]));
-  const batchRefs = new Map([...batchDeltas.keys()].map((id) => [id, doc(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', branchId, 'stockBatches', id)]));
-  const sharedCustomerRef = sale.paymentMethod === 'Credit' && sale.customerId
-    ? doc(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'shared', 'customers', 'records', sale.customerId)
-    : null;
-  const plannedWrites = productDeltas.size + batchDeltas.size + 2 + (sharedCustomerRef ? 1 : 0);
-  if (plannedWrites > 450) throw new Error('ဒီဘောင်ချာမှာ Product / Batch အရေအတွက် များလွန်းနေပါတယ်။ အပိုင်းခွဲပြီး ရောင်းချပါ။');
-
-  let readsAcrossAttempts = 0;
-  let writesCommitted = 0;
-  const updatedAt = new Date().toISOString();
-  const productDeltaObject = Object.fromEntries(productDeltas);
-  const stockLines = [...productDeltas].map(([productId, quantity]) => ({ productId, quantity }));
-  const batchDeltaObject = Object.fromEntries(batchDeltas);
-  const batchLines = [...batchDeltas].map(([batchId, quantity]) => ({ batchId, productId: batchProductIds.get(batchId), quantity }));
-  const fingerprint = saleFingerprint({ ...sale, branchId });
-  const { cloudSyncStatus: _localSyncStatus, cloudSyncError: _localSyncError, ...cloudSafeSale } = sale;
-  const cloudSale = {
-    ...cloudSafeSale,
-    branchId,
-    productDeltas: productDeltaObject,
-    batchDeltas: batchDeltaObject,
-    stockLines,
-    batchLines,
-    saleFingerprint: fingerprint,
-    cashierSyncVersion: 2,
-  };
-
-  let result: CashierSaleCommitResult;
-  try {
-    result = await runTransaction(firestore, async (transaction) => {
-      writesCommitted = 0;
-      const existingSale = await transaction.get(saleRef);
-      readsAcrossAttempts += 1;
-      if (existingSale.exists()) {
-        const existing = existingSale.data().payload as Record<string, unknown> | undefined;
-        const matches = !!existing && (
-          (existing.saleFingerprint === fingerprint && existing.createdByUid === uid && existing.branchId === branchId)
-          || (!existing.saleFingerprint && legacySaleMatches(existing, { ...sale, branchId }, uid, branchId))
-        );
-        if (matches) return 'already-committed' as const;
-        throw new Error('Voucher ID တူနေသော်လည်း Cloud Sale အချက်အလက် မတူပါ။ Duplicate အဖြစ် မသိမ်းဘဲ Owner စစ်ဆေးရန် ရပ်ထားပါတယ်။');
-      }
-
-      const existingAudit = await transaction.get(auditRef);
-      readsAcrossAttempts += 1;
-      if (existingAudit.exists()) throw new Error('ဒီ Voucher အတွက် Audit Record ရှိပြီး Sale မတွေ့ပါ။ Owner စစ်ဆေးရန်လိုပါတယ်။');
-
-      const productEntries = [...productRefs.entries()];
-      const batchEntries = [...batchRefs.entries()];
-      const productSnapshots = await Promise.all(productEntries.map(([, ref]) => transaction.get(ref)));
-      const batchSnapshots = await Promise.all(batchEntries.map(([, ref]) => transaction.get(ref)));
-      const customerSnapshot = sharedCustomerRef ? await transaction.get(sharedCustomerRef) : null;
-      readsAcrossAttempts += productSnapshots.length + batchSnapshots.length + (customerSnapshot ? 1 : 0);
-
-      const productUpdates: Array<{ ref: DocumentReference<DocumentData>; payload: Record<string, unknown> }> = [];
-      const productPayloads = new Map<string, Record<string, unknown>>();
-      for (let index = 0; index < productEntries.length; index += 1) {
-        const [productId, ref] = productEntries[index];
-        const snapshot = productSnapshots[index];
-        if (!snapshot.exists() || snapshot.data().deleted === true || !snapshot.data().payload || typeof snapshot.data().payload !== 'object') {
-          throw new Error(`Cloud Product မတွေ့ပါ: ${productId}`);
-        }
-        const currentPayload = snapshot.data().payload as Record<string, unknown>;
-        productPayloads.set(productId, currentPayload);
-        const saleLines = sale.items.filter((item) => item.productId === productId);
-        const currentPriceGroupId = typeof currentPayload.priceGroupId === 'string' ? currentPayload.priceGroupId : undefined;
-        // Shared-price snapshots are checked again inside the Cloud transaction.
-        // This protects queued/offline Cashier sales if the Owner changed a group
-        // price after the cart was created but before the queue reconnects.
-        if (currentPriceGroupId || saleLines.some((item) => !!item.priceGroupId)) {
-          for (const line of saleLines) {
-            const currentVersion = Number(currentPayload.priceVersion);
-            const currentUnitPrice = line.mode === 'wholesale'
-              ? Number(currentPayload.wholesalePrice)
-              : Number(currentPayload.retailPrice);
-            const staleSnapshot = !line.priceGroupId
-              || line.priceGroupId !== currentPriceGroupId
-              || !Number.isFinite(line.priceVersion)
-              || line.priceVersion !== currentVersion
-              || !Number.isFinite(currentUnitPrice)
-              || !Number.isFinite(line.unitPrice)
-              || Math.abs(line.unitPrice - currentUnitPrice) > 1e-8;
-            if (staleSnapshot) {
-              const error = new Error(`မျှဝေဈေးနှုန်း ပြောင်းလဲသွားပါပြီ: ${String(currentPayload.name || productId)}။ ဒီ Offline Sale ကို Owner က ဈေးနှုန်းနှင့် Voucher ပြန်စစ်ပြီးမှ အတည်ပြုပါ။`);
-              (error as Error & { code?: string }).code = 'failed-precondition';
-              throw error;
-            }
-          }
-        }
-        const currentStock = Number(currentPayload.stock);
-        const quantity = productDeltas.get(productId) || 0;
-        if (!Number.isFinite(currentStock) || currentStock + 0.000001 < quantity) {
-          const error = new Error(`Cloud Stock မလုံလောက်ပါ: ${String(currentPayload.name || productId)} · Cloud ${currentStock} / ရောင်းရန် ${quantity}`);
-          (error as Error & { code?: string }).code = 'failed-precondition';
-          throw error;
-        }
-        const product = currentPayload as unknown as Product;
-        const nextStock = cleanQuantity(Math.max(0, currentStock - quantity), quantityModeForProduct(product));
-        productUpdates.push({ ref, payload: { ...currentPayload, stock: nextStock } });
-      }
-
-      const batchUpdates: Array<{ ref: DocumentReference<DocumentData>; payload: Record<string, unknown> }> = [];
-      const parsedSaleDate = new Date(sale.date);
-      if (!Number.isFinite(parsedSaleDate.getTime())) throw new Error('Sale Date မမှန်ကန်ပါ။ Offline Sale ကို ဆက်မပို့သေးပါ။');
-      const saleDay = `${parsedSaleDate.getFullYear()}-${String(parsedSaleDate.getMonth() + 1).padStart(2, '0')}-${String(parsedSaleDate.getDate()).padStart(2, '0')}`;
-      for (let index = 0; index < batchEntries.length; index += 1) {
-        const [batchId, ref] = batchEntries[index];
-        const snapshot = batchSnapshots[index];
-        const productId = batchProductIds.get(batchId)!;
-        if (!snapshot.exists() || snapshot.data().deleted === true || snapshot.data().kind !== 'stockBatches'
-          || snapshot.data().branchId !== branchId || !snapshot.data().payload || typeof snapshot.data().payload !== 'object') {
-          throw failedPrecondition(`Cloud Stock Batch မတွေ့ပါ: ${batchId}။ Owner က Batch စာရင်းကို စစ်ဆေးပါ။`);
-        }
-        const payload = snapshot.data().payload as Record<string, unknown>;
-        const currentQuantity = Number(payload.quantity);
-        const deduction = batchDeltas.get(batchId) || 0;
-        if (payload.productId !== productId || !Number.isFinite(currentQuantity) || currentQuantity + 0.000001 < deduction) {
-          throw failedPrecondition(`Stock Batch လက်ကျန် မလုံလောက်ပါ: ${batchId}။ Offline Sale ကို Owner စစ်ဆေးရန်လိုပါတယ်။`);
-        }
-        const expiryDate = typeof payload.expiryDate === 'string' ? payload.expiryDate : '';
-        if (expiryDate && saleDay && expiryDate < saleDay) {
-          throw failedPrecondition(`ရောင်းချသည့်နေ့တွင် Expiry ကျော်နေသော Batch ပါဝင်နေပါတယ်: ${batchId}။ Owner စစ်ဆေးရန်လိုပါတယ်။`);
-        }
-        const productPayload = productPayloads.get(productId) || {};
-        const product = productPayload as unknown as Product;
-        batchUpdates.push({ ref, payload: { ...payload, quantity: cleanQuantity(Math.max(0, currentQuantity - deduction), quantityModeForProduct(product)) } });
-      }
-
-      const wrapperBase = { scope: 'branchRecord', branchId, deleted: false, updatedAt, updatedBy: uid };
-      productUpdates.forEach(({ ref, payload }) => transaction.update(ref, { ...wrapperBase, kind: 'products', payload, sourceSaleId: sale.id }));
-      batchUpdates.forEach(({ ref, payload }) => transaction.update(ref, { ...wrapperBase, kind: 'stockBatches', payload, sourceSaleId: sale.id }));
-      transaction.set(saleRef, { ...wrapperBase, kind: 'sales', payload: cloudSale });
-      writesCommitted = productUpdates.length + batchUpdates.length + 1;
-
-      if (sharedCustomerRef && !customerSnapshot?.exists() && sale.customerSnapshot) {
-        transaction.set(sharedCustomerRef, {
-          scope: 'shared', kind: 'customers', branchId, payload: sale.customerSnapshot,
-          updatedAt, updatedBy: uid, sourceSaleId: sale.id,
-        });
-        writesCommitted += 1;
-      }
-      transaction.set(auditRef, {
-        id: auditId, eventType: 'SALE_CREATED', branchId, saleId: sale.id,
-        receiptNo: sale.receiptNo, actorUid: uid, actorEmail: sale.createdByEmail || '',
-        actorName: sale.createdByName || sale.createdByEmail || 'Cashier',
-        occurredAt: updatedAt, total: sale.total,
-      });
-      writesCommitted += 1;
-      return 'created' as const;
+  const worker = workerSalesGate();
+  if (worker.enabled) {
+    const currentUser = firebaseAuth?.currentUser;
+    if (!currentUser || currentUser.uid !== uid) throw new Error('Firebase Cashier Login မမှန်ပါ။');
+    return commitSaleThroughWorker(sale, uid, branchId, {
+      endpoint: worker.endpoint,
+      getIdToken: () => currentUser.getIdToken(),
     });
-  } catch (error) {
-    if (readsAcrossAttempts > 0) recordFirestoreActivity(uid, 'read', 'cashier-sale-transaction-failed', readsAcrossAttempts);
-    throw error;
   }
-
-  recordFirestoreActivity(uid, 'read', 'cashier-sale-transaction', readsAcrossAttempts);
-  recordFirestoreActivity(uid, 'write', 'cashier-sale-transaction', writesCommitted);
-  console.info('[Minimart Cashier Sale Commit]', {
-    saleId: sale.id,
-    branchId,
-    productCount: productDeltas.size,
-    result,
-    transactionReadEstimate: readsAcrossAttempts,
-    committedWrites: writesCommitted,
-  });
-  return result;
+  return commitCashierUnitSaleToCloud(sale, uid, branchId);
 }
 
 /**
@@ -508,9 +264,12 @@ export async function flushCashierSaleQueue(uid: string, branchId: string): Prom
         emitStatus(uid, branchId, 'synced', `Cashier Sale ${entry.sale.receiptNo} ကို Cloud ထဲ Product / Batch Stock နှင့် တစ်ပြိုင်နက် သိမ်းဆည်းပြီးပါပြီ။`, entry.sale.id);
       } catch (error) {
         const code = errorCode(error);
-        rulesError = code === 'permission-denied';
-        const review = code === 'failed-precondition'
-          || /Voucher ID တူနေ|Cloud Product မတွေ့|Stock မလုံလောက်|Batch မလုံလောက်|Expiry ကျော်/i.test(error instanceof Error ? error.message : '');
+        const workerError = error instanceof WorkerSaleError ? error : null;
+        rulesError = !workerError && code === 'permission-denied';
+        const review = workerError
+          ? workerError.needsReview
+          : code === 'failed-precondition'
+            || /Voucher ID တူနေ|Cloud Product မတွေ့|Stock မလုံလောက်|Batch မလုံလောက်|Expiry ကျော်/i.test(error instanceof Error ? error.message : '');
         const failedQueue = queue.map((candidate) => candidate.sale.id === entry.sale.id
           ? { ...candidate, attempts: candidate.attempts + 1, needsReview: review, lastError: userFacingError(error) }
           : candidate);

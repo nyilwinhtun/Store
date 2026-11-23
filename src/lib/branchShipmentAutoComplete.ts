@@ -1,6 +1,7 @@
 import { doc, getDocFromServer } from 'firebase/firestore';
-import { getFunctions, httpsCallable } from 'firebase/functions';
+import { connectFunctionsEmulator, getFunctions, httpsCallable } from 'firebase/functions';
 import { firebaseApp, firebaseAuth, firestore, FIREBASE_BUSINESS_ID } from './firebase';
+import { firebaseRuntime } from './firebaseRuntime';
 import { recordFirestoreActivity } from './firestoreDiagnostics';
 import type { BranchStockShipment, Product, StockBatch } from '../store/usePosStore';
 
@@ -58,8 +59,13 @@ export async function commitBranchShipmentAutoCompleteToCloud(
   }
 
   const shipmentRef = doc(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'branches', shipment.toBranchId, 'stockShipments', shipment.id);
+  const functions = getFunctions(firebaseApp, FUNCTION_REGION);
+  if (firebaseRuntime.emulator && (globalThis as Record<string, unknown>).__minimartFunctionsEmulatorBound !== true) {
+    connectFunctionsEmulator(functions, firebaseRuntime.emulator.host, firebaseRuntime.emulator.functionsPort);
+    (globalThis as Record<string, unknown>).__minimartFunctionsEmulatorBound = true;
+  }
   const callable = httpsCallable<BranchShipmentAutoCompleteInput, CompleteShipmentResponse>(
-    getFunctions(firebaseApp, FUNCTION_REGION),
+    functions,
     'completeBranchStockShipment',
     { timeout: 65000 },
   );

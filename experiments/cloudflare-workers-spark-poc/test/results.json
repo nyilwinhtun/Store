@@ -1,0 +1,483 @@
+{
+  "offline allowance 23h": {
+    "status": 200,
+    "result": "created",
+    "reads": 11,
+    "writes": 6,
+    "subrequests": 4,
+    "requestBytes": 827,
+    "firestoreBytesOut": 8323,
+    "wallMs": 28.5
+  },
+  "offline allowance exactly 24h": {
+    "status": 409,
+    "result": "expired-hold",
+    "reads": 9,
+    "writes": 0,
+    "subrequests": 3,
+    "requestBytes": 827,
+    "firestoreBytesOut": 1279,
+    "wallMs": 11.8
+  },
+  "offline allowance 25h": {
+    "status": 409,
+    "result": "expired-hold",
+    "reads": 9,
+    "writes": 0,
+    "subrequests": 3,
+    "requestBytes": 827,
+    "firestoreBytesOut": 1279,
+    "wallMs": 9.4
+  },
+  "device clock moved backwards": {
+    "status": 409,
+    "result": "expired-hold",
+    "reads": 9,
+    "writes": 0,
+    "subrequests": 3,
+    "requestBytes": 841,
+    "firestoreBytesOut": 1293,
+    "wallMs": 9.8
+  },
+  "fabricated old sale date": {
+    "status": 400,
+    "result": "invalid-argument",
+    "reads": 7,
+    "writes": 0,
+    "subrequests": 3,
+    "requestBytes": 625,
+    "firestoreBytesOut": 937,
+    "wallMs": 10
+  },
+  "duplicate retry after allowance expiry": {
+    "status": 200,
+    "result": "already-committed",
+    "reads": 9,
+    "writes": 0,
+    "subrequests": 3,
+    "requestBytes": 831,
+    "firestoreBytesOut": 1283,
+    "wallMs": 9.4
+  },
+  "expired allowance held and reconciled": {
+    "status": 200,
+    "result": "released",
+    "reads": 5,
+    "writes": 3,
+    "subrequests": 3,
+    "requestBytes": 105,
+    "firestoreBytesOut": 3044,
+    "wallMs": 10.7
+  },
+  "allowance reuse from another device": {
+    "status": 403,
+    "result": "permission-denied",
+    "reads": 9,
+    "writes": 0,
+    "subrequests": 3,
+    "requestBytes": 837,
+    "firestoreBytesOut": 1289,
+    "wallMs": 8
+  },
+  "tampered allowance token": {
+    "status": 403,
+    "result": "permission-denied",
+    "reads": 9,
+    "writes": 0,
+    "subrequests": 3,
+    "requestBytes": 839,
+    "firestoreBytesOut": 1291,
+    "wallMs": 7.8
+  },
+  "consumed allowance reuse": {
+    "status": 409,
+    "result": "expired-hold",
+    "reads": 9,
+    "writes": 0,
+    "subrequests": 3,
+    "requestBytes": 833,
+    "firestoreBytesOut": 1285,
+    "wallMs": 7.9
+  },
+  "authorization lease 71h": {
+    "status": 200,
+    "result": "created",
+    "reads": 11,
+    "writes": 6,
+    "subrequests": 4,
+    "requestBytes": 823,
+    "firestoreBytesOut": 8363,
+    "wallMs": 13.8
+  },
+  "authorization lease exactly 72h": {
+    "status": 401,
+    "result": "authorization-expired",
+    "reads": 9,
+    "writes": 0,
+    "subrequests": 3,
+    "requestBytes": 823,
+    "firestoreBytesOut": 1275,
+    "wallMs": 7.6
+  },
+  "authorization lease 73h": {
+    "status": 401,
+    "result": "authorization-expired",
+    "reads": 9,
+    "writes": 0,
+    "subrequests": 3,
+    "requestBytes": 823,
+    "firestoreBytesOut": 1275,
+    "wallMs": 6.8
+  },
+  "inactive cashier offline commit": {
+    "status": 403,
+    "result": "permission-denied",
+    "reads": 9,
+    "writes": 0,
+    "subrequests": 3,
+    "requestBytes": 837,
+    "firestoreBytesOut": 1289,
+    "wallMs": 7.7
+  },
+  "wrong branch rejection": {
+    "status": 403,
+    "result": "permission-denied",
+    "reads": 7,
+    "writes": 0,
+    "subrequests": 3,
+    "requestBytes": 635,
+    "firestoreBytesOut": 947,
+    "wallMs": 6.1
+  },
+  "1 line": {
+    "status": 200,
+    "result": "created",
+    "reads": 9,
+    "writes": 4,
+    "subrequests": 4,
+    "requestBytes": 609,
+    "firestoreBytesOut": 6103,
+    "wallMs": 13.5
+  },
+  "5 lines": {
+    "status": 200,
+    "result": "created",
+    "reads": 19,
+    "writes": 13,
+    "subrequests": 6,
+    "requestBytes": 1607,
+    "firestoreBytesOut": 18832,
+    "wallMs": 20.8
+  },
+  "10 lines": {
+    "status": 200,
+    "result": "created",
+    "reads": 29,
+    "writes": 23,
+    "subrequests": 6,
+    "requestBytes": 2693,
+    "firestoreBytesOut": 30995,
+    "wallMs": 23.9
+  },
+  "20 lines": {
+    "status": 200,
+    "result": "created",
+    "reads": 49,
+    "writes": 43,
+    "subrequests": 6,
+    "requestBytes": 4893,
+    "firestoreBytesOut": 55395,
+    "wallMs": 33.5
+  },
+  "multi-qty same product": {
+    "status": 200,
+    "result": "created",
+    "reads": 10,
+    "writes": 5,
+    "subrequests": 4,
+    "requestBytes": 645,
+    "firestoreBytesOut": 7141,
+    "wallMs": 10.5
+  },
+  "multi-batch across products": {
+    "status": 200,
+    "result": "created",
+    "reads": 12,
+    "writes": 7,
+    "subrequests": 4,
+    "requestBytes": 866,
+    "firestoreBytesOut": 9597,
+    "wallMs": 10.6
+  },
+  "sticker barcode sale": {
+    "status": 200,
+    "result": "created",
+    "reads": 10,
+    "writes": 5,
+    "subrequests": 5,
+    "requestBytes": 777,
+    "firestoreBytesOut": 9281,
+    "wallMs": 13
+  },
+  "duplicate barcode in receipt": {
+    "status": 409,
+    "result": "failed-precondition",
+    "reads": 10,
+    "writes": 0,
+    "subrequests": 5,
+    "requestBytes": 803,
+    "firestoreBytesOut": 1472,
+    "wallMs": 11.3
+  },
+  "already-sold unit": {
+    "status": 409,
+    "result": "failed-precondition",
+    "reads": 10,
+    "writes": 0,
+    "subrequests": 5,
+    "requestBytes": 723,
+    "firestoreBytesOut": 1468,
+    "wallMs": 12.5
+  },
+  "wrong-branch barcode": {
+    "status": 409,
+    "result": "failed-precondition",
+    "reads": 9,
+    "writes": 0,
+    "subrequests": 5,
+    "requestBytes": 675,
+    "firestoreBytesOut": 1342,
+    "wallMs": 10.1
+  },
+  "insufficient stock": {
+    "status": 409,
+    "result": "failed-precondition",
+    "reads": 9,
+    "writes": 0,
+    "subrequests": 4,
+    "requestBytes": 625,
+    "firestoreBytesOut": 1219,
+    "wallMs": 8.1
+  },
+  "expired batch": {
+    "status": 409,
+    "result": "failed-precondition",
+    "reads": 9,
+    "writes": 0,
+    "subrequests": 4,
+    "requestBytes": 624,
+    "firestoreBytesOut": 1231,
+    "wallMs": 9.6
+  },
+  "client wrong price": {
+    "status": 409,
+    "result": "failed-precondition",
+    "reads": 9,
+    "writes": 0,
+    "subrequests": 4,
+    "requestBytes": 615,
+    "firestoreBytesOut": 1223,
+    "wallMs": 8.2
+  },
+  "client wrong cost": {
+    "status": 409,
+    "result": "failed-precondition",
+    "reads": 9,
+    "writes": 0,
+    "subrequests": 4,
+    "requestBytes": 615,
+    "firestoreBytesOut": 1221,
+    "wallMs": 8
+  },
+  "client wrong subtotal": {
+    "status": 400,
+    "result": "invalid-argument",
+    "reads": 9,
+    "writes": 0,
+    "subrequests": 4,
+    "requestBytes": 625,
+    "firestoreBytesOut": 1229,
+    "wallMs": 15.1
+  },
+  "discount above cap": {
+    "status": 400,
+    "result": "invalid-argument",
+    "reads": 9,
+    "writes": 0,
+    "subrequests": 4,
+    "requestBytes": 621,
+    "firestoreBytesOut": 1225,
+    "wallMs": 7.4
+  },
+  "stale price group version": {
+    "status": 409,
+    "result": "failed-precondition",
+    "reads": 10,
+    "writes": 0,
+    "subrequests": 5,
+    "requestBytes": 669,
+    "firestoreBytesOut": 1401,
+    "wallMs": 9.4
+  },
+  "price group valid": {
+    "status": 200,
+    "result": "created",
+    "reads": 10,
+    "writes": 4,
+    "subrequests": 5,
+    "requestBytes": 665,
+    "firestoreBytesOut": 6451,
+    "wallMs": 11.2
+  },
+  "atomic mixed-line failure": {
+    "status": 409,
+    "result": "failed-precondition",
+    "reads": 11,
+    "writes": 0,
+    "subrequests": 4,
+    "requestBytes": 849,
+    "firestoreBytesOut": 1469,
+    "wallMs": 9
+  },
+  "strict allowlist rejection": {
+    "status": 400,
+    "result": "invalid-argument",
+    "reads": 0,
+    "writes": 0,
+    "subrequests": 0,
+    "requestBytes": 635,
+    "firestoreBytesOut": 0,
+    "wallMs": 0.4
+  },
+  "future-dated sale": {
+    "status": 400,
+    "result": "invalid-argument",
+    "reads": 0,
+    "writes": 0,
+    "subrequests": 0,
+    "requestBytes": 619,
+    "firestoreBytesOut": 0,
+    "wallMs": 0.5
+  },
+  "repeated request (same fingerprint)": {
+    "status": 200,
+    "result": "already-committed",
+    "reads": 7,
+    "writes": 0,
+    "subrequests": 3,
+    "requestBytes": 621,
+    "firestoreBytesOut": 933,
+    "wallMs": 5.6
+  },
+  "same Sale ID different payload": {
+    "status": 409,
+    "result": "failed-precondition",
+    "reads": 7,
+    "writes": 0,
+    "subrequests": 3,
+    "requestBytes": 635,
+    "firestoreBytesOut": 947,
+    "wallMs": 5.9
+  },
+  "replay acknowledged after lease expiry": {
+    "status": 200,
+    "result": "already-committed",
+    "reads": 9,
+    "writes": 0,
+    "subrequests": 3,
+    "requestBytes": 837,
+    "firestoreBytesOut": 1289,
+    "wallMs": 6.6
+  },
+  "two Cashiers, one unit": {
+    "status": 200,
+    "result": "created",
+    "reads": 10,
+    "writes": 5,
+    "subrequests": 17,
+    "requestBytes": 714,
+    "firestoreBytesOut": 27103,
+    "wallMs": 2105.8,
+    "secondStatus": 409
+  },
+  "two sales, limited stock": {
+    "status": 200,
+    "result": "created",
+    "reads": 9,
+    "writes": 4,
+    "subrequests": 14,
+    "requestBytes": 631,
+    "firestoreBytesOut": 18695,
+    "wallMs": 2087.7
+  },
+  "timeout after commit + retry": {
+    "status": 200,
+    "result": "already-committed",
+    "reads": 7,
+    "writes": 0,
+    "subrequests": 3,
+    "requestBytes": 637,
+    "firestoreBytesOut": 949,
+    "wallMs": 5.6
+  },
+  "KPay valid": {
+    "status": 200,
+    "result": "created",
+    "reads": 9,
+    "writes": 4,
+    "subrequests": 6,
+    "requestBytes": 653,
+    "firestoreBytesOut": 6666,
+    "wallMs": 12.7
+  },
+  "KPay invalid reference": {
+    "status": 400,
+    "result": "invalid-argument",
+    "reads": 0,
+    "writes": 0,
+    "subrequests": 0,
+    "requestBytes": 645,
+    "firestoreBytesOut": 0,
+    "wallMs": 0.6
+  },
+  "KPay reference reused": {
+    "status": 409,
+    "result": "failed-precondition",
+    "reads": 11,
+    "writes": 0,
+    "subrequests": 6,
+    "requestBytes": 660,
+    "firestoreBytesOut": 1651,
+    "wallMs": 10.7
+  },
+  "Credit existing customer": {
+    "status": 200,
+    "result": "created",
+    "reads": 10,
+    "writes": 4,
+    "subrequests": 5,
+    "requestBytes": 652,
+    "firestoreBytesOut": 6697,
+    "wallMs": 9.4
+  },
+  "Credit new customer": {
+    "status": 200,
+    "result": "created",
+    "reads": 10,
+    "writes": 5,
+    "subrequests": 5,
+    "requestBytes": 786,
+    "firestoreBytesOut": 7296,
+    "wallMs": 12
+  },
+  "Credit without customer": {
+    "status": 400,
+    "result": "invalid-argument",
+    "reads": 0,
+    "writes": 0,
+    "subrequests": 0,
+    "requestBytes": 635,
+    "firestoreBytesOut": 0,
+    "wallMs": 0.5
+  }
+}

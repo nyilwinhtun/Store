@@ -5,6 +5,8 @@ import './index.css';
 import { AccessBootstrap } from './components/AccessBootstrap';
 import { OwnerAutoSyncProvider } from './components/OwnerAutoSync';
 import { CashierAutoSyncProvider } from './components/CashierAutoSync';
+import { AppUpdateBanner } from './components/AppUpdateBanner';
+import { RuntimeBadge } from './components/RuntimeBadge';
 
 class AppErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean }> {
   state = { hasError: false };
@@ -35,7 +37,18 @@ class AppErrorBoundary extends Component<{ children: ReactNode }, { hasError: bo
 
 if ('serviceWorker' in navigator && import.meta.env.PROD) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch((error: unknown) => {
+    navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).then((registration) => {
+      registration.addEventListener('updatefound', () => {
+        const installing = registration.installing;
+        if (!installing) return;
+        installing.addEventListener('statechange', () => {
+          // A controller already exists only when an older build was running.
+          if (installing.state === 'installed' && navigator.serviceWorker.controller) {
+            window.dispatchEvent(new CustomEvent('minimart-app-update-ready'));
+          }
+        });
+      });
+    }).catch((error: unknown) => {
       console.error('Service worker registration failed:', error);
     });
   });
@@ -52,5 +65,7 @@ createRoot(document.getElementById('root')!).render(
     <StrictMode>
       <App />
     </StrictMode>
+    <AppUpdateBanner />
+    <RuntimeBadge />
   </AppErrorBoundary>,
 );

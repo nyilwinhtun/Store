@@ -102,3 +102,9 @@ export const allowOnlyOwnerAndActiveCashiers = beforeUserSignedIn(
 
 // Server-authoritative Cashier exact-match Branch Shipment Auto Complete.
 export { completeBranchStockShipment } from './branchShipment.js';
+
+// Server-authoritative Cashier sale for Individual Unit Barcode products.
+export { completeCashierUnitSale } from './cashierUnitSale.js';
+
+// Server-authoritative Cashier/Owner Void and Return (atomic compensating writes).
+export { cashierSaleVoid, cashierSaleReturn } from './saleAdjustment.js';
