@@ -27,10 +27,10 @@ const {
   markLocalDataReplacement,
   markLocalDataResetHandled,
   readLocalDataReplacement,
-} = await import('../.qa-build/syncSafety.mjs');
+} = await import('../../.qa-build/syncSafety.mjs');
 
-const manifestStorage = await import('../.qa-build/syncManifestStorage.mjs');
-const activityLogPolicy = await import('../.qa-build/activityLogPolicy.mjs');
+const manifestStorage = await import('../../.qa-build/syncManifestStorage.mjs');
+const activityLogPolicy = await import('../../.qa-build/activityLogPolicy.mjs');
 
 beforeEach(() => {
   store.clear();

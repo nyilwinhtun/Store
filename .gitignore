@@ -27,3 +27,9 @@ firebase-export-*
 
 # Owner-created local Staging Worker config
 experiments/cloudflare-workers-spark-poc/wrangler.staging.toml
+
+# Owner-created local Production Worker config
+experiments/cloudflare-workers-spark-poc/wrangler.production.toml
+
+# Local backup snapshots
+backups/

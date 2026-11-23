@@ -7,6 +7,7 @@ import { formatQuantity, isValidQuantity, quantityMin, quantityModeForProduct } 
 import { firebaseAuth } from '../lib/firebase';
 import { usePosStore, type BranchShipmentReceiptInput, type BranchStockShipment } from '../store/usePosStore';
 import { productIsUnitTracked } from '../lib/unitTracking';
+import { useAppDialog } from './AppDialog';
 
 const dateLabel = (value: string) => new Date(value).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 
@@ -78,6 +79,7 @@ function canAutoCompleteLocally(shipment: BranchStockShipment): { ok: boolean; r
 }
 
 function ShipmentReceiptCard({ shipment, notify }: { shipment: BranchStockShipment; notify: (message: string) => void }) {
+  const dialog = useAppDialog();
   const access = useBusinessAccess();
   const confirmLocal = usePosStore((state) => state.confirmBranchStockShipmentReceipt);
   const [rows, setRows] = useState<ReceiptDraft>(() => Object.fromEntries(shipment.items.map((item) => [item.sourceProductId, {
@@ -121,7 +123,12 @@ function ShipmentReceiptCard({ shipment, notify }: { shipment: BranchStockShipme
     const confirmMessage = shouldAutoComplete
       ? `${shipment.shipmentNo} ကို ပို့ထားတဲ့အရေအတွက်အတိုင်း အပြည့်အဝ လက်ခံရရှိကြောင်း အတည်ပြုမလား?\n\nအတည်ပြုပြီးတာနဲ့ Destination Stock ကို Cloud Transaction တစ်ခုတည်းနဲ့ တိုးပြီး Auto Complete လုပ်ပါမယ်။ Owner Approval စောင့်စရာမလိုပါ။`
       : `${shipment.shipmentNo} ကို လက်ခံမှုမှတ်တမ်းတင်မလား?\n\n${exactMatch ? `${localAutoCheck.reason}\n\nလက်ခံမှုကို Owner Review အဖြစ် ပို့ပါမယ်။` : 'ပို့ထားတဲ့အရေအတွက်နဲ့ လက်ခံရရှိမှု မတူတာ/ပျက်စီးမှု ရှိတဲ့အတွက် Owner Review လိုအပ်ပါတယ်။'}\n\nဒီအဆင့်မှာ Destination Stock မတိုးသေးပါ။`;
-    if (!window.confirm(confirmMessage)) return;
+    const confirmed = await dialog.confirm({
+      title: 'ကုန်ပစ္စည်းလက်ခံမှု အတည်ပြုရန်',
+      message: confirmMessage,
+      confirmLabel: 'အတည်ပြုမည်',
+    });
+    if (!confirmed) return;
 
     setBusy(true);
     const actor = firebaseAuth?.currentUser;

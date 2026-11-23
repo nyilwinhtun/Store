@@ -313,14 +313,14 @@ export function AnalyticsPage({
 
   return <section className="page-stack reports-page">
     <div className="section-heading reports-heading">
-      <div><h2>Business Reports & Analytics</h2><p>ရောင်းအား၊ အမြတ်၊ အသုံးစရိတ်၊ Branch နဲ့ Cashier စွမ်းဆောင်ရည်များကို တစ်နေရာတည်းမှာ ကြည့်ရှုနိုင်ပါတယ်။</p></div>
+      <div><h2>စာရင်းချုပ်နှင့် အစီရင်ခံစာ</h2><p>ရောင်းအား၊ အမြတ်၊ အသုံးစရိတ်နှင့် ဆိုင်ခွဲ/Cashier စွမ်းဆောင်ရည်များ။</p></div>
       <button className="button button-outline" type="button" onClick={exportReport} disabled={rangeInvalid}><Download size={15} /> Report CSV</button>
     </div>
 
     <div className="panel report-filter-panel">
-      <div className="report-filter-top"><div className="panel-heading"><div className="panel-icon"><CalendarDays size={18}/></div><div><h3>Report Filter</h3><p>{rangeLabel}</p></div></div>
+      <div className="report-filter-top"><div className="panel-heading"><div className="panel-icon"><CalendarDays size={18}/></div><div><h3>ရက်စွဲနှင့် ဆိုင်ရွေးရန်</h3><p>{rangeLabel}</p></div></div>
         <div className="period-switch report-period-switch">
-          {([['today', 'Today'], ['7d', '7 Days'], ['30d', '30 Days'], ['month', 'This Month'], ['year', 'This Year'], ['custom', 'Custom']] as Array<[PeriodPreset, string]>).map(([value, label]) => <button key={value} type="button" className={preset === value ? 'active' : ''} onClick={() => changePreset(value)}>{label}</button>)}
+          {([['today', 'ယနေ့'], ['7d', '၇ ရက်'], ['30d', '၃၀ ရက်'], ['month', 'ယခုလ'], ['year', 'ယခုနှစ်'], ['custom', 'စိတ်ကြိုက်']] as Array<[PeriodPreset, string]>).map(([value, label]) => <button key={value} type="button" className={preset === value ? 'active' : ''} onClick={() => changePreset(value)}>{label}</button>)}
         </div>
       </div>
       <div className="report-filter-fields">
@@ -348,55 +348,55 @@ export function AnalyticsPage({
 
     <div className="analytics-grid report-charts-grid">
       <div className="panel chart-panel report-chart-panel">
-        <div className="panel-heading"><div><h3>Sales & Profit Trend</h3><p>{trendRows.length > 62 ? 'လစဉ်' : 'နေ့စဉ်'} Revenue နဲ့ Gross Profit</p></div><span className="chart-legend"><i/> Revenue</span></div>
+        <div className="panel-heading"><div><h3>အရောင်းနှင့် အမြတ် လမ်းကြောင်း</h3><p>{trendRows.length > 62 ? 'လစဉ်' : 'နေ့စဉ်'} ရောင်းအားနှင့် အမြတ်</p></div><span className="chart-legend"><i/> ရောင်းအား</span></div>
         {scopedSales.length === 0 ? <div className="empty-state"><div className="empty-icon"><BarChart3 size={23}/></div><strong>အရောင်းမှတ်တမ်း မရှိသေးပါ</strong><p>ရွေးထားတဲ့ ရက်စွဲအတွင်း အရောင်းမရှိသေးပါ။</p></div> : <div className="report-trend-chart">{trendRows.map((row) => <div className="report-trend-column" key={row.key}><div className="report-trend-track"><div className="report-trend-revenue" style={{ height: `${row.revenue > 0 ? Math.max(2, row.revenue / trendMax * 100) : 0}%` }} title={`Revenue ${money(row.revenue, currency)}`}/><div className="report-trend-profit" style={{ height: `${row.profit > 0 ? Math.max(2, row.profit / trendMax * 100) : 0}%` }} title={`Gross Profit ${money(row.profit, currency)}`}/></div><small>{row.label}</small></div>)}</div>}
-        <div className="report-chart-legend"><span><i className="legend-revenue"/> Revenue</span><span><i className="legend-profit"/> Gross Profit</span></div>
+        <div className="report-chart-legend"><span><i className="legend-revenue"/> ရောင်းအား</span><span><i className="legend-profit"/> အမြတ်</span></div>
       </div>
       <div className="panel chart-panel report-chart-panel">
-        <div className="panel-heading"><div><h3>Sales by Payment Type</h3><p>Checkout မှာ ရွေးခဲ့တဲ့ ငွေပေးချေမှုအမျိုးအစား</p></div></div>
+        <div className="panel-heading"><div><h3>ငွေပေးချေမှုအလိုက် အရောင်း</h3><p>ငွေပေးချေမှုအမျိုးအစားခွဲ</p></div></div>
         <div className="report-bars-list">
-          <HorizontalBar label="Cash Sales" value={paymentMix.cash} max={maxPaymentValue} amount={paymentMix.cash} currency={currency} tone={0}/>
-          <HorizontalBar label="KPay Sales" value={paymentMix.kpay} max={maxPaymentValue} amount={paymentMix.kpay} currency={currency} tone={1}/>
-          <HorizontalBar label="Credit Sales" value={paymentMix.credit} max={maxPaymentValue} amount={paymentMix.credit} currency={currency} tone={2}/>
+          <HorizontalBar label="ငွေသား (Cash)" value={paymentMix.cash} max={maxPaymentValue} amount={paymentMix.cash} currency={currency} tone={0}/>
+          <HorizontalBar label="KPay" value={paymentMix.kpay} max={maxPaymentValue} amount={paymentMix.kpay} currency={currency} tone={1}/>
+          <HorizontalBar label="အကြွေး (Credit)" value={paymentMix.credit} max={maxPaymentValue} amount={paymentMix.credit} currency={currency} tone={2}/>
         </div>
-        <div className="report-inline-note">ဒီ Chart သည် အရောင်း Voucher ရဲ့ Payment Type ကို ပြခြင်းဖြစ်ပြီး လက်ရှိ Cash/KPay Account Balance ကို မဆိုလိုပါ။</div>
+        <div className="report-inline-note">အရောင်း Voucher ၏ ငွေပေးချေမှုအမျိုးအစားအလိုက် စုစုပေါင်းဖြစ်ပါသည်။</div>
       </div>
     </div>
 
     <div className="analytics-grid report-charts-grid">
       <div className="panel chart-panel report-chart-panel">
-        <div className="panel-heading"><div><h3>Revenue by Category</h3><p>ပစ္စည်းအမျိုးအစားအလိုက် ရောင်းအား</p></div><span className="subtle-count">{categoryBreakdown.length} categories</span></div>
+        <div className="panel-heading"><div><h3>အမျိုးအစားအလိုက် ရောင်းအား</h3></div><span className="subtle-count">{categoryBreakdown.length} မျိုး</span></div>
         {categoryBreakdown.length === 0 ? <div className="empty-state"><div className="empty-icon"><BarChart3 size={23}/></div><strong>အမျိုးအစားအလိုက် အရောင်းမရှိသေးပါ</strong></div> : <div className="report-bars-list">{categoryBreakdown.map((item, index) => <HorizontalBar key={item.label} label={item.label} value={item.value} max={Math.max(1, ...categoryBreakdown.map((entry) => entry.value))} currency={currency} tone={index}/>)}</div>}
       </div>
       <div className="panel chart-panel report-chart-panel">
-        <div className="panel-heading"><div><h3>Expense by Category</h3><p>အသုံးစရိတ်အမျိုးအစားအလိုက်</p></div><span className="subtle-count">{scopedExpenses.length} entries</span></div>
+        <div className="panel-heading"><div><h3>အမျိုးအစားအလိုက် အသုံးစရိတ်</h3></div><span className="subtle-count">{scopedExpenses.length} ခု</span></div>
         {expenseBreakdown.length === 0 ? <div className="empty-state"><div className="empty-icon"><Wallet size={23}/></div><strong>အသုံးစရိတ် မရှိသေးပါ</strong><p>ရွေးထားတဲ့ ရက်စွဲအတွင်း Expense မရှိသေးပါ။</p></div> : <div className="report-bars-list">{expenseBreakdown.map((item, index) => <HorizontalBar key={item.label} label={item.label} value={item.value} max={maxExpenseValue} currency={currency} tone={index}/>)}</div>}
       </div>
     </div>
 
     <div className="analytics-grid report-charts-grid">
       <div className="panel chart-panel report-chart-panel">
-        <div className="panel-heading"><div><h3>Top Selling Products</h3><p>အရေအတွက်အလိုက် အရောင်းအများဆုံး ပစ္စည်းများ</p></div><span className="subtle-count">{topProducts.length} products</span></div>
-        {topProducts.length === 0 ? <div className="empty-state"><div className="empty-icon"><Package size={23}/></div><strong>ပစ္စည်းအရောင်း မရှိသေးပါ</strong><p>အရောင်းရလာသည့်အခါ ပြသပေးပါမယ်။</p></div> : <div className="report-bars-list">{topProducts.map((item, index) => <div key={item.id} className="report-product-row"><div className="report-bar-label"><span>{index + 1}. {item.name}</span><strong>{item.quantity.toLocaleString('en-US')} {item.unit}</strong></div><div className="report-bar-track"><div className={`report-bar-fill report-fill-${index % 5}`} style={{ width: `${Math.min(100, item.quantity / maxProductQuantity * 100)}%` }}/></div><small>Revenue {money(item.revenue, currency)} · Profit {money(item.profit, currency)}</small></div>)}</div>}
+        <div className="panel-heading"><div><h3>အရောင်းရဆုံး ပစ္စည်းများ</h3><p>အရေအတွက်အလိုက်</p></div><span className="subtle-count">{topProducts.length} မျိုး</span></div>
+        {topProducts.length === 0 ? <div className="empty-state"><div className="empty-icon"><Package size={23}/></div><strong>ပစ္စည်းအရောင်း မရှိသေးပါ</strong><p>အရောင်းရလာသည့်အခါ ပြသပေးပါမယ်။</p></div> : <div className="report-bars-list">{topProducts.map((item, index) => <div key={item.id} className="report-product-row"><div className="report-bar-label"><span>{index + 1}. {item.name}</span><strong>{item.quantity.toLocaleString('en-US')} {item.unit}</strong></div><div className="report-bar-track"><div className={`report-bar-fill report-fill-${index % 5}`} style={{ width: `${Math.min(100, item.quantity / maxProductQuantity * 100)}%` }}/></div><small>ရောင်းအား {money(item.revenue, currency)} · အမြတ် {money(item.profit, currency)}</small></div>)}</div>}
       </div>
       <div className="panel chart-panel report-chart-panel">
-        <div className="panel-heading"><div><h3>Product Performance</h3><p>Revenue နဲ့ Gross Profit အလိုက် ထိပ်ဆုံးပစ္စည်းများ</p></div><span className="subtle-count">{topProducts.length} products</span></div>
-        {topProducts.length === 0 ? <div className="empty-state"><div className="empty-icon"><Package size={23}/></div><strong>ပစ္စည်းအရောင်း မရှိသေးပါ</strong><p>အရောင်းရလာသည့်အခါ ပြပါမယ်။</p></div> : <div className="report-bars-list">{[...topProducts].sort((a, b) => b.revenue - a.revenue).map((item, index) => <div key={item.id} className="report-product-row"><div className="report-bar-label"><span>{index + 1}. {item.name}</span><strong>{money(item.revenue, currency)}</strong></div><div className="report-bar-track"><div className={`report-bar-fill report-fill-${index % 5}`} style={{ width: `${Math.min(100, item.revenue / Math.max(1, ...topProducts.map((entry) => entry.revenue)) * 100)}%` }}/></div><small>Qty {item.quantity.toLocaleString('en-US')} {item.unit} · Profit {money(item.profit, currency)}</small></div>)}</div>}
+        <div className="panel-heading"><div><h3>ဝင်ငွေအများဆုံး ပစ္စည်းများ</h3><p>ရောင်းအားနှင့် အမြတ်အလိုက်</p></div><span className="subtle-count">{topProducts.length} မျိုး</span></div>
+        {topProducts.length === 0 ? <div className="empty-state"><div className="empty-icon"><Package size={23}/></div><strong>ပစ္စည်းအရောင်း မရှိသေးပါ</strong><p>အရောင်းရလာသည့်အခါ ပြပါမယ်။</p></div> : <div className="report-bars-list">{[...topProducts].sort((a, b) => b.revenue - a.revenue).map((item, index) => <div key={item.id} className="report-product-row"><div className="report-bar-label"><span>{index + 1}. {item.name}</span><strong>{money(item.revenue, currency)}</strong></div><div className="report-bar-track"><div className={`report-bar-fill report-fill-${index % 5}`} style={{ width: `${Math.min(100, item.revenue / Math.max(1, ...topProducts.map((entry) => entry.revenue)) * 100)}%` }}/></div><small>အရေအတွက် {item.quantity.toLocaleString('en-US')} {item.unit} · အမြတ် {money(item.profit, currency)}</small></div>)}</div>}
       </div>
     </div>
 
     {isOwner && <div className="panel report-table-panel">
-      <div className="panel-heading"><div><h3><Store size={16}/> Branch Performance</h3><p>ဆိုင်ခွဲအလိုက် Revenue, Gross Profit နဲ့ Expense</p></div><span className="subtle-count">{branchRows.length} branches</span></div>
-      {branchRows.length === 0 ? <div className="empty-state"><strong>ဆိုင်ခွဲစာရင်း မရှိသေးပါ</strong></div> : <div className="table-wrap"><table><thead><tr><th>Branch</th><th>Sales</th><th>Revenue</th><th>Gross Profit</th><th>Expenses</th><th>ခန့်မှန်း Net</th></tr></thead><tbody>{branchRows.map((row) => <tr key={row.id}><td><strong>{row.name}</strong></td><td>{row.sales}</td><td>{money(row.revenue, currency)}</td><td>{money(row.profit, currency)}</td><td>{money(row.expenses, currency)}</td><td><b className={row.profit - row.expenses >= 0 ? 'stock-ok' : 'stock-warning'}>{money(row.profit - row.expenses, currency)}</b></td></tr>)}</tbody></table></div>}
+      <div className="panel-heading"><div><h3><Store size={16}/> ဆိုင်ခွဲအလိုက် အခြေအနေ</h3><p>ရောင်းအား၊ အမြတ်နှင့် အသုံးစရိတ်</p></div><span className="subtle-count">{branchRows.length} ဆိုင်</span></div>
+      {branchRows.length === 0 ? <div className="empty-state"><strong>ဆိုင်ခွဲစာရင်း မရှိသေးပါ</strong></div> : <div className="table-wrap"><table><thead><tr><th>ဆိုင်ခွဲ</th><th>အရောင်း</th><th>ရောင်းအား</th><th>အမြတ်</th><th>အသုံးစရိတ်</th><th>ခန့်မှန်း Net</th></tr></thead><tbody>{branchRows.map((row) => <tr key={row.id}><td><strong>{row.name}</strong></td><td>{row.sales}</td><td>{money(row.revenue, currency)}</td><td>{money(row.profit, currency)}</td><td>{money(row.expenses, currency)}</td><td><b className={row.profit - row.expenses >= 0 ? 'stock-ok' : 'stock-warning'}>{money(row.profit - row.expenses, currency)}</b></td></tr>)}</tbody></table></div>}
     </div>}
 
     <div className="panel report-table-panel">
-      <div className="panel-heading"><div><h3><Users size={16}/> Cashier Performance</h3><p>{isOwner ? 'Cashier တစ်ယောက်ချင်းစီရဲ့ အရောင်းနဲ့ Expense' : 'မိမိအကောင့်ရဲ့ အရောင်းနဲ့ Expense'}</p></div><span className="subtle-count">{cashierRows.length} users</span></div>
-      {cashierRows.length === 0 ? <div className="empty-state"><strong>Cashier စာရင်း မရှိသေးပါ</strong><p>အရောင်း / Expense မှတ်တမ်းရှိလာသည့်အခါ ပြပါမယ်။</p></div> : <div className="table-wrap"><table><thead><tr><th>Cashier</th><th>Sales</th><th>Revenue</th><th>Gross Profit</th><th>Expenses</th><th>ခန့်မှန်း Contribution</th></tr></thead><tbody>{cashierRows.map((row) => <tr key={row.uid || row.name}><td><strong>{row.name}</strong>{row.uid && <small className="report-muted">{row.uid.slice(0, 12)}…</small>}</td><td>{row.sales}</td><td>{money(row.revenue, currency)}</td><td>{money(row.profit, currency)}</td><td>{money(row.expenses, currency)}</td><td><b className={row.profit - row.expenses >= 0 ? 'stock-ok' : 'stock-warning'}>{money(row.profit - row.expenses, currency)}</b></td></tr>)}</tbody></table></div>}
+      <div className="panel-heading"><div><h3><Users size={16}/> Cashier အလိုက် အခြေအနေ</h3><p>{isOwner ? 'Cashier တစ်ယောက်ချင်းစီရဲ့ အရောင်းနဲ့ Expense' : 'မိမိအကောင့်ရဲ့ အရောင်းနဲ့ Expense'}</p></div><span className="subtle-count">{cashierRows.length} ဦး</span></div>
+      {cashierRows.length === 0 ? <div className="empty-state"><strong>Cashier စာရင်း မရှိသေးပါ</strong><p>အရောင်း / Expense မှတ်တမ်းရှိလာသည့်အခါ ပြပါမယ်။</p></div> : <div className="table-wrap"><table><thead><tr><th>Cashier</th><th>အရောင်း</th><th>ရောင်းအား</th><th>အမြတ်</th><th>အသုံးစရိတ်</th><th>ခန့်မှန်း Net</th></tr></thead><tbody>{cashierRows.map((row) => <tr key={row.uid || row.name}><td><strong>{row.name}</strong>{row.uid && <small className="report-muted">{row.uid.slice(0, 12)}…</small>}</td><td>{row.sales}</td><td>{money(row.revenue, currency)}</td><td>{money(row.profit, currency)}</td><td>{money(row.expenses, currency)}</td><td><b className={row.profit - row.expenses >= 0 ? 'stock-ok' : 'stock-warning'}>{money(row.profit - row.expenses, currency)}</b></td></tr>)}</tbody></table></div>}
     </div>
 
     <div className="panel report-table-panel">
-      <div className="panel-heading"><div><h3><CreditCard size={16}/> Cashier Settlement Summary</h3><p>Owner က Cashier များထံ ပေးချေထားသော ငွေများ — Expense Total နှင့် သီးခြားပြထားသည်။</p></div><span className="subtle-count">{settlementSummary.count} payments</span></div>
+      <div className="panel-heading"><div><h3><CreditCard size={16}/> Cashier ငွေရှင်းအကျဉ်းချုပ်</h3><p>Owner က Cashier များထံ ပေးချေထားသော ငွေများ</p></div><span className="subtle-count">{settlementSummary.count} ကြိမ်</span></div>
       <div className="report-settlement-grid">
         <div><small>Cash ပေးချေမှု</small><strong>{money(settlementSummary.cash, currency)}</strong></div>
         <div><small>KPay ပေးချေမှု</small><strong>{money(settlementSummary.kpay, currency)}</strong></div>

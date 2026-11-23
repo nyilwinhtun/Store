@@ -4,6 +4,7 @@ import { usePosStore, type ActivityLog } from '../store/usePosStore';
 import { useBusinessAccess } from '../lib/businessAccess';
 import { loadBranchActivityLogs, loadBranchSalesAudit, type SalesAuditEvent } from '../lib/salesAudit';
 import { ACTIVITY_LOG_LOCAL_LIMIT, ACTIVITY_LOG_QUERY_PAGE_SIZE, ACTIVITY_LOG_SYNC_DAYS } from '../lib/activityLogPolicy';
+import { useAppDialog } from './AppDialog';
 
 const money = (value: number, currency = 'MMK') => `${new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(Math.round(value || 0))} ${currency}`;
 const dateTime = (value: string) => new Date(value).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -16,6 +17,7 @@ const downloadCsv = (name: string, rows: unknown[][]) => {
 };
 
 export function CashManagementPage() {
+  const dialog = useAppDialog();
   const access = useBusinessAccess();
   const allShifts = usePosStore((state) => state.cashShifts);
   const allMovements = usePosStore((state) => state.cashMovements);
@@ -76,11 +78,17 @@ export function CashManagementPage() {
     addCashMovement({ shiftId: activeShift.id, direction: movementDirection, amount, note: movementNote.trim(), createdByUid: access.uid || undefined, createdByName: access.displayName || access.email || 'Cashier' });
     setMovementAmount(''); setMovementNote('');
   };
-  const closeSubmit = (event: FormEvent) => {
+  const closeSubmit = async (event: FormEvent) => {
     event.preventDefault();
     const amount = Number(closingCash);
     if (!activeShift || !Number.isFinite(amount) || amount < 0) return;
-    if (!window.confirm('ရေတွက်ထားသောငွေပမာဏဖြင့် Cash Shift ကို ပိတ်မလား။ ပိတ်ပြီးလျှင် ဒီ Shift ကို ပြန်ဖွင့်၍မရပါ။')) return;
+    const confirmed = await dialog.confirm({
+      title: 'Cash Shift ပိတ်ရန်',
+      message: 'ရေတွက်ထားသောငွေပမာဏဖြင့် Cash Shift ကို ပိတ်မလား။ ပိတ်ပြီးလျှင် ဒီ Shift ကို ပြန်ဖွင့်၍မရပါ။',
+      confirmLabel: 'Shift ပိတ်မည်',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     closeCashShift(activeShift.id, amount, totals.expected, shiftNote.trim(), { uid: access.uid, name: access.displayName || access.email || 'Owner' });
     setClosingCash(''); setShiftNote('');
   };
@@ -90,7 +98,7 @@ export function CashManagementPage() {
   ]);
 
   return <section className="page-stack">
-    <div className="section-heading"><div><h2>Cash Register & Shift</h2><p>နေ့စဉ် ငွေကောင်တာဖွင့်/ပိတ်၊ လက်ခံ/ထုတ်ငွေနှင့် ငွေစာရင်းကို စစ်ဆေးပါ။</p></div><button className="button button-outline" onClick={exportShifts}><Download size={15} /> Shift CSV</button></div>
+    <div className="section-heading"><div><h2>ငွေကောင်တာ (Shift)</h2><p>နေ့စဉ် ငွေကောင်တာဖွင့်/ပိတ်၊ ငွေဝင်/ငွေထွက်နှင့် ငွေစာရင်းကို စစ်ဆေးပါ။</p></div><button className="button button-outline" onClick={exportShifts}><Download size={15} /> Shift CSV</button></div>
     {!activeShift ? <form className="panel form-panel" onSubmit={openSubmit}>
       <div className="panel-heading"><div className="panel-icon"><LockKeyhole size={18} /></div><div><h3>ငွေကောင်တာဖွင့်ရန်</h3><p>အဖွင့်ငွေကို ရေတွက်ပြီး စတင်ပါ။</p></div></div>
       <div className="form-grid"><label>အဖွင့်ငွေ (MMK) *<input required type="number" min="0" step="1" value={openingCash} onChange={(event) => setOpeningCash(event.target.value)} /></label><label>မှတ်ချက်<input value={shiftNote} onChange={(event) => setShiftNote(event.target.value)} placeholder="ဥပမာ - မနက်ပိုင်း Shift" /></label></div>
@@ -102,7 +110,7 @@ export function CashManagementPage() {
         <div className="mini-stat"><div className="mini-stat-icon"><ArrowDownCircle size={17} /></div><div><small>အကြွေးပြန်ဆပ် (Cash)</small><strong>{money(totals.creditCollection, settings.currency)}</strong></div></div>
         <div className="mini-stat"><div className="mini-stat-icon"><Activity size={17} /></div><div><small>မျှော်မှန်းလက်ကျန်ငွေ</small><strong>{money(totals.expected, settings.currency)}</strong></div></div>
       </div>
-      <div className="panel"><div className="panel-heading"><div><h3>လက်ရှိ Shift</h3><p>စတင်ချိန် {dateTime(activeShift.openedAt)} · {activeShift.openedBy}</p></div><span className="tag tag-success">OPEN</span></div>
+      <div className="panel"><div className="panel-heading"><div><h3>လက်ရှိ Shift</h3><p>စတင်ချိန် {dateTime(activeShift.openedAt)} · {activeShift.openedBy}</p></div><span className="tag tag-success">ဖွင့်ထား</span></div>
         <div className="cash-summary-grid"><div><small>ငွေဝင်</small><strong className="stock-ok">+{money(totals.cashIn, settings.currency)}</strong></div><div><small>ငွေထွက်</small><strong className="stock-warning">-{money(totals.cashOut, settings.currency)}</strong></div><div><small>ဆိုင် Cash အသုံးစရိတ်</small><strong className="stock-warning">-{money(totals.branchCashExpenses, settings.currency)}</strong></div><div><small>မျှော်မှန်းငွေ</small><strong>{money(totals.expected, settings.currency)}</strong></div></div>
       </div>
       <div className="business-grid">
@@ -121,11 +129,11 @@ export function CashManagementPage() {
           <button className="button button-primary" type="submit" disabled={closingCash === ''}><LockKeyhole size={15} /> Shift ပိတ်ရန်</button>
         </form>
       </div>
-      <div className="panel"><div className="panel-heading"><div><h3>ယခု Shift ငွေဝင်/ထွက် မှတ်တမ်း</h3><p>ငွေရွှေ့ပြောင်းမှုများ</p></div><span className="subtle-count">{movements.filter((movement) => movement.shiftId === activeShift.id).length} records</span></div>
+      <div className="panel"><div className="panel-heading"><div><h3>ယခု Shift ငွေဝင်/ထွက် မှတ်တမ်း</h3><p>ငွေရွှေ့ပြောင်းမှုများ</p></div><span className="subtle-count">{movements.filter((movement) => movement.shiftId === activeShift.id).length} ခု</span></div>
         {movements.filter((movement) => movement.shiftId === activeShift.id).length === 0 ? <div className="empty-state"><div className="empty-icon"><Wallet size={23} /></div><strong>ငွေဝင်/ထွက် မှတ်တမ်း မရှိသေးပါ</strong><p>လိုအပ်သည့်အခါ အပေါ်က Form မှာ မှတ်တမ်းတင်ပါ။</p></div> : <div className="table-wrap"><table><thead><tr><th>အချိန်</th><th>အမျိုးအစား</th><th>အကြောင်းအရင်း</th><th>မှတ်တမ်းတင်သူ</th><th>ပမာဏ</th></tr></thead><tbody>{movements.filter((movement) => movement.shiftId === activeShift.id).map((movement) => <tr key={movement.id}><td>{dateTime(movement.date)}</td><td><span className={`tag ${movement.direction === 'in' ? 'tag-success' : 'tag-warn'}`}>{movement.direction === 'in' ? 'ငွေဝင်' : 'ငွေထွက်'}</span></td><td>{movement.note}</td><td>{movement.createdByName || '—'}</td><td><b>{movement.direction === 'in' ? '+' : '-'}{money(movement.amount, settings.currency)}</b></td></tr>)}</tbody></table></div>}
       </div>
     </>}
-    <div className="panel"><div className="panel-heading"><div><h3>ယခင် Shift မှတ်တမ်း</h3><p>နေ့စဉ် ပိတ်သိမ်းမှုနှင့် ငွေကွာဟချက်</p></div><span className="subtle-count">{shifts.filter((shift) => shift.closedAt).length} closed</span></div>
+    <div className="panel"><div className="panel-heading"><div><h3>ယခင် Shift မှတ်တမ်း</h3><p>နေ့စဉ် ပိတ်သိမ်းမှုနှင့် ငွေကွာဟချက်</p></div><span className="subtle-count">{shifts.filter((shift) => shift.closedAt).length} ခု</span></div>
       {shifts.filter((shift) => shift.closedAt).length === 0 ? <div className="empty-state"><div className="empty-icon"><ClipboardList size={23} /></div><strong>ပိတ်ပြီးသော Shift မရှိသေးပါ</strong><p>ပထမဆုံး Cash Shift ကို ပိတ်ပြီးနောက် ဒီနေရာမှာ ပြပါမယ်။</p></div> : <div className="table-wrap"><table><thead><tr><th>ဖွင့်ချိန်</th><th>ပိတ်ချိန်</th><th>ဖွင့်သူ</th><th>ပိတ်သူ</th><th>အဖွင့်ငွေ</th><th>မျှော်မှန်းငွေ</th><th>ရေတွက်ငွေ</th><th>ကွာဟချက်</th></tr></thead><tbody>{shifts.filter((shift) => shift.closedAt).map((shift) => { const variance = shift.variance ?? ((shift.closingCash ?? 0) - (shift.expectedCash ?? 0)); return <tr key={shift.id}><td>{dateTime(shift.openedAt)}</td><td>{shift.closedAt ? dateTime(shift.closedAt) : '—'}</td><td>{shift.openedBy || '—'}</td><td>{shift.closedByName || '—'}</td><td>{money(shift.openingCash, settings.currency)}</td><td>{money(shift.expectedCash ?? 0, settings.currency)}</td><td>{money(shift.closingCash ?? 0, settings.currency)}</td><td><b className={variance === 0 ? 'stock-ok' : 'stock-warning'}>{variance > 0 ? '+' : ''}{money(variance, settings.currency)}</b></td></tr>; })}</tbody></table></div>}
     </div>
     <div className="panel security-note"><Activity size={18} /><div><strong>ငွေစာရင်းတွက်ချက်မှု မှတ်ချက်</strong><p>မျှော်မှန်းငွေ = အဖွင့်ငွေ + Cash Sale + Credit Sale တွင် ကြိုပေးထားသော Cash + Cash အကြွေးပြန်ဆပ် + Cash In − Cash Out − Branch Cash ဖြင့်ပေးထားသော Expense ဖြစ်ပါတယ်။ Branch KPay Expense နဲ့ KPay Sale ကို Cash Drawer ထဲ မပေါင်းပါ။ Cashier ကိုယ်ပိုင်ငွေသုံးထားသော Expense ကိုလည်း ဤ Cash Shift မှ မနုတ်ပါ။</p></div></div>
@@ -185,17 +193,16 @@ export function ActivityLogPage() {
     ...filtered.map((log) => [log.at, log.actor, log.action, log.entity, log.description]),
   ]);
   return <section className="page-stack">
-    <div className="section-heading"><div><h2>Activity & Audit Log</h2><p>Device Local လုပ်ဆောင်ချက်များနှင့် Cloud Sales Audit ကို ခွဲခြားကြည့်နိုင်ပါတယ်။</p></div><button className="button button-outline" onClick={exportLogs}><Download size={15} /> CSV Export</button></div>
-    {access.status === 'active' && access.role === 'owner' && <div className="panel"><div className="panel-heading"><div><h3>Cloud Sales Audit (နောက်ဆုံး ၁၀၀ ခု)</h3><p>{cloudAuditState}</p></div><button className="button button-outline" type="button" onClick={() => { setCloudAuditState('Cloud Audit ကို ပြန်ဖတ်နေပါတယ်။'); void loadBranchSalesAudit(activeBranchId).then((events) => { setCloudAudit(events); setCloudAuditState(`${events.length} ခုသော Cloud Audit Event ကို ဖတ်ပြီးပါပြီ။`); }).catch((error: unknown) => setCloudAuditState(error instanceof Error ? error.message : 'Cloud Audit ကို ဖတ်မရပါ။')); }}>ပြန်ဖတ်ရန်</button></div>
-      {cloudAudit.length === 0 ? <div className="empty-state"><div className="empty-icon"><Activity size={23} /></div><strong>Cloud Sales Audit မရှိသေးပါ</strong><p>Cashier Sale Sync အသစ်များနှင့် Owner Void လုပ်ဆောင်ချက်များကို ဒီနေရာမှာ ပြပါမယ်။</p></div> : <div className="table-wrap"><table><thead><tr><th>အချိန်</th><th>လုပ်ဆောင်သူ</th><th>လုပ်ဆောင်ချက်</th><th>Voucher</th><th>ပမာဏ</th><th>အကြောင်းပြချက်</th></tr></thead><tbody>{cloudAudit.map((event) => <tr key={event.id}><td>{dateTime(event.occurredAt)}</td><td>{event.actorName || event.actorEmail}</td><td><span className={`tag ${event.eventType === 'SALE_VOIDED' ? 'tag-danger' : event.eventType === 'SALE_RETURNED' ? 'tag-warn' : 'tag-success'}`}>{event.eventType === 'SALE_VOIDED' ? 'VOID' : event.eventType === 'SALE_RETURNED' ? 'RETURN' : 'SALE'}</span></td><td><strong className="mono">{event.receiptNo}</strong></td><td><b>{money(event.total)}</b></td><td>{event.reason || '—'}</td></tr>)}</tbody></table></div>}
+    <div className="section-heading"><div><h2>လုပ်ဆောင်ချက်မှတ်တမ်း</h2><p>ဆိုင်အတွင်း လုပ်ဆောင်ချက်များနှင့် အရောင်းစစ်ဆေးမှု မှတ်တမ်းများ။</p></div><button className="button button-outline" onClick={exportLogs}><Download size={15} /> CSV Export</button></div>
+    {access.status === 'active' && access.role === 'owner' && <div className="panel"><div className="panel-heading"><div><h3>Cloud အရောင်းစစ်ဆေးမှု မှတ်တမ်း</h3><p>{cloudAuditState}</p></div><button className="button button-outline" type="button" onClick={() => { setCloudAuditState('Cloud Audit ကို ပြန်ဖတ်နေပါတယ်။'); void loadBranchSalesAudit(activeBranchId).then((events) => { setCloudAudit(events); setCloudAuditState(`${events.length} ခုသော Cloud Audit Event ကို ဖတ်ပြီးပါပြီ။`); }).catch((error: unknown) => setCloudAuditState(error instanceof Error ? error.message : 'Cloud Audit ကို ဖတ်မရပါ။')); }}>ပြန်ဖတ်ရန်</button></div>
+      {cloudAudit.length === 0 ? <div className="empty-state"><div className="empty-icon"><Activity size={23} /></div><strong>စစ်ဆေးမှုမှတ်တမ်း မရှိသေးပါ</strong><p>Cashier အရောင်းနှင့် Void လုပ်ဆောင်ချက်များ ဒီနေရာမှာ ပေါ်လာပါမယ်။</p></div> : <div className="table-wrap"><table><thead><tr><th>အချိန်</th><th>လုပ်ဆောင်သူ</th><th>လုပ်ဆောင်ချက်</th><th>Voucher</th><th>ပမာဏ</th><th>အကြောင်းပြချက်</th></tr></thead><tbody>{cloudAudit.map((event) => <tr key={event.id}><td>{dateTime(event.occurredAt)}</td><td>{event.actorName || event.actorEmail}</td><td><span className={`tag ${event.eventType === 'SALE_VOIDED' ? 'tag-danger' : event.eventType === 'SALE_RETURNED' ? 'tag-warn' : 'tag-success'}`}>{event.eventType === 'SALE_VOIDED' ? 'VOID' : event.eventType === 'SALE_RETURNED' ? 'RETURN' : 'SALE'}</span></td><td><strong className="mono">{event.receiptNo}</strong></td><td><b>{money(event.total)}</b></td><td>{event.reason || '—'}</td></tr>)}</tbody></table></div>}
     </div>}
-    <div className="panel"><div className="panel-heading"><div><h3>Device Activity Log</h3><p>နောက်ဆုံး {ACTIVITY_LOG_SYNC_DAYS} ရက်အတွင်း လုပ်ဆောင်ချက် {ACTIVITY_LOG_LOCAL_LIMIT.toLocaleString()} ခုအထိ Device တွင် သိမ်းထားပြီး Cloud နှင့် ချိတ်ဆက်ထားပါသည်။</p></div><input className="inline-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Action / Description ရှာရန်" /></div>
-      {filtered.length === 0 ? <div className="empty-state"><div className="empty-icon"><Activity size={23} /></div><strong>မှတ်တမ်း မရှိသေးပါ</strong><p>Product, Sale, Stock, Payment, Purchase နှင့် Cash Shift လုပ်ဆောင်ချက်များ ဒီနေရာမှာ ပေါ်လာပါမယ်။</p></div> : <div className="table-wrap"><table><thead><tr><th>အချိန်</th><th>လုပ်ဆောင်သူ</th><th>Action</th><th>အမျိုးအစား</th><th>အသေးစိတ်</th></tr></thead><tbody>{filtered.map((log) => <tr key={log.id}><td>{dateTime(log.at)}</td><td>{log.actor}</td><td><span className="tag">{log.action}</span></td><td>{log.entity}</td><td>{log.description}</td></tr>)}</tbody></table></div>}
+    <div className="panel"><div className="panel-heading"><div><h3>စက်အတွင်း လုပ်ဆောင်ချက်မှတ်တမ်း</h3><p>နောက်ဆုံး {ACTIVITY_LOG_SYNC_DAYS} ရက်အတွင်း မှတ်တမ်းများ ({ACTIVITY_LOG_LOCAL_LIMIT.toLocaleString()} ခုအထိ)။</p></div><input className="inline-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Action / အသေးစိတ် ရှာရန်" /></div>
+      {filtered.length === 0 ? <div className="empty-state"><div className="empty-icon"><Activity size={23} /></div><strong>မှတ်တမ်း မရှိသေးပါ</strong><p>ပစ္စည်း၊ အရောင်း၊ Stock နှင့် ငွေကောင်တာ လုပ်ဆောင်ချက်များ ဒီနေရာမှာ ပေါ်လာပါမယ်။</p></div> : <div className="table-wrap"><table><thead><tr><th>အချိန်</th><th>လုပ်ဆောင်သူ</th><th>Action</th><th>အမျိုးအစား</th><th>အသေးစိတ်</th></tr></thead><tbody>{filtered.map((log) => <tr key={log.id}><td>{dateTime(log.at)}</td><td>{log.actor}</td><td><span className="tag">{log.action}</span></td><td>{log.entity}</td><td>{log.description}</td></tr>)}</tbody></table></div>}
     </div>
-    {isOwner && <div className="panel"><div className="panel-heading"><div><h3>Cloud မှတ်တမ်းဟောင်း</h3><p>{olderState || `Cloud မှာ သိမ်းထားသော မှတ်တမ်းဟောင်းများကို ${ACTIVITY_LOG_QUERY_PAGE_SIZE} ခုစီ ဖတ်နိုင်ပါတယ်။ မှတ်တမ်းများကို ဘယ်တော့မှ အလိုအလျောက် ဖျက်ပစ်မည် မဟုတ်ပါ။`}</p></div><button className="button button-outline" type="button" disabled={olderLoading} onClick={() => void loadOlderLogs(olderLogs.length === 0)}><Download size={15} /> {olderLogs.length ? 'နောက်ထပ် ဖတ်ရန်' : 'မှတ်တမ်းဟောင်း ဖတ်ရန်'}</button></div>
-      {olderLogs.length === 0 ? <div className="empty-state"><div className="empty-icon"><Activity size={23} /></div><strong>Cloud မှတ်တမ်းဟောင်း မဖတ်ရသေးပါ</strong><p>အထက်က ခလုတ်နှိပ်ပြီး Cloud ထဲက မှတ်တမ်းဟောင်းများကို လိုအပ်မှသာ ဖတ်နိုင်ပါတယ်။</p></div> : <div className="table-wrap"><table><thead><tr><th>အချိန်</th><th>လုပ်ဆောင်သူ</th><th>Action</th><th>အမျိုးအစား</th><th>အသေးစိတ်</th></tr></thead><tbody>{olderLogs.map((log) => <tr key={log.id}><td>{dateTime(log.at)}</td><td>{log.actor}</td><td><span className="tag">{log.action}</span></td><td>{log.entity}</td><td>{log.description}</td></tr>)}</tbody></table></div>}
+    {isOwner && <div className="panel"><div className="panel-heading"><div><h3>မှတ်တမ်းဟောင်းများ</h3><p>{olderState || `Cloud မှာ သိမ်းထားသော မှတ်တမ်းဟောင်းများကို ${ACTIVITY_LOG_QUERY_PAGE_SIZE} ခုစီ ဖတ်နိုင်ပါတယ်။`}</p></div><button className="button button-outline" type="button" disabled={olderLoading} onClick={() => void loadOlderLogs(olderLogs.length === 0)}><Download size={15} /> {olderLogs.length ? 'နောက်ထပ် ဖတ်ရန်' : 'မှတ်တမ်းဟောင်း ဖတ်ရန်'}</button></div>
+      {olderLogs.length === 0 ? <div className="empty-state"><div className="empty-icon"><Activity size={23} /></div><strong>မှတ်တမ်းဟောင်း မဖတ်ရသေးပါ</strong><p>လိုအပ်ပါက အထက်ပါခလုတ်ကို နှိပ်ပြီး ဖတ်ရှုနိုင်ပါတယ်။</p></div> : <div className="table-wrap"><table><thead><tr><th>အချိန်</th><th>လုပ်ဆောင်သူ</th><th>Action</th><th>အမျိုးအစား</th><th>အသေးစိတ်</th></tr></thead><tbody>{olderLogs.map((log) => <tr key={log.id}><td>{dateTime(log.at)}</td><td>{log.actor}</td><td><span className="tag">{log.action}</span></td><td>{log.entity}</td><td>{log.description}</td></tr>)}</tbody></table></div>}
       {olderLogs.length > 0 && !olderHasMore && <small className="field-hint">နောက်ထပ် မှတ်တမ်းဟောင်း မရှိတော့ပါ။</small>}
     </div>}
-    <div className="panel security-note"><LockKeyhole size={18} /><div><strong>Audit Log ၏ ကန့်သတ်ချက်</strong><p>အပေါ်က Cloud Sales Audit သည် Firestore ထဲတွင် append-only သိမ်းထားသော Cashier Sale / Owner Void Event များဖြစ်ပါတယ်။ Device Activity Log သည် နောက်ဆုံး {ACTIVITY_LOG_SYNC_DAYS} ရက်ကို အလိုအလျောက် ချိတ်ဆက်ထားပြီး ကျန်မှတ်တမ်းများကို Cloud မှ လိုအပ်မှသာ ဖတ်ပါတယ်။ Cloud မှတ်တမ်းများကို အလိုအလျောက် ဖျက်ပစ်ခြင်း မရှိပါ။</p></div></div>
   </section>;
 }

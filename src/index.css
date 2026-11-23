@@ -1639,6 +1639,7 @@ td strong { color: var(--color-text); }
   pointer-events: none;
   box-shadow: 0 8px 24px rgba(15, 23, 42, .22);
 }
+.runtime-badge-inline { position: static; z-index: auto; box-shadow: none; pointer-events: auto; }
 .runtime-badge-dot { width: 7px; height: 7px; border-radius: 50%; background: #fbbf24; box-shadow: 0 0 0 3px rgba(251, 191, 36, .28); }
 .runtime-badge-emulator { background: #78350f; color: #fde68a; border: 1px solid #b45309; }
 .runtime-badge-staging { background: #0c4a6e; color: #bae6fd; border: 1px solid #0284c7; }
@@ -1740,3 +1741,17 @@ td strong { color: var(--color-text); }
   .return-sale-lines{max-height:none}
   .return-sale-card .modal-actions{bottom:-17px}
 }
+
+/* AppDialog modal polish */
+.app-dialog-backdrop { z-index: 80; }
+.app-dialog-card { width: min(460px, 100%); }
+.app-dialog-title-row { display: flex; align-items: center; gap: 10px; }
+.app-dialog-icon { width: 34px; height: 34px; border-radius: 10px; background: var(--teal-soft); color: var(--teal); display: grid; place-items: center; flex-shrink: 0; }
+.app-dialog-icon.danger { background: #fef2f2; color: var(--danger); }
+:root[data-theme="dark"] .app-dialog-icon.danger { background: #3a2028; color: #ffaaaa; }
+.app-dialog-message { margin: 0 0 14px; color: var(--muted); font-size: 13px; line-height: 1.65; white-space: pre-line; }
+.app-dialog-fields { display: flex; flex-direction: column; gap: 12px; }
+.app-dialog-fields label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; font-weight: 700; color: var(--ink); }
+.app-dialog-fields input { border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; font-size: 13px; background: var(--panel); color: var(--ink); }
+.app-dialog-fields input:focus { outline: 0; border-color: var(--teal); box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.14); }
+.app-dialog-error { margin: 0; color: var(--danger); font-size: 12px; font-weight: 600; }

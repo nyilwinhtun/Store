@@ -6,6 +6,7 @@ import { FIREBASE_BUSINESS_ID, firebaseAuth, firestore } from '../lib/firebase';
 import { useBusinessAccess } from '../lib/businessAccess';
 import { usePosStore, type Branch } from '../store/usePosStore';
 import { recordFirestoreActivity } from '../lib/firestoreDiagnostics';
+import { useAppDialog } from './AppDialog';
 
 type MemberRecord = {
   /** Canonical Firestore document ID; this must match Firebase Auth UID. */
@@ -39,6 +40,7 @@ function messageFor(error: unknown): string {
 }
 
 export function TeamAccessPanel() {
+  const dialog = useAppDialog();
   const access = useBusinessAccess();
   const branches = usePosStore((state) => state.branches);
   const [members, setMembers] = useState<MemberRecord[]>([]);
@@ -74,7 +76,12 @@ export function TeamAccessPanel() {
       setMessage(`${label} ကို ကူးယူပြီးပါပြီ။`);
       setError('');
     } catch {
-      window.prompt(`${label} ကို ကိုယ်တိုင် Copy လုပ်ပါ။`, value);
+      await dialog.prompt({
+        title: `${label} ကို ကိုယ်တိုင် Copy လုပ်ပါ`,
+        label,
+        defaultValue: value,
+        readOnlyCopy: true,
+      });
     }
   };
 
@@ -258,7 +265,13 @@ export function TeamAccessPanel() {
       return;
     }
     const path = `businesses/${FIREBASE_BUSINESS_ID}/members/000000`;
-    if (!window.confirm(`မှားနေသော Member Document တစ်ခုတည်းကို ဖယ်ရှားမလား?\n\nဖျက်မည့် Path: ${path}\nထိန်းသိမ်းမည့် UID: ${validReplacement.uid}\n\nFirebase Authentication Account ကို မဖျက်ပါ။`)) return;
+    const confirmed = await dialog.confirm({
+      title: 'မှားနေသော Member Document ဖယ်ရှားရန်',
+      message: `မှားနေသော Member Document တစ်ခုတည်းကို ဖယ်ရှားမလား?\n\nဖျက်မည့် Path: ${path}\nထိန်းသိမ်းမည့် UID: ${validReplacement.uid}\n\nFirebase Authentication Account ကို မဖျက်ပါ။`,
+      confirmLabel: 'ဖယ်ရှားမည်',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     setBusy(true); setError(''); setMessage('');
     try {
       const placeholderRef = doc(firestore, 'businesses', FIREBASE_BUSINESS_ID, 'members', '000000');

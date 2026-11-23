@@ -4,11 +4,12 @@ import { firebaseRuntime } from '../lib/firebaseRuntime';
  * Always-visible runtime target indicator. Emulator mode also guarantees that
  * no production identifier can be selected (see firebaseRuntime.ts).
  */
-export function RuntimeBadge() {
+export function RuntimeBadge({ inline = false }: { inline?: boolean }) {
+  const layoutClass = inline ? 'runtime-badge runtime-badge-inline' : 'runtime-badge';
   if (firebaseRuntime.mode === 'emulator') {
     return (
       <div
-        className="runtime-badge runtime-badge-emulator"
+        className={`${layoutClass} runtime-badge-emulator`}
         role="status"
         title={`Local Firebase Emulator · ${firebaseRuntime.emulator?.host}:${firebaseRuntime.emulator?.firestorePort} · no production data`}
       >
@@ -20,7 +21,7 @@ export function RuntimeBadge() {
   if (firebaseRuntime.mode === 'staging') {
     return (
       <div
-        className="runtime-badge runtime-badge-staging"
+        className={`${layoutClass} runtime-badge-staging`}
         role="status"
         data-firebase-project={firebaseRuntime.projectId}
         title={`STAGING DATA · Firebase project ${firebaseRuntime.projectId} · business ${firebaseRuntime.businessId}`}
@@ -33,7 +34,7 @@ export function RuntimeBadge() {
   if (firebaseRuntime.mode === 'production') {
     return (
       <div
-        className="runtime-badge runtime-badge-production"
+        className={`${layoutClass} runtime-badge-production`}
         role="alert"
         data-firebase-project={firebaseRuntime.projectId}
         title={`PRODUCTION DATA · Firebase project ${firebaseRuntime.projectId}${firebaseRuntime.usingProductionInDevelopment ? ' · development build with explicit Owner opt-in' : ''}`}

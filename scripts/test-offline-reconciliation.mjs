@@ -97,7 +97,7 @@ await build({
   }],
 });
 
-const result = spawnSync(process.execPath, ['--test', resolve(root, 'tests/offline-reconciliation.test.mjs')], {
+const result = spawnSync(process.execPath, ['--test', resolve(root, 'tests/unit/offline-reconciliation.test.mjs')], {
   cwd: root,
   stdio: 'inherit',
 });

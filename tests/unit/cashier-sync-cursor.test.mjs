@@ -9,7 +9,7 @@ import {
   readCashierCursor,
   saveCashierCursor,
   shouldUseIncrementalCursor,
-} from '../.qa-build/cashierSyncCursor.mjs';
+} from '../../.qa-build/cashierSyncCursor.mjs';
 
 const memoryStorage = () => {
   const store = new Map();

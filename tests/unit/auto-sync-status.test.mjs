@@ -27,7 +27,7 @@ const {
   publishAutoSyncStatus,
   readAutoSyncStatus,
   UNRESOLVED_AUTO_SYNC_NAMESPACE,
-} = await import('../.qa-build/autoSyncStatus.mjs');
+} = await import('../../.qa-build/autoSyncStatus.mjs');
 
 const PRODUCTION = 'store-mini-main';
 const STAGING = 'store-staging-main';

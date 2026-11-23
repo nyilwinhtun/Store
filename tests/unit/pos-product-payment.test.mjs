@@ -4,13 +4,13 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const { POS_ALL_CATEGORIES, filterPosProducts, isProductSelectable, otherBranchProductCounts, posProductViewState, productsForBranch, sellableStockFor } = await import(
-  new URL('../.qa-build/posProductSelection.mjs', import.meta.url).href
+  new URL('../../.qa-build/posProductSelection.mjs', import.meta.url).href
 );
 const { describeKpayUnavailable, isPaymentMethodSelectable, kpayUnavailableReason } = await import(
-  new URL('../.qa-build/posPaymentState.mjs', import.meta.url).href
+  new URL('../../.qa-build/posPaymentState.mjs', import.meta.url).href
 );
 
-const root = fileURLToPath(new URL('..', import.meta.url));
+const root = fileURLToPath(new URL('../..', import.meta.url));
 const appSource = readFileSync(`${root}/src/App.tsx`, 'utf8');
 const cssSource = readFileSync(`${root}/src/index.css`, 'utf8');
 

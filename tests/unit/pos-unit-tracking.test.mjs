@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { usePosStore } from '../.qa-build/usePosStore.mjs';
-import { findUnitMatches } from '../.qa-build/unitTracking.mjs';
-import { mergeCashierUnitRegistries } from '../.qa-build/cashierUnitRegistryMerge.mjs';
+import { usePosStore } from '../../.qa-build/usePosStore.mjs';
+import { findUnitMatches } from '../../.qa-build/unitTracking.mjs';
+import { mergeCashierUnitRegistries } from '../../.qa-build/cashierUnitRegistryMerge.mjs';
 
 const baseSettings = usePosStore.getState().settings;
 const actor = { uid: 'owner-1', name: 'Owner', email: 'owner@example.test' };

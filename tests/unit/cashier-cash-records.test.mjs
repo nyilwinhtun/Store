@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const moduleUrl = new URL('../.qa-build/cashierCashRecords.mjs', import.meta.url);
+const moduleUrl = new URL('../../.qa-build/cashierCashRecords.mjs', import.meta.url);
 const {
   buildCashierShiftOpenPayload,
   buildCashierShiftClosePayload,

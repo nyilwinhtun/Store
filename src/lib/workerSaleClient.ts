@@ -119,17 +119,18 @@ export function resolveWorkerSalesGate(input: {
   dev: boolean;
 }): { enabled: boolean; endpoint: string } {
   const endpoint = (input.url || '').trim();
-  const stagingBuild = input.mode === 'staging';
+  const allowedMode = input.mode === 'staging' || input.mode === 'production';
+  const allowLoopback = input.mode === 'staging' && input.dev;
   return {
-    enabled: stagingBuild && input.flag === 'true' && isAllowedEndpoint(endpoint, input.dev),
+    enabled: allowedMode && input.flag === 'true' && isAllowedEndpoint(endpoint, allowLoopback),
     endpoint,
   };
 }
 
 /**
- * The Worker path stays disabled until Staging, security and workerd gates pass.
- * Only a Staging runtime can enable the Staging Worker endpoint; Production and
- * the local emulator always keep the existing trusted callable path.
+ * The Worker path stays disabled unless explicitly opted in via
+ * VITE_WORKER_SALES_ENABLED === "true" with a valid HTTPS endpoint in Staging
+ * or Production mode. The local emulator always keeps the callable path.
  */
 export function workerSalesGate(): { enabled: boolean; endpoint: string } {
   return resolveWorkerSalesGate({

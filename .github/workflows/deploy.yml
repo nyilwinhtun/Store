@@ -39,6 +39,9 @@ jobs:
       - name: Install Cloud Functions dependencies from lockfile
         run: npm --prefix functions ci --no-audit --no-fund
       - name: Full QA
+        env:
+          VITE_WORKER_SALES_ENABLED: ${{ vars.VITE_WORKER_SALES_ENABLED || 'false' }}
+          VITE_WORKER_SALES_URL: ${{ vars.VITE_WORKER_SALES_URL || '' }}
         run: npm run qa
       - name: Upload Pages artifact
         if: github.event_name != 'pull_request'

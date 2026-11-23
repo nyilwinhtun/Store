@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { usePosStore } from '../.qa-build/usePosStore.mjs';
-import { UNIT_TRANSFER_UNSUPPORTED_MESSAGE } from '../.qa-build/unitTracking.mjs';
+import { usePosStore } from '../../.qa-build/usePosStore.mjs';
+import { UNIT_TRANSFER_UNSUPPORTED_MESSAGE } from '../../.qa-build/unitTracking.mjs';
 
 const baseSettings = usePosStore.getState().settings;
 const branch = {

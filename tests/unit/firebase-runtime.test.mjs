@@ -13,7 +13,7 @@ import {
   productionFirebaseConfig,
   resolveFirebaseRuntime,
   stagingFirebaseConfig,
-} from '../.qa-build/firebaseRuntime.mjs';
+} from '../../.qa-build/firebaseRuntime.mjs';
 
 test('development without flags resolves to the synthetic Emulator project', () => {
   const runtime = resolveFirebaseRuntime({ DEV: true, PROD: false, MODE: 'development' });

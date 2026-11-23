@@ -5,16 +5,18 @@ import { formatQuantity, isValidQuantity, normalizeUnit, quantityModeForProduct,
 import { firebaseAuth } from '../lib/firebase';
 import { useBusinessAccess } from '../lib/businessAccess';
 import { UNIT_TRANSFER_UNSUPPORTED_MESSAGE, productIsUnitTracked } from '../lib/unitTracking';
+import { useAppDialog } from './AppDialog';
 
 const dateLabel = (value: string) => new Date(value).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 
 type TransferResult = { id: string; transferNo: string; fromBranchId: string; toBranchId: string; productName: string; quantity: number; unit: string; sourceStockBefore: number; sourceStockAfter: number; destinationStockBefore: number; destinationStockAfter: number };
 
 export function StockTransferPage({ authorize, notify, onViewDestination }: {
-  authorize: (action: string) => boolean;
+  authorize: (action: string) => Promise<boolean>;
   notify: (message: string) => void;
   onViewDestination?: (branchId: string) => void;
 }) {
+  const dialog = useAppDialog();
   const branches = usePosStore((state) => state.branches);
   const activeBranchId = usePosStore((state) => state.activeBranchId);
   const products = usePosStore((state) => state.products);
@@ -73,19 +75,23 @@ export function StockTransferPage({ authorize, notify, onViewDestination }: {
   const transferHistory = stockTransfers.filter((transfer) => transfer.fromBranchId === activeBranchId || transfer.toBranchId === activeBranchId);
   const quantityMode = selectedProduct ? quantityModeForProduct(selectedProduct) : 'whole';
 
-  const submit = (event: FormEvent) => {
+  const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (submitLock.current || submitting) return;
     if (!sourceBranch || !destinationBranch || !sourceProductId) { notify('မူလဆိုင်၊ လက်ခံမည့်ဆိုင်နဲ့ ပစ္စည်းကို ရွေးပါ။'); return; }
     const qty = Number(quantity);
-    if (batchMismatch && !window.confirm('ဒီပစ္စည်း၏ Stock Batch စုစုပေါင်းသည် Product Stock ထက်ပိုနေပါတယ်။ လွှဲနိုင်မည့်ပမာဏကို Product Stock နှင့် Expiry မှန်ကန်သော Batch ပမာဏအတွင်းသာ ကန့်သတ်ပါမယ်။ Transfer ပြီးနောက် Batch မှတ်တမ်းကို ထပ်စစ်ပါမယ်။ ဆက်လွှဲမလား။')) return;
+    if (batchMismatch && !(await dialog.confirm({
+      title: 'Stock Batch စစ်ဆေးချက်',
+      message: 'ဒီပစ္စည်း၏ Stock Batch စုစုပေါင်းသည် Product Stock ထက်ပိုနေပါတယ်။ လွှဲနိုင်မည့်ပမာဏကို Product Stock နှင့် Expiry မှန်ကန်သော Batch ပမာဏအတွင်းသာ ကန့်သတ်ပါမယ်။ Transfer ပြီးနောက် Batch မှတ်တမ်းကို ထပ်စစ်ပါမယ်။ ဆက်လွှဲမလား။',
+      confirmLabel: 'ဆက်လွှဲမည်',
+    }))) return;
     if (destinationModeMismatch) { notify('လက်ခံဆိုင်မှာ ရှိပြီးသား Product ရဲ့ အရေအတွက်တွက်ချက်ပုံ မတူပါ။ Destination Product ကို ပြင်ပြီးမှ လွှဲပါ။'); return; }
     if (selectedProductHasUnitBarcodes) { notify(UNIT_TRANSFER_UNSUPPORTED_MESSAGE); return; }
     if (!selectedProduct || !isValidQuantity(qty, quantityMode) || qty > availableQuantity) {
       notify(`လွှဲနိုင်သော Stock ${selectedProduct ? formatQuantity(availableQuantity, quantityMode) : '0'} ${selectedProduct?.unit || 'ခု'} ထက် မပိုရပါ။ အရေအတွက်ယူနစ်ဖြစ်ပါက ဒသမမထည့်ပါနဲ့။`);
       return;
     }
-    if (!authorize('ဆိုင်အချင်းချင်း ကုန်လွှဲရန်')) return;
+    if (!(await authorize('ဆိုင်အချင်းချင်း ကုန်လွှဲရန်'))) return;
     submitLock.current = true;
     setSubmitting(true);
     try {
@@ -131,16 +137,26 @@ export function StockTransferPage({ authorize, notify, onViewDestination }: {
     }
   };
 
-  const reverseTransfer = (transferId: string) => {
+  const reverseTransfer = async (transferId: string) => {
     if (reversingId) return;
     const selected = stockTransfers.find((entry) => entry.id === transferId);
     if (!selected || selected.status !== 'completed') return;
     const itemSummary = selected.items.map((item) => `${item.productName} × ${formatQuantity(item.quantity, quantityModeForProduct({ unit: item.unit }))} ${item.unit}`).join('၊ ');
-    if (!window.confirm(`${selected.transferNo} ကို ပြန်လည်ပယ်ဖျက်ပါမယ်။\n${itemSummary}\n\nလက်ခံဆိုင်မှာ လွှဲပို့ထားတဲ့ Batch အရေအတွက် အပြည့်ကျန်နေမှသာ ပြန်လှန်နိုင်ပါတယ်။ ဆက်လုပ်မလား။`)) return;
-    const reversalNote = window.prompt('ပြန်လည်ပယ်ဖျက်ရသည့် အကြောင်းပြချက် (မဖြစ်မနေ)');
+    if (!(await dialog.confirm({
+      title: 'ကုန်လွှဲမှု ပြန်လည်ပယ်ဖျက်ရန်',
+      message: `${selected.transferNo} ကို ပြန်လည်ပယ်ဖျက်ပါမယ်။\n${itemSummary}\n\nလက်ခံဆိုင်မှာ လွှဲပို့ထားတဲ့ Batch အရေအတွက် အပြည့်ကျန်နေမှသာ ပြန်လှန်နိုင်ပါတယ်။ ဆက်လုပ်မလား။`,
+      confirmLabel: 'ဆက်လုပ်မည်',
+      tone: 'danger',
+    }))) return;
+    const reversalNote = await dialog.prompt({
+      title: 'ပယ်ဖျက်ရသည့် အကြောင်းပြချက်',
+      label: 'အကြောင်းပြချက် (မဖြစ်မနေ)',
+      required: true,
+      confirmLabel: 'ရှေ့ဆက်မည်',
+    });
     if (reversalNote === null) return;
     if (!reversalNote.trim()) { notify('ပြန်လည်ပယ်ဖျက်ရသည့် အကြောင်းပြချက် ဖြည့်ပါ။'); return; }
-    if (!authorize('ကုန်လွှဲမှု ပြန်လည်ပယ်ဖျက်ရန်')) return;
+    if (!(await authorize('ကုန်လွှဲမှု ပြန်လည်ပယ်ဖျက်ရန်'))) return;
     setReversingId(transferId);
     try {
       const user = firebaseAuth?.currentUser;

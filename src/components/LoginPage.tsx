@@ -136,16 +136,15 @@ export function LoginPage({ configurationError }: LoginPageProps) {
       <section className="public-login-layout">
         <div className="public-login-brand-panel">
           <div className="public-login-brand-mark"><Store size={28} /></div>
-          <p className="public-login-eyebrow">RETAIL MANAGEMENT</p>
           <h1>Minimart POS</h1>
-          <p className="public-login-brand-copy">အရောင်း၊ ကုန်ပစ္စည်း၊ ဆိုင်ခွဲနှင့် ငွေစာရင်းများကို တစ်နေရာတည်းမှ စီမံခန့်ခွဲပါ။</p>
+          <p className="public-login-brand-copy">အရောင်း၊ ပစ္စည်းစာရင်းနှင့် ဆိုင်ခွဲငွေစာရင်းများကို တစ်နေရာတည်းမှ စီမံခန့်ခွဲပါ။</p>
           <div className="public-login-security-note"><ShieldCheck size={18} /><span>ခွင့်ပြုထားသော Owner နှင့် Cashier များသာ ဝင်ရောက်နိုင်သည်။</span></div>
         </div>
 
         <div className="public-login-card">
           <div className="public-login-card-heading">
             <div className="public-login-icon"><LockKeyhole size={20} /></div>
-            <div><p>WELCOME BACK</p><h2>အကောင့်ဝင်ရန်</h2><span>လုပ်ငန်းအကောင့်ဖြင့် Sign In ဝင်ပါ။</span></div>
+            <div><h2>အကောင့်ဝင်ရန်</h2><span>လုပ်ငန်းအကောင့်ဖြင့် ဝင်ရောက်ပါ။</span></div>
           </div>
           {configurationError && <div className="public-login-alert is-error" role="alert">{configurationError}</div>}
           <form className="public-login-form" onSubmit={(event) => void submit(event)} aria-busy={phase === 'authenticating'}>
@@ -164,13 +163,12 @@ export function LoginPage({ configurationError }: LoginPageProps) {
                 ? <><span className="public-login-spinner" aria-hidden="true" /> စစ်ဆေးနေပါတယ်…</>
                 : phase === 'checking'
                   ? <><CheckCircle2 size={17} /> ခွင့်ပြုချက် စစ်ဆေးနေပါတယ်…</>
-                  : <><LogIn size={17} /> Sign In ဝင်မယ်</>}
+                  : <><LogIn size={17} /> ဝင်မယ်</>}
             </button>
           </form>
           <button type="button" className="public-login-reset" onClick={openReset} disabled={fieldsDisabled}><KeyRound size={14} /> Password မေ့သွားပါသလား?</button>
           {message && <div className="public-login-alert is-success" role="status" aria-live="polite"><CheckCircle2 size={15} /><span>{message}</span></div>}
-          <div className="public-login-no-signup"><LockKeyhole size={14} /><span>Public Account Registration ပိတ်ထားသည်။ Account လိုအပ်ပါက လုပ်ငန်းပိုင်ရှင်ထံ ဆက်သွယ်ပါ။</span></div>
-          <div className="public-login-footer">© {new Date().getFullYear()} Minimart POS · Authorized Access Only</div>
+          <div className="public-login-no-signup"><LockKeyhole size={14} /><span>အကောင့်အသစ်လိုအပ်ပါက လုပ်ငန်းပိုင်ရှင်ထံ ဆက်သွယ်ပါ။</span></div>
         </div>
       </section>
 

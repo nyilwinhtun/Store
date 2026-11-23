@@ -7,10 +7,12 @@ import {
   removeCashierSaleFromQueue,
 } from '../lib/cashierSalesSync';
 import { flushPosStorePersistence, usePosStore } from '../store/usePosStore';
+import { useAppDialog } from './AppDialog';
 
 type QueueState = 'ready' | 'synced' | 'queued' | 'review' | 'error' | 'rules-error';
 
 export function CashierSalesQueueStatus({ uid, branchId }: { uid: string; branchId: string }) {
+  const dialog = useAppDialog();
   const [pending, setPending] = useState(0);
   const [needsReviewCount, setNeedsReviewCount] = useState(0);
   const [state, setState] = useState<QueueState>('ready');
@@ -88,7 +90,13 @@ export function CashierSalesQueueStatus({ uid, branchId }: { uid: string; branch
       const queue = await readCashierSaleQueue(uid, branchId);
       const stuck = queue.filter((entry) => entry.needsReview);
       if (!stuck.length) return;
-      if (!window.confirm(`Cloud Stock မလောက်၍ ပို့မရသော Offline ဘောင်ချာ ${stuck.length} ခု (${stuck.map((e) => e.sale.receiptNo).join(', ')}) ကို ဒီ Device မှ ပယ်ဖျက်ပြီး Stock ပြန်ပေါင်းမလား?`)) return;
+      const confirmed = await dialog.confirm({
+        title: 'Offline ဘောင်ချာများ ပယ်ဖျက်ရန်',
+        message: `Cloud Stock မလောက်၍ ပို့မရသော Offline ဘောင်ချာ ${stuck.length} ခု (${stuck.map((e) => e.sale.receiptNo).join(', ')}) ကို ဒီ Device မှ ပယ်ဖျက်ပြီး Stock ပြန်ပေါင်းမလား?`,
+        confirmLabel: 'ပယ်ဖျက်ပြီး Stock ပြန်ပေါင်းမည်',
+        tone: 'danger',
+      });
+      if (!confirmed) return;
       for (const entry of stuck) {
         const voided = voidSale(entry.sale.id, 'Cloud Stock မလုံလောက်၍ Offline Queue မှ ပယ်ဖျက်သည်', {
           uid,

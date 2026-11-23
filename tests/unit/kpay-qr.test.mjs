@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-const moduleUrl = new URL('../.qa-build/kpayQr.mjs', import.meta.url);
+const moduleUrl = new URL('../../.qa-build/kpayQr.mjs', import.meta.url);
 const {
   KPAY_QR_MAX_DATA_URL_LENGTH,
   isAllowedKpayQrMimeType,

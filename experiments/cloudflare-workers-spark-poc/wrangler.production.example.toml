@@ -1,0 +1,24 @@
+# EXAMPLE ONLY — copy to a local, uncommitted wrangler.production.toml and replace
+# the placeholder project id. Do not add secrets to this file.
+name = "minimart-sales-production"
+main = "src/index.js"
+compatibility_date = "2026-11-15"
+workers_dev = true
+
+# Firebase project for Production only.
+[vars]
+FIREBASE_PROJECT_ID = "REPLACE_WITH_PRODUCTION_PROJECT_ID"
+# Production business ID.
+BUSINESS_ID = "store-mini-main"
+# Enables the runtime guard that enforces Production IDs, HTTPS CORS, and revocation checks.
+ENVIRONMENT = "production"
+CHECK_TOKEN_REVOCATION = "true"
+# Exact HTTPS browser origins only; never use "*" or HTTP.
+CORS_ALLOWED_ORIGINS = "https://nyilwinhtun.github.io"
+
+# Expiry transitions release no stock; Owner reconciliation is still required.
+[triggers]
+crons = ["15 * * * *"]
+
+# Secret (never in this file):
+#   npx wrangler secret put FIRESTORE_SERVICE_ACCOUNT

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Check, ChevronDown, CircleDollarSign, Link2, Link2Off, Package, Plus, RefreshCw, Search, Store, Tags } from 'lucide-react';
 import { usePosStore, type Branch, type Product, type SharedPriceProductRef } from '../store/usePosStore';
 import { AUTO_SYNC_STATUS_EVENT, readAutoSyncStatus, type AutoSyncStatus } from '../lib/autoSyncStatus';
+import { useAppDialog } from './AppDialog';
 
 type Props = {
   branches: Branch[];
@@ -19,6 +20,7 @@ function isSharedPriceCloudReady(uid: string): boolean {
 }
 
 export function SharedPricingPage({ branches, products, actorUid, notify }: Props) {
+  const dialog = useAppDialog();
   const priceGroups = usePosStore((state) => state.priceGroups);
   const createSharedPriceGroup = usePosStore((state) => state.createSharedPriceGroup);
   const activeBranches = useMemo(() => branches.filter((branch) => branch.status === 'active'), [branches]);
@@ -97,7 +99,7 @@ export function SharedPricingPage({ branches, products, actorUid, notify }: Prop
     setSelectedKeys((current) => current.includes(key) ? current : [...current, key]);
   };
 
-  const handleCreate = () => {
+  const handleCreate = async () => {
     if (!ensureCloudReady()) return;
     const retail = Number(retailPrice);
     const wholesale = Number(wholesalePrice);
@@ -109,7 +111,11 @@ export function SharedPricingPage({ branches, products, actorUid, notify }: Prop
       notify('Group အမည်၊ လက်လီဈေးနဲ့ လက်ကားဈေးကို မှန်ကန်စွာ ဖြည့်ပါ။');
       return;
     }
-    if (differingPrices && !window.confirm(`ရွေးထားသော Product ${selectedProducts.length} မျိုး၏ မူလဈေးနှုန်း မတူပါ။ သတ်မှတ်ထားသော Retail ${money(retail)} / Wholesale ${money(wholesale)} ကို ရွေးထားသည့် Branch Product အားလုံးတွင် အစားထိုးမည်။ ဆက်လုပ်မလား?`)) return;
+    if (differingPrices && !(await dialog.confirm({
+      title: 'မူလဈေးနှုန်း မတူညီမှု အတည်ပြုရန်',
+      message: `ရွေးထားသော Product ${selectedProducts.length} မျိုး၏ မူလဈေးနှုန်း မတူပါ။ သတ်မှတ်ထားသော Retail ${money(retail)} / Wholesale ${money(wholesale)} ကို ရွေးထားသည့် Branch Product အားလုံးတွင် အစားထိုးမည်။ ဆက်လုပ်မလား?`,
+      confirmLabel: 'အစားထိုးမည်',
+    }))) return;
     const refs: SharedPriceProductRef[] = selectedProducts.map((product) => ({ branchId: product.branchId || '', productId: product.id }));
     const id = createSharedPriceGroup({ name: groupName, retailPrice: retail, wholesalePrice: wholesale, products: refs, actorUid });
     if (!id) {
@@ -209,14 +215,19 @@ function SharedPriceGroupCard({ group, products, branches, actorUid, notify }: {
     && !memberBranches.has(product.branchId),
   );
   const branchNames = new Map(branches.map((branch) => [branch.id, branch.status === 'archived' ? `${branch.name} (Archived)` : branch.name]));
+  const dialog = useAppDialog();
 
-  const savePrices = () => {
+  const savePrices = async () => {
     if (!isSharedPriceCloudReady(actorUid)) {
       notify('မျှဝေဈေးနှုန်း ပြင်ဆင်ရန် Internet နှင့် Owner Cloud Auto Sync Active ဖြစ်နေရပါမယ်။');
       return;
     }
     const affectedBranches = [...memberBranches].map((branchId) => branchNames.get(branchId) || branchId).join('၊ ');
-    if (!window.confirm(`ဒီဈေးနှုန်းပြောင်းလဲမှုသည် ${affectedBranches} ရှိ ${members.length} ခုသော Product များအားလုံးကို သက်ရောက်ပါမယ်။ ဆက်လက်ပြင်ဆင်မလား?`)) return;
+    if (!(await dialog.confirm({
+      title: 'မျှဝေဈေးနှုန်း ပြင်ဆင်ရန်',
+      message: `ဒီဈေးနှုန်းပြောင်းလဲမှုသည် ${affectedBranches} ရှိ ${members.length} ခုသော Product များအားလုံးကို သက်ရောက်ပါမယ်။ ဆက်လက်ပြင်ဆင်မလား?`,
+      confirmLabel: 'ပြင်ဆင်မည်',
+    }))) return;
     const priceChanged = Number(retail) !== group.retailPrice || Number(wholesale) !== group.wholesalePrice;
     const ok = updateSharedPriceGroup(group.id, { name, retailPrice: Number(retail), wholesalePrice: Number(wholesale), actorUid });
     if (!ok) { notify('ဈေးနှုန်း Update မအောင်မြင်ပါ။ ချိတ်ဆက်ထားသော Product အနည်းဆုံး ၂ ဆိုင်ရှိကြောင်း စစ်ပါ။'); return; }
@@ -240,7 +251,7 @@ function SharedPriceGroupCard({ group, products, branches, actorUid, notify }: {
     setShowAttach(false);
   };
 
-  const unlink = (product: Product) => {
+  const unlink = async (product: Product) => {
     if (!isSharedPriceCloudReady(actorUid)) {
       notify('Product ချိတ်ဆက်မှုဖြုတ်ရန် Internet နှင့် Owner Cloud Auto Sync Active ဖြစ်နေရပါမယ်။');
       return;
@@ -248,7 +259,12 @@ function SharedPriceGroupCard({ group, products, branches, actorUid, notify }: {
     const archiveWarning = members.length <= 2
       ? ' ဒီအုပ်စုမှာ Branch ၂ ခုသာရှိသောကြောင့် ကျန် Product ကိုလည်း သီးခြားပြောင်းပြီး Group ကို Archive လုပ်ပါမယ်။'
       : '';
-    if (!window.confirm(`${branchNames.get(product.branchId || '') || 'ဒီဆိုင်'} မှ ${product.name} ကို ${group.name} ဈေးနှုန်းအုပ်စုမှ ဖြုတ်မလား? ဖြုတ်ပြီးနောက် လက်ရှိဈေးနှုန်းကို သီးခြားထိန်းသိမ်းပါမယ်။${archiveWarning}`)) return;
+    if (!(await dialog.confirm({
+      title: 'ဈေးနှုန်းအုပ်စုမှ ဖြုတ်ရန်',
+      message: `${branchNames.get(product.branchId || '') || 'ဒီဆိုင်'} မှ ${product.name} ကို ${group.name} ဈေးနှုန်းအုပ်စုမှ ဖြုတ်မလား? ဖြုတ်ပြီးနောက် လက်ရှိဈေးနှုန်းကို သီးခြားထိန်းသိမ်းပါမယ်။${archiveWarning}`,
+      confirmLabel: 'ဖြုတ်မည်',
+      tone: 'danger',
+    }))) return;
     if (!unlinkProductFromSharedPriceGroup(product.branchId || '', product.id, actorUid)) { notify('ချိတ်ဆက်မှု ဖြုတ်မရပါ။'); return; }
     window.dispatchEvent(new Event('minimart-cloud-sync-requested'));
     notify(`${product.name} ကို သီးခြားဈေးနှုန်းအဖြစ် ပြောင်းပြီးပါပြီ။`);

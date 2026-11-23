@@ -6,6 +6,7 @@ import { useBusinessAccess } from '../lib/businessAccess';
 import { recordFirestoreActivity } from '../lib/firestoreDiagnostics';
 import type { Expense } from '../store/usePosStore';
 import type { CashierSettlementCreateInput, CashierSettlementPurpose, CashierSettlementRecord } from '../types/finance';
+import { useAppDialog } from './AppDialog';
 
 type CashierOption = { uid: string; displayName: string; email: string; branchIds: string[] };
 type Props = {
@@ -41,6 +42,7 @@ const csvDownload = (rows: unknown[][]) => {
 };
 
 export function CashierSettlementManagementPage({ settlements, expenses, branchId, branchName, currency, isCashier, cashierUid, cashierName, branchKpayAccountName = '', branchKpayAccountNumber = '', onCreate }: Props) {
+  const dialog = useAppDialog();
   const access = useBusinessAccess();
   const [members, setMembers] = useState<CashierOption[]>([]);
   const [membersLoading, setMembersLoading] = useState(false);
@@ -139,7 +141,12 @@ export function CashierSettlementManagementPage({ settlements, expenses, branchI
     }
     const recipient = members.find((member) => member.uid === selectedCashierUid)!;
     const promptText = `${recipient.displayName} ထံ ${money(numericAmount, currency)} ကို ${paymentMethod.toUpperCase()} ဖြင့် အမှန်တကယ် ပေးချေ/လွှဲပြီးပြီလား။\n\nဒီမှတ်တမ်းကို “ပေးချေပြီး” အဖြစ် သိမ်းပြီး Cashier ဆီ ပြသပါမယ်။`;
-    if (!window.confirm(promptText)) return;
+    const confirmed = await dialog.confirm({
+      title: 'ငွေပေးချေမှု အတည်ပြုရန်',
+      message: promptText,
+      confirmLabel: 'အတည်ပြုပြီး သိမ်းမည်',
+    });
+    if (!confirmed) return;
     setBusy(true);
     try {
       await onCreate({

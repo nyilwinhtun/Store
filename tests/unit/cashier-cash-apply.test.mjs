@@ -1,7 +1,7 @@
 import { beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createFakeFirestore, readRecord } from './support/fakeFirestore.mjs';
-import { applyCashierCashEntry } from '../.qa-build/cashierCashApply.mjs';
+import { createFakeFirestore, readRecord } from '../support/fakeFirestore.mjs';
+import { applyCashierCashEntry } from '../../.qa-build/cashierCashApply.mjs';
 
 const BUSINESS = 'biz-1';
 const BRANCH = 'branch-a';
