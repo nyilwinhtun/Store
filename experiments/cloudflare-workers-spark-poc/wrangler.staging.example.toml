@@ -15,7 +15,7 @@ ENVIRONMENT = "staging"
 CHECK_TOKEN_REVOCATION = "true"
 # Exact browser origins only. Replace/add the real Staging Web App origin(s);
 # never use "*". HTTP is accepted only for loopback development.
-CORS_ALLOWED_ORIGINS = "http://localhost:5173"
+CORS_ALLOWED_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173,https://minimart-pos-staging.pages.dev"
 
 # Expiry transitions release no stock; Owner reconciliation is still required.
 [triggers]

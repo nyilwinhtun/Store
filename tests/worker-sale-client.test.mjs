@@ -3,7 +3,17 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-const { WorkerSaleError, commitSaleThroughWorker, resolveWorkerSalesGate, workerSalesGate } = await import(
+const {
+  WorkerSaleError,
+  commitSaleThroughWorker,
+  issueOfflineAllowanceThroughWorker,
+  reconcileOfflineAllowanceThroughWorker,
+  resolveWorkerSalesGate,
+  returnSaleThroughWorker,
+  voidSaleThroughWorker,
+  workerEndpointFor,
+  workerSalesGate,
+} = await import(
   new URL('../.qa-build/workerSaleClient.mjs', import.meta.url).href
 );
 
@@ -143,4 +153,176 @@ test('the Worker gate requires an explicit Staging build and a safe endpoint', (
   assert.equal(resolveWorkerSalesGate({ ...base, flag: 'false' }).enabled, false);
   assert.equal(resolveWorkerSalesGate({ ...base, url: 'http://worker.example.test/api/sales/commit' }).enabled, false);
   assert.equal(resolveWorkerSalesGate({ ...base, url: 'http://localhost:8787/api/sales/commit', dev: true }).enabled, true);
+});
+
+test('derives Worker adjustment and allowance endpoints from the configured commit URL', () => {
+  assert.equal(workerEndpointFor(endpoint, '/api/sales/commit'), 'https://worker.example.test/api/sales/commit');
+  assert.equal(workerEndpointFor(endpoint, '/api/sales/void'), 'https://worker.example.test/api/sales/void');
+  assert.equal(workerEndpointFor(endpoint, '/api/sales/return'), 'https://worker.example.test/api/sales/return');
+  assert.equal(workerEndpointFor(endpoint, '/api/offline-allowances'), 'https://worker.example.test/api/offline-allowances');
+  assert.equal(
+    workerEndpointFor(endpoint, '/api/offline-allowances/reconcile'),
+    'https://worker.example.test/api/offline-allowances/reconcile',
+  );
+});
+
+test('attaches offline allowance and lease metadata to /api/sales/commit and rejects partial metadata', async () => {
+  const calls = [];
+  const allowance = {
+    allowanceId: 'allowance-1',
+    allowanceToken: 'tok_abcdefghijklmnopqrstuvwxyz012345',
+    leaseId: 'lease-1',
+    deviceId: 'dev-12345678',
+  };
+  const result = await commitSaleThroughWorker(sale(), 'cashier-a', 'branch-a', {
+    ...request(async (url, init) => {
+      calls.push({ url, init });
+      return response(200, { ok: true, result: 'created', writeCount: 4 });
+    }),
+    allowance,
+  });
+  assert.equal(result, 'created');
+  const body = JSON.parse(calls[0].init.body);
+  assert.equal(body.allowanceId, allowance.allowanceId);
+  assert.equal(body.allowanceToken, allowance.allowanceToken);
+  assert.equal(body.leaseId, allowance.leaseId);
+  assert.equal(body.deviceId, allowance.deviceId);
+
+  await assert.rejects(
+    commitSaleThroughWorker(sale(), 'cashier-a', 'branch-a', {
+      ...request(async () => response(200, { ok: true, result: 'created' })),
+      allowance: { ...allowance, leaseId: '' },
+    }),
+    /Offline Allowance/,
+  );
+});
+
+test('voidSaleThroughWorker posts strict Worker void payload without uid and handles replay', async () => {
+  const calls = [];
+  const res = await voidSaleThroughWorker(
+    {
+      branchId: 'branch-a',
+      saleId: 'SALE-1',
+      requestId: 'void-SALE-1',
+      reason: 'Customer cancelled',
+      deviceId: 'dev-12345678',
+    },
+    request(async (url, init) => {
+      calls.push({ url, init });
+      return response(200, {
+        ok: true,
+        result: 'already-committed',
+        kind: 'void',
+        occurredAt: '2026-11-23T10:00:00.000Z',
+        refundStatus: 'cash-refunded',
+        refundAmount: 1000,
+        total: 1000,
+        writeCount: 0,
+      });
+    }),
+  );
+  assert.equal(calls[0].url, 'https://worker.example.test/api/sales/void');
+  assert.equal(calls[0].init.headers.authorization, `Bearer ${token}`);
+  const body = JSON.parse(calls[0].init.body);
+  assert.deepEqual(body, {
+    branchId: 'branch-a',
+    saleId: 'SALE-1',
+    requestId: 'void-SALE-1',
+    reason: 'Customer cancelled',
+    deviceId: 'dev-12345678',
+  });
+  assert.equal(body.uid, undefined);
+  assert.equal(res.result, 'already-committed');
+  assert.equal(res.kind, 'void');
+  assert.equal(res.refundAmount, 1000);
+});
+
+test('returnSaleThroughWorker posts strict Worker return payload without uid', async () => {
+  const calls = [];
+  const res = await returnSaleThroughWorker(
+    {
+      branchId: 'branch-a',
+      saleId: 'SALE-1',
+      requestId: 'ret-1-SALE-1',
+      reason: 'Damaged item',
+      deviceId: 'dev-12345678',
+      items: [{ productId: 'p1', quantity: 1, disposition: 'damaged', units: [] }],
+      refundReference: 'REF-123',
+    },
+    request(async (url, init) => {
+      calls.push({ url, init });
+      return response(200, {
+        ok: true,
+        result: 'created',
+        kind: 'return',
+        returnId: 'ret-1-SALE-1',
+        occurredAt: '2026-11-23T10:05:00.000Z',
+        value: 1000,
+        refundStatus: 'cash-refunded',
+        refundAmount: 1000,
+        writeCount: 4,
+      });
+    }),
+  );
+  assert.equal(calls[0].url, 'https://worker.example.test/api/sales/return');
+  const body = JSON.parse(calls[0].init.body);
+  assert.equal(body.uid, undefined);
+  assert.equal(body.refundReference, 'REF-123');
+  assert.equal(body.items.length, 1);
+  assert.equal(res.result, 'created');
+  assert.equal(res.kind, 'return');
+  assert.equal(res.returnId, 'ret-1-SALE-1');
+});
+
+test('issueOfflineAllowanceThroughWorker and reconcileOfflineAllowanceThroughWorker match Worker contracts', async () => {
+  const calls = [];
+  const issued = await issueOfflineAllowanceThroughWorker(
+    {
+      branchId: 'branch-a',
+      deviceId: 'dev-12345678',
+      leaseId: 'lease-existing',
+      items: [{ productId: 'p1', quantity: 2 }],
+    },
+    request(async (url, init) => {
+      calls.push({ url, body: JSON.parse(init.body) });
+      return response(200, {
+        ok: true,
+        result: 'issued',
+        allowanceId: 'allowance-99',
+        leaseId: 'lease-existing',
+        allowanceToken: 'tok_abcdefghijklmnopqrstuvwxyz012345',
+        issuedAt: '2026-11-23T10:00:00.000Z',
+        expiresAt: '2026-11-24T10:00:00.000Z',
+        leaseExpiresAt: '2026-11-26T10:00:00.000Z',
+        deviceId: 'dev-12345678',
+        items: [{ productId: 'p1', quantity: 2 }],
+      });
+    }),
+  );
+  assert.equal(calls[0].url, 'https://worker.example.test/api/offline-allowances');
+  assert.equal(issued.allowanceId, 'allowance-99');
+
+  const reconciled = await reconcileOfflineAllowanceThroughWorker(
+    { branchId: 'branch-a', allowanceId: 'allowance-99', action: 'release' },
+    request(async (url, init) => {
+      calls.push({ url, body: JSON.parse(init.body) });
+      return response(200, {
+        ok: true,
+        result: 'released',
+        releasedItems: [{ productId: 'p1', quantity: 2 }],
+      });
+    }),
+  );
+  assert.equal(calls[1].url, 'https://worker.example.test/api/offline-allowances/reconcile');
+  assert.deepEqual(calls[1].body, { branchId: 'branch-a', allowanceId: 'allowance-99', action: 'release' });
+  assert.equal(reconciled.result, 'released');
+});
+
+test('saleAdjustments routes void/return through Worker when gated and preserves Callable fallback', () => {
+  const adjustmentsSource = readFileSync(`${root}/src/lib/saleAdjustments.ts`, 'utf8');
+  assert.match(adjustmentsSource, /workerSalesGate\(\)/);
+  assert.match(adjustmentsSource, /voidSaleThroughWorker/);
+  assert.match(adjustmentsSource, /returnSaleThroughWorker/);
+  assert.match(adjustmentsSource, /cashierSaleVoid/);
+  assert.match(adjustmentsSource, /cashierSaleReturn/);
 });
