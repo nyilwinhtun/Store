@@ -14,10 +14,10 @@ const {
   workerEndpointFor,
   workerSalesGate,
 } = await import(
-  new URL('../.qa-build/workerSaleClient.mjs', import.meta.url).href
+  new URL('../../.qa-build/workerSaleClient.mjs', import.meta.url).href
 );
 
-const root = fileURLToPath(new URL('..', import.meta.url));
+const root = fileURLToPath(new URL('../..', import.meta.url));
 const endpoint = 'https://worker.example.test/api/sales/commit';
 const token = 'id-token-for-test';
 

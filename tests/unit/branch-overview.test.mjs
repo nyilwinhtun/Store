@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildBranchOverview } from '../.qa-build/branchOverview.mjs';
+import { buildBranchOverview } from '../../.qa-build/branchOverview.mjs';
 
 const TODAY = '2026-11-13';
 

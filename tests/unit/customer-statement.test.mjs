@@ -6,7 +6,7 @@ import {
   customerCurrentOutstanding,
   formatStatementMoney,
   saleOutstandingDue,
-} from '../.qa-build/customerStatement.mjs';
+} from '../../.qa-build/customerStatement.mjs';
 
 const mainBranch = { id: 'branch-main', name: 'မင်္ဂလာ မီနီမာ့တ် (ဗိုလ်ချုပ်လမ်း)', code: 'MM-01', address: 'ရန်ကုန်', phone: '09-790000001', isDefault: true };
 const otherBranch = { id: 'branch-lanmadaw', name: 'မင်္ဂလာ မီနီမာ့တ် (လမ်းမတော်)', code: 'MM-02', address: 'ရန်ကုန်', phone: '09-790000002', isDefault: false };

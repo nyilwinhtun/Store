@@ -20,11 +20,11 @@ const SUITES = {
       { entry: 'src/lib/syncManifestStorage.ts', outfile: 'syncManifestStorage.mjs' },
       { entry: 'src/lib/activityLogPolicy.ts', outfile: 'activityLogPolicy.mjs' },
     ],
-    tests: ['tests/sync-safety.test.mjs'],
+    tests: ['tests/unit/sync-safety.test.mjs'],
   },
   autosync: {
     builds: [{ entry: 'src/lib/autoSyncStatus.ts', outfile: 'autoSyncStatus.mjs' }],
-    tests: ['tests/auto-sync-status.test.mjs'],
+    tests: ['tests/unit/auto-sync-status.test.mjs'],
   },
   cash: {
     builds: [
@@ -35,27 +35,27 @@ const SUITES = {
         alias: { 'firebase/firestore': fakeFirestore },
       },
     ],
-    tests: ['tests/cashier-cash-records.test.mjs', 'tests/cashier-cash-apply.test.mjs'],
+    tests: ['tests/unit/cashier-cash-records.test.mjs', 'tests/unit/cashier-cash-apply.test.mjs'],
   },
   qr: {
     builds: [{ entry: 'src/lib/kpayQr.ts', outfile: 'kpayQr.mjs' }],
-    tests: ['tests/kpay-qr.test.mjs'],
+    tests: ['tests/unit/kpay-qr.test.mjs'],
   },
   cursor: {
     builds: [{ entry: 'src/lib/cashierSyncCursor.ts', outfile: 'cashierSyncCursor.mjs' }],
-    tests: ['tests/cashier-sync-cursor.test.mjs'],
+    tests: ['tests/unit/cashier-sync-cursor.test.mjs'],
   },
   overview: {
     builds: [{ entry: 'src/lib/branchOverview.ts', outfile: 'branchOverview.mjs', target: 'node20' }],
-    tests: ['tests/branch-overview.test.mjs'],
+    tests: ['tests/unit/branch-overview.test.mjs'],
   },
   runtime: {
     builds: [{ entry: 'src/lib/firebaseRuntime.ts', outfile: 'firebaseRuntime.mjs', target: 'node20' }],
-    tests: ['tests/firebase-runtime.test.mjs'],
+    tests: ['tests/unit/firebase-runtime.test.mjs'],
   },
   statement: {
     builds: [{ entry: 'src/lib/customerStatement.ts', outfile: 'customerStatement.mjs', target: 'node20' }],
-    tests: ['tests/customer-statement.test.mjs'],
+    tests: ['tests/unit/customer-statement.test.mjs'],
   },
   checkout: {
     builds: [
@@ -64,7 +64,7 @@ const SUITES = {
       { entry: 'src/lib/posPaymentState.ts', outfile: 'posPaymentState.mjs' },
       { entry: 'src/lib/posProductSelection.ts', outfile: 'posProductSelection.mjs' },
     ],
-    tests: ['tests/pos-checkout.test.mjs', 'tests/pos-product-payment.test.mjs'],
+    tests: ['tests/unit/pos-checkout.test.mjs', 'tests/unit/pos-product-payment.test.mjs'],
   },
   store: {
     builds: [
@@ -75,7 +75,7 @@ const SUITES = {
       },
       { entry: 'src/lib/receiptNumber.ts', outfile: 'receiptNumber.mjs' },
     ],
-    tests: ['tests/pos-store-inventory.test.mjs'],
+    tests: ['tests/unit/pos-store-inventory.test.mjs'],
     env: { TZ: 'Asia/Yangon' },
   },
   units: {
@@ -88,7 +88,7 @@ const SUITES = {
       { entry: 'src/lib/unitTracking.ts', outfile: 'unitTracking.mjs' },
       { entry: 'src/lib/cashierUnitRegistryMerge.ts', outfile: 'cashierUnitRegistryMerge.mjs' },
     ],
-    tests: ['tests/pos-unit-tracking.test.mjs'],
+    tests: ['tests/unit/pos-unit-tracking.test.mjs'],
     env: { TZ: 'Asia/Yangon' },
   },
   transfer: {
@@ -100,7 +100,7 @@ const SUITES = {
       },
       { entry: 'src/lib/unitTracking.ts', outfile: 'unitTracking.mjs' },
     ],
-    tests: ['tests/pos-branch-transfer.test.mjs'],
+    tests: ['tests/unit/pos-branch-transfer.test.mjs'],
     env: { TZ: 'Asia/Yangon' },
   },
   'worker-client': {
@@ -116,7 +116,7 @@ const SUITES = {
         },
       },
     ],
-    tests: ['tests/worker-sale-client.test.mjs'],
+    tests: ['tests/unit/worker-sale-client.test.mjs'],
   },
 };
 

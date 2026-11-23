@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-const moduleUrl = new URL('../.qa-build/kpayReference.mjs', import.meta.url);
+const moduleUrl = new URL('../../.qa-build/kpayReference.mjs', import.meta.url);
 const { checkKpayReference, normalizeKpayReference } = await import(moduleUrl.href);
-const { isKpayEnabled } = await import(new URL('../.qa-build/kpayAccount.mjs', import.meta.url).href);
+const { isKpayEnabled } = await import(new URL('../../.qa-build/kpayAccount.mjs', import.meta.url).href);
 
-const root = fileURLToPath(new URL('..', import.meta.url));
+const root = fileURLToPath(new URL('../..', import.meta.url));
 const appSource = readFileSync(`${root}/src/App.tsx`, 'utf8');
 const cssSource = readFileSync(`${root}/src/index.css`, 'utf8');
 
