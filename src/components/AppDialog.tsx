@@ -206,7 +206,7 @@ export function DialogProvider({ children }: { children: ReactNode }) {
         >
           {active.kind === 'confirm' ? (
             <section
-              className="modal-card app-dialog-card"
+              className="modal-card app-dialog-card ios-alert-card"
               role="dialog"
               aria-modal="true"
               aria-labelledby="app-dialog-title"
@@ -220,9 +220,6 @@ export function DialogProvider({ children }: { children: ReactNode }) {
                     <h2 id="app-dialog-title">{active.options.title}</h2>
                   </div>
                 </div>
-                <button className="icon-btn" type="button" onClick={dismissActive} aria-label="ပိတ်ရန်">
-                  <X size={18} />
-                </button>
               </div>
               <p className="app-dialog-message">{active.options.message}</p>
               <div className="modal-actions">

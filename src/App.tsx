@@ -2,7 +2,7 @@ import { Component, lazy, Suspense, useEffect, useMemo, useRef, useState, type F
 import {
   Activity, AlertTriangle, ArchiveRestore, ArrowDownToLine, ArrowUpRight, BarChart3, ChevronDown,
   Boxes, Camera, Check, CircleDollarSign, ClipboardList, CreditCard, Download,
-  FileJson, LayoutDashboard, LockKeyhole, Menu, Minus, PackagePlus,
+  FileJson, LayoutDashboard, LockKeyhole, Minus, PackagePlus,
   Plus, Printer, Receipt, Search, Settings, ShoppingBag, ShoppingCart, Copy,
   Smartphone, Store, Trash2, TrendingUp, Truck, Wallet, X, Users, CalendarClock, UserRound, Sun, Moon, LogOut, PackageCheck, Send, ShieldCheck, ScanLine, RotateCcw,
 } from 'lucide-react';
@@ -114,7 +114,6 @@ function App() {
       return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     } catch { return 'light'; }
   });
-  const [mobileMenu, setMobileMenu] = useState(false);
   const [toast, setToast] = useState('');
   const [toastActionPage, setToastActionPage] = useState<Page | null>(null);
   const [installPrompt, setInstallPrompt] = useState<(() => Promise<void>) | null>(null);
@@ -234,7 +233,7 @@ function App() {
     document.documentElement.dataset.theme = themeMode;
     try { localStorage.setItem('minimart-ui-theme-v1', themeMode); } catch { /* Theme still works for this session. */ }
     const themeMeta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
-    if (themeMeta) themeMeta.content = themeMode === 'dark' ? '#0b1120' : '#0f766e';
+    if (themeMeta) themeMeta.content = themeMode === 'dark' ? '#000000' : '#f2f2f7';
   }, [themeMode]);
 
   useEffect(() => {
@@ -482,13 +481,12 @@ function App() {
         notify('လက်ရှိ ငွေရှင်း/Receipt လုပ်ငန်းစဉ်ကို အရင်ပြီးစီးပါ။ ပြီးမှ ဆိုင်အားလုံးကို ကြည့်နိုင်ပါတယ်။');
         return;
       }
-      setPage('overview'); setMobileMenu(false);
+      setPage('overview');
       return;
     }
     if (!canAccessBranch(access.role, access.branchIds, branchId)) { notify('ဒီဆိုင်ကို ဝင်ခွင့်မရှိပါ။ Owner ကို ဆက်သွယ်ပါ။'); return; }
     if (branchId === activeBranchId) {
       if (page === 'overview' || page === 'branches') setPage('dashboard');
-      setMobileMenu(false);
       return;
     }
     if (!cashierMode && !(await authorize('ဆိုင်ခွဲပြောင်းရန်'))) return;
@@ -496,7 +494,7 @@ function App() {
     if (!(await confirmBranchChange(target?.name || 'ရွေးချယ်ထားသောဆိုင်'))) return;
     setActiveBranch(branchId);
     resetBranchScopedPosUi();
-    setPage('dashboard'); setMobileMenu(false);
+    setPage('dashboard');
     notify(`${target?.name || 'ဆိုင်'} သို့ ပြောင်းပြီးပါပြီ။`);
   };
   const viewBranchInventory = async (branchId: string) => {
@@ -508,7 +506,7 @@ function App() {
       setActiveBranch(branchId);
       resetBranchScopedPosUi();
     }
-    setPage('inventory'); setMobileMenu(false);
+    setPage('inventory');
     const target = branches.find((branch) => branch.id === branchId);
     notify(`${target?.name || 'ဆိုင်'} Inventory ကို ဖွင့်ထားပါတယ်။`);
   };
@@ -1227,8 +1225,47 @@ const openManualCopyPrompt = (value: string, label: string) => dialog.prompt({
       return;
     }
     if (!canUsePage(access.role, next, access.canReceiveStock)) { notify('ဒီစာမျက်နှာကို Owner သာ ဝင်ရောက်နိုင်ပါတယ်။'); return; }
-    setPage(next); setMobileMenu(false);
+    setPage(next);
   };
+
+  type PrimaryTab = 'pos' | 'inventory' | 'sales' | 'settings';
+  const primaryTabForPage = (current: Page): PrimaryTab => {
+    if (current === 'pos') return 'pos';
+    if (['inventory', 'receiving', 'unitReceiving', 'shipments', 'transfers', 'branchReceiving', 'purchasing', 'expiry', 'pricing'].includes(current)) {
+      return 'inventory';
+    }
+    if (['settings', 'profile', 'branches'].includes(current)) {
+      return 'settings';
+    }
+    return 'sales';
+  };
+  const activePrimaryTab = primaryTabForPage(page);
+
+  const primaryTabs: { id: PrimaryTab; target: Page; label: string; icon: ReactNode }[] = cashierMode
+    ? [
+        { id: 'pos', target: 'pos', label: 'အရောင်း', icon: <ShoppingCart size={18} /> },
+        ...(access.canReceiveStock ? [{ id: 'inventory' as PrimaryTab, target: 'branchReceiving' as Page, label: 'ပစ္စည်း', icon: <Boxes size={18} /> }] : []),
+        { id: 'sales', target: 'sales', label: 'မှတ်တမ်း', icon: <Receipt size={18} /> },
+        ...(!access.canReceiveStock ? [{ id: 'sales' as PrimaryTab, target: 'cash' as Page, label: 'ငွေကောင်တာ', icon: <Wallet size={18} /> }] : []),
+      ]
+    : [
+        { id: 'pos', target: 'pos', label: 'အရောင်း', icon: <ShoppingCart size={18} /> },
+        { id: 'inventory', target: 'inventory', label: 'ပစ္စည်း', icon: <Boxes size={18} /> },
+        { id: 'sales', target: 'sales', label: 'မှတ်တမ်း', icon: <Receipt size={18} /> },
+        { id: 'settings', target: 'settings', label: 'ဆက်တင်', icon: <Settings size={18} /> },
+      ];
+
+  const subTabsForActiveGroup = useMemo(() => {
+    const groupPages: Record<PrimaryTab, Page[]> = {
+      pos: [],
+      inventory: ['inventory', 'receiving', 'unitReceiving', 'shipments', 'branchReceiving', 'purchasing', 'expiry', 'pricing'],
+      sales: ['sales', 'overview', 'dashboard', 'analytics', 'customers', 'cash', 'expenses', 'settlements', 'finance', 'activity'],
+      settings: ['settings', 'profile', 'branches'],
+    };
+    return groupPages[activePrimaryTab]
+      .map((id) => navItems.find((item) => item.id === id))
+      .filter((item): item is { id: Page; label: string; icon: ReactNode } => Boolean(item));
+  }, [activePrimaryTab, navItems]);
 
   // Production is authenticated-only: never fall back to an unrestricted local workspace.
   if (!firebaseConfigured || !firebaseAuth) {
@@ -1262,22 +1299,109 @@ const openManualCopyPrompt = (value: string, label: string) => dialog.prompt({
 
   return (
     <div className="app-shell" data-theme={themeMode}>
-      <aside className={`sidebar ${mobileMenu ? 'sidebar-open' : ''}`}>
-        <div className="brand"><div className="brand-mark">{activeBranchLogoSource ? <img src={activeBranchLogoSource} alt="Shop logo" /> : <Store size={22} />}</div><div><strong>Mini<span>mart</span></strong><small>POS</small></div><button className="icon-btn mobile-close" onClick={() => setMobileMenu(false)} aria-label="Close menu"><X size={19} /></button></div>
-        <div className="store-chip"><span className="live-dot" /> <span>{page === 'overview' && !cashierMode ? 'ဆိုင်အားလုံး' : (activeBranch?.name || settings.storeName)}</span></div>
-        <nav className="nav-list" aria-label="Main navigation">
-          {navItems.map((item) => <button key={item.id} className={`nav-item ${page === item.id ? 'active' : ''}`} onClick={() => navTo(item.id)}>{item.icon}<span>{item.label}</span>{item.id === 'pos' && cart.length > 0 && <b className="nav-count">{cart.length}</b>}</button>)}
-        </nav>
-      </aside>
-      {mobileMenu && <button className="sidebar-backdrop" onClick={() => setMobileMenu(false)} aria-label="Close navigation" />}
-
       <main className="main-area">
         <header className="topbar">
-          <div className="topbar-left"><button className="icon-btn menu-toggle" onClick={() => setMobileMenu(true)} aria-label="Open menu"><Menu size={21} /></button><div><h1>{pageTitle}</h1></div></div>
-          <div className="topbar-actions"><button className="theme-toggle" type="button" onClick={() => setThemeMode((current) => current === 'light' ? 'dark' : 'light')} aria-label={themeMode === 'light' ? 'Dark Mode ပြောင်းရန်' : 'Light Mode ပြောင်းရန်'} aria-pressed={themeMode === 'dark'} title={themeMode === 'light' ? 'Dark Mode' : 'Light Mode'}>{themeMode === 'light' ? <Moon size={17} /> : <Sun size={17} />}<span>{themeMode === 'light' ? 'Dark' : 'Light'}</span></button>{!cashierMode && activeBranches.length > 1 ? <label className="branch-switcher"><Store size={15} /><select aria-label="ဆိုင်ခွဲ ရွေးချယ်ရန်" value={page === 'overview' ? 'all' : activeBranchId} onChange={(event) => switchBranch(event.target.value)}><option value="all">ဆိုင်အားလုံး</option>{activeBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label> : <div className="branch-single-pill"><Store size={14} /><span>{activeBranch?.name || settings.storeName}</span></div>}<div className="connection-pill" title={access.status === 'active' ? 'Cloud ချိတ်ဆက်ထားပြီးပါပြီ။' : 'Offline Mode ဖြင့် အသုံးပြုနေပါသည်။'}><span className="live-dot" /> {cashierMode ? 'Cashier' : access.status === 'active' ? 'Owner' : 'Offline'}</div>{cashierMode && firebaseAuth && <button className="button button-outline" type="button" onClick={() => void signOut(firebaseAuth)}><LogOut size={14}/> ထွက်မယ်</button>}{installPrompt && <button className="button button-outline install-btn" onClick={() => void installPrompt()}><Smartphone size={16} /> Install App</button>}{!cashierMode && <button className="avatar avatar-button" type="button" onClick={() => navTo('profile')} title="ဆိုင်ပရိုဖိုင်" aria-label="ဆိုင်ပရိုဖိုင်">{ownerPhotoSource ? <img src={ownerPhotoSource} alt="Owner profile" /> : (typeof ownerProfile?.displayName === 'string' ? ownerProfile.displayName.trim().charAt(0) || 'M' : 'M')}</button>}</div>
+          <div className="topbar-left">
+            <div className="topbar-brand-dot">
+              {activeBranchLogoSource ? <img src={activeBranchLogoSource} alt="Shop logo" /> : <Store size={15} />}
+            </div>
+            <div className="topbar-title-group">
+              <h1>{pageTitle}</h1>
+              <span className="topbar-branch-name">
+                {page === 'overview' && !cashierMode ? 'ဆိုင်အားလုံး' : (activeBranch?.name || settings.storeName)}
+              </span>
+            </div>
+          </div>
+
+          <nav className="desktop-tab-bar" aria-label="အဓိက မီနူး">
+            {primaryTabs.map((tab) => {
+              const isTabActive = cashierMode && !access.canReceiveStock && tab.target === 'cash'
+                ? page === 'cash'
+                : cashierMode && !access.canReceiveStock && tab.target === 'sales'
+                  ? activePrimaryTab === 'sales' && page !== 'cash'
+                  : activePrimaryTab === tab.id;
+              return (
+                <button
+                  key={`${tab.id}-${tab.target}`}
+                  type="button"
+                  className={`desktop-tab-item ${isTabActive ? 'active' : ''}`}
+                  onClick={() => navTo(tab.target)}
+                >
+                  {tab.icon}
+                  <span>{tab.label}</span>
+                  {tab.id === 'pos' && cart.length > 0 && <b className="desktop-tab-badge">{cart.length}</b>}
+                </button>
+              );
+            })}
+          </nav>
+
+          <div className="topbar-actions">
+            {!cashierMode && activeBranches.length > 1 && (
+              <select
+                className="topbar-branch-select"
+                aria-label="ဆိုင်ခွဲ ရွေးချယ်ရန်"
+                value={page === 'overview' ? 'all' : activeBranchId}
+                onChange={(event) => switchBranch(event.target.value)}
+              >
+                <option value="all">ဆိုင်အားလုံး</option>
+                {activeBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
+              </select>
+            )}
+            <button
+              className="theme-toggle"
+              type="button"
+              onClick={() => setThemeMode((current) => current === 'light' ? 'dark' : 'light')}
+              aria-label={themeMode === 'light' ? 'Dark Mode ပြောင်းရန်' : 'Light Mode ပြောင်းရန်'}
+              aria-pressed={themeMode === 'dark'}
+              title={themeMode === 'light' ? 'Dark Mode' : 'Light Mode'}
+            >
+              {themeMode === 'light' ? <Moon size={16} /> : <Sun size={16} />}
+              <span>{themeMode === 'light' ? 'Dark' : 'Light'}</span>
+            </button>
+            {installPrompt && (
+              <button className="button button-outline install-btn" type="button" onClick={() => void installPrompt()}>
+                <Smartphone size={15} /> Install
+              </button>
+            )}
+            {cashierMode && firebaseAuth && (
+              <button className="button button-outline" type="button" onClick={() => void signOut(firebaseAuth)}>
+                <LogOut size={14} /> ထွက်မယ်
+              </button>
+            )}
+            {!cashierMode && (
+              <button
+                className="avatar avatar-button"
+                type="button"
+                onClick={() => navTo('profile')}
+                title="ဆိုင်ပရိုဖိုင်"
+                aria-label="ဆိုင်ပရိုဖိုင်"
+              >
+                {ownerPhotoSource ? <img src={ownerPhotoSource} alt="Owner profile" /> : (typeof ownerProfile?.displayName === 'string' ? ownerProfile.displayName.trim().charAt(0) || 'M' : 'M')}
+              </button>
+            )}
+          </div>
         </header>
 
         <div className="content-area">
+          {subTabsForActiveGroup.length > 1 && (
+            <div className="ios-subtabs-wrap">
+              <div className="ios-segmented-subtabs" role="tablist" aria-label="စာမျက်နှာခွဲများ">
+                {subTabsForActiveGroup.map((sub) => (
+                  <button
+                    key={sub.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={page === sub.id}
+                    className={`ios-subtab-btn ${page === sub.id ? 'active' : ''}`}
+                    onClick={() => navTo(sub.id)}
+                  >
+                    {sub.icon}
+                    <span>{sub.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <Suspense fallback={<div className="page-stack"><div className="panel"><p>စာမျက်နှာ ဖွင့်နေပါတယ်…</p></div></div>}>
           <ContentErrorBoundary resetKey={page}>
           {page === 'profile' && <ProfileManagementPage authorize={authorize} notify={notify} />}
@@ -1411,13 +1535,25 @@ const openManualCopyPrompt = (value: string, label: string) => dialog.prompt({
       </main>
 
       <nav className="mobile-bottom-nav" aria-label="အဓိက မီနူး">
-        {!cashierMode && <button type="button" className={page === 'dashboard' || page === 'overview' ? 'active' : ''} onClick={() => navTo(activeBranches.length > 1 ? 'overview' : 'dashboard')}><LayoutDashboard size={19} /><span>{activeBranches.length > 1 ? 'ဆိုင်အားလုံး' : 'ပင်မ'}</span></button>}
-        <button type="button" className={page === 'pos' ? 'active' : ''} onClick={() => navTo('pos')}><ShoppingCart size={19} /><span>အရောင်း</span>{cart.length > 0 && <b>{cart.length}</b>}</button>
-        {!cashierMode && <button type="button" className={page === 'inventory' ? 'active' : ''} onClick={() => navTo('inventory')}><Boxes size={19} /><span>ပစ္စည်း</span></button>}
-        {!cashierMode && <button type="button" className={page === 'profile' ? 'active' : ''} onClick={() => navTo('profile')}><UserRound size={19} /><span>Profile</span></button>}
-        {cashierMode && <button type="button" className={page === 'sales' ? 'active' : ''} onClick={() => navTo('sales')}><Receipt size={19} /><span>မိမိအရောင်း</span></button>}
-        {cashierMode && <button type="button" className={page === 'cash' ? 'active' : ''} onClick={() => navTo('cash')}><Wallet size={19} /><span>Shift</span></button>}
-        {cashierMode && <button type="button" className={page === 'customers' ? 'active' : ''} onClick={() => navTo('customers')}><Users size={19} /><span>အကြွေး</span></button>}
+        {primaryTabs.map((tab) => {
+          const isTabActive = cashierMode && !access.canReceiveStock && tab.target === 'cash'
+            ? page === 'cash'
+            : cashierMode && !access.canReceiveStock && tab.target === 'sales'
+              ? activePrimaryTab === 'sales' && page !== 'cash'
+              : activePrimaryTab === tab.id;
+          return (
+            <button
+              key={`mobile-${tab.id}-${tab.target}`}
+              type="button"
+              className={isTabActive ? 'active' : ''}
+              onClick={() => navTo(tab.target)}
+            >
+              {tab.icon}
+              <span>{tab.label}</span>
+              {tab.id === 'pos' && cart.length > 0 && <b>{cart.length}</b>}
+            </button>
+          );
+        })}
       </nav>
 
       {showPaymentModal && <div className="modal-backdrop payment-confirm-backdrop" role="presentation" onMouseDown={(event) => { if (!pendingPersistenceSale && !savingSale && event.target === event.currentTarget) setShowPaymentModal(false); }}><section className="modal-card payment-confirm-card" role="dialog" aria-modal="true" aria-labelledby="payment-confirm-title"><div className="modal-header"><div><h2 id="payment-confirm-title">ငွေရှင်းအတည်ပြုရန်</h2><p>ပစ္စည်းစာရင်းနဲ့ Customer ပေးငွေကို နောက်ဆုံးစစ်ဆေးပါ။</p></div><button className="icon-btn" type="button" onClick={() => setShowPaymentModal(false)} disabled={Boolean(pendingPersistenceSale) || savingSale} aria-label="ပိတ်ရန်"><X size={19} /></button></div><div className="payment-confirm-total"><small>ကျသင့်ငွေ စုစုပေါင်း</small><strong>{money(checkoutTotal, settings.currency)}</strong><span>{cart.length} မျိုး ရွေးထားပါတယ်</span></div>{paymentMethod === 'Cash' ? <><label className="payment-cash-field">Customer ပေးငွေ ({settings.currency})<input type="number" min="0" step="1" inputMode="numeric" value={cashReceived} onChange={(event) => setCashReceived(event.target.value)} placeholder="Customer ပေးလိုက်တဲ့ငွေ ထည့်ပါ" /></label><button className="payment-exact-button" type="button" onClick={() => setCashReceived(String(Math.round(checkoutTotal)))}>ကျသင့်ငွေအတိအကျ ထည့်မယ်</button>{cashShortfall > 0 ? <div className="payment-shortfall"><strong>ငွေမလောက်သေးပါ</strong><span>{money(cashShortfall, settings.currency)} ထပ်လိုနေပါတယ်။ Sale မသိမ်းရသေးပါ၊ Stock လည်း မလျှော့ထားပါ။</span><button className="button button-outline" type="button" onClick={() => setShowPaymentModal(false)}>ပစ္စည်းလျှော့ / Cart ပြန်ပြင်မယ်</button></div> : <div className="payment-change"><span>ပြန်အမ်းရမည့်ငွေ</span><strong>{money(cashChange, settings.currency)}</strong></div>}</> : paymentMethod === 'KPay' ? <div className="payment-kpay-panel"><strong>Branch KPay Account</strong><div className="payment-kpay-account"><span>Account အမည်</span><b>{activeBranch?.settings.kpayAccountName}</b></div><div className="payment-kpay-account"><span>ဖုန်းနံပါတ် / Account</span><b>{activeBranch?.settings.kpayAccountNumber}</b></div>{activeBranch?.settings.kpayAccountLabel && <small>{activeBranch.settings.kpayAccountLabel}</small>}{branchKpayQrSource && <div className="payment-kpay-qr-wrap"><img className="payment-kpay-qr" src={branchKpayQrSource} alt="Branch KPay QR" /><small>ဒီ QR ကို Customer ဖုန်းနဲ့ Scan ဖတ်ပြီး ငွေလွှဲနိုင်ပါတယ်။</small></div>}<button className="payment-exact-button" type="button" onClick={() => void copyAccessValue(activeBranch?.settings.kpayAccountNumber || '', 'Branch KPay Account', openManualCopyPrompt, notify)}>KPay Account နံပါတ် ကူးရန်</button><label className="payment-cash-field">KPay Transaction ID *<input required value={kpayTransactionReference} onChange={(event) => setKpayTransactionReference(event.target.value)} placeholder="KPay ငွေလွှဲပြီးနောက် Transaction ID ထည့်ပါ" maxLength={120} aria-invalid={kpayTransactionReference.trim() !== '' && !kpayReferenceCheck.ok} aria-describedby="kpay-reference-state" /></label><div className="payment-verification" id="kpay-reference-state">{kpayReferenceCheck.ok ? <><span className="tag tag-success">Transaction ID ဖြည့်ပြီး · အတည်ပြုနိုင်သည်</span><small>Cashier က KPay App မှ ငွေလွှဲအောင်မြင်ကြောင်း စစ်ဆေးပြီး မှတ်တမ်းတင်ထားပါသည်။</small></> : <><span className="tag tag-warn">ငွေလွှဲအတည်ပြုချက် · မစစ်ဆေးရသေးပါ</span><small>Transaction ID မှန်ကန်စွာ မထည့်မချင်း Sale ကို သိမ်း၍ မရပါ။</small></>}</div>{kpayTransactionReference.trim() !== '' && !kpayReferenceCheck.ok && <p className="payment-verify-error" role="alert">{kpayReferenceCheck.message}</p>}<small className="field-hint">KPay App မှ ငွေလွှဲပြီး Transaction အောင်မြင်ကြောင်း စစ်ဆေးပြီးမှ Sale ကို အတည်ပြုပါ။</small></div> : <div className="payment-credit-note"><strong>Credit Sale</strong><span>{customer.trim()} အမည်ဖြင့် {money(checkoutTotal, settings.currency)} အကြွေးစာရင်းထဲ ထည့်သိမ်းပါမယ်။</span></div>}<div className="payment-confirm-actions"><button className="button button-outline" type="button" onClick={() => setShowPaymentModal(false)} disabled={Boolean(pendingPersistenceSale) || savingSale}>ပြန်စစ်မယ်</button><button className="button button-primary" type="button" onClick={() => void completeSale()} disabled={savingSale || (!pendingPersistenceSale && ((paymentMethod === 'Cash' && cashShortfall > 0) || (paymentMethod === 'KPay' && !kpayReferenceCheck.ok)))}><Check size={16} /> {savingSale ? 'သိမ်းဆည်းနေသည်…' : pendingPersistenceSale ? 'Local Save ပြန်ကြိုးစားရန်' : paymentMethod === 'KPay' ? 'KPay အတည်ပြုပြီး သိမ်းမယ်' : 'Sale အတည်ပြုပြီး သိမ်းမယ်'}</button></div><small className="payment-confirm-footnote">အတည်ပြုမှသာ အရောင်းစာရင်းသိမ်းပြီး Stock လျှော့ပါမယ်။ KPay ငွေကို App က အလိုအလျောက် မလွှဲပါ။</small></section></div>}
@@ -1434,7 +1570,7 @@ const openManualCopyPrompt = (value: string, label: string) => dialog.prompt({
       {returnSale && <SaleReturnDialog key={returnSale.id} sale={returnSale} registries={stockUnitRegistries} products={products} currency={settings.currency} busy={adjustmentBusy} onClose={() => { if (!adjustmentBusy) setReturnSale(null); }} onSubmit={handleReturnSubmit} />}
       {cameraScannerTarget !== null && <Suspense fallback={<div className="modal-backdrop"><section className="modal-card"><p>Barcode Scanner ဖွင့်နေပါတယ်…</p></section></div>}><BarcodeCameraScanner open onClose={() => setCameraScannerTarget(null)} onDetected={handleCameraBarcodeDetected} title={cameraScannerTarget === 'product' ? 'ပစ္စည်း Barcode ထည့်ရန်' : 'POS Barcode ဖတ်ရန်'} /></Suspense>}
       {toast && (toastActionPage
-        ? <button className="toast toast-action" type="button" onClick={() => { setPage(toastActionPage); setMobileMenu(false); setToast(''); setToastActionPage(null); }}><PackageCheck size={17} /> {toast}</button>
+        ? <button className="toast toast-action" type="button" onClick={() => { setPage(toastActionPage); setToast(''); setToastActionPage(null); }}><PackageCheck size={17} /> {toast}</button>
         : <div className="toast"><Check size={17} /> {toast}</div>)}
     </div>
   );
