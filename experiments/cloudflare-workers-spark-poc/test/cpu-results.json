@@ -1,0 +1,25 @@
+{
+  "measuredAt": "2026-11-15T09:36:00.808Z",
+  "node": "v27.0.0-alpha.0.0.0",
+  "scenario": "20-line Cashier sale, 20 products + 20 batches + 1 registry + sale + audit",
+  "validation": {
+    "label": "parse + fingerprint (20 lines)",
+    "iterations": 3000,
+    "usPerOp": 52.1
+  },
+  "encode": {
+    "label": "encode commit writes (20 lines)",
+    "iterations": 3000,
+    "usPerOp": 76.8
+  },
+  "stringify": {
+    "label": "JSON.stringify commit body (20 lines)",
+    "iterations": 3000,
+    "usPerOp": 201.3
+  },
+  "pureJsUsPerCommit": 330.2,
+  "rsaVerifyWallUs": 109,
+  "commitJsonBytes": 39918,
+  "clientRequestBytes": 4895,
+  "caveat": "Node process CPU time; Cloudflare Workers bills JavaScript CPU only, so native crypto and network waits are not included. Not measured inside workerd."
+}
