@@ -3,6 +3,7 @@ import { firebaseApp, firebaseAuth } from './firebase';
 import { firebaseRuntime } from './firebaseRuntime';
 import { recordFirestoreActivity } from './firestoreDiagnostics';
 import { getDeviceId } from './deviceIdentity';
+import { returnSaleThroughWorker, voidSaleThroughWorker, workerSalesGate } from './workerSaleClient';
 import type { SaleReturnDisposition } from '../store/usePosStore';
 
 const FUNCTION_REGION = 'asia-southeast1';
@@ -101,7 +102,30 @@ function actorUid(): string {
 /** Cashier and Owner both use this one server-authoritative void path. */
 export async function voidSaleOnServer(input: SaleVoidRequest): Promise<SaleVoidResult> {
   const uid = actorUid();
-  if (firebaseAuth?.currentUser?.uid !== uid) throw new Error('Firebase Login မမှန်ပါ။');
+  const currentUser = firebaseAuth?.currentUser;
+  if (!currentUser || currentUser.uid !== uid) throw new Error('Firebase Login မမှန်ပါ။');
+  const worker = workerSalesGate();
+  if (worker.enabled) {
+    try {
+      const result = await voidSaleThroughWorker(
+        {
+          branchId: input.branchId,
+          saleId: input.saleId,
+          requestId: input.requestId,
+          reason: input.reason,
+          deviceId: getDeviceId(),
+        },
+        {
+          endpoint: worker.endpoint,
+          getIdToken: () => currentUser.getIdToken(),
+        },
+      );
+      recordFirestoreActivity(uid, 'write', 'sale-void-commit', Math.max(0, Number(result.writeCount) || 0));
+      return result;
+    } catch (error) {
+      throw adjustmentError(error);
+    }
+  }
   const callable = httpsCallable<Record<string, unknown>, SaleVoidResult>(
     functionsForCallables(), 'cashierSaleVoid', { timeout: 65000 },
   );
@@ -120,6 +144,32 @@ export async function voidSaleOnServer(input: SaleVoidRequest): Promise<SaleVoid
 /** Cashier and Owner both use this one server-authoritative return path. */
 export async function returnSaleOnServer(input: SaleReturnRequest): Promise<SaleReturnResult> {
   const uid = actorUid();
+  const currentUser = firebaseAuth?.currentUser;
+  if (!currentUser || currentUser.uid !== uid) throw new Error('Firebase Login မမှန်ပါ။');
+  const worker = workerSalesGate();
+  if (worker.enabled) {
+    try {
+      const result = await returnSaleThroughWorker(
+        {
+          branchId: input.branchId,
+          saleId: input.saleId,
+          requestId: input.requestId,
+          reason: input.reason,
+          deviceId: getDeviceId(),
+          items: input.items,
+          refundReference: input.refundReference || '',
+        },
+        {
+          endpoint: worker.endpoint,
+          getIdToken: () => currentUser.getIdToken(),
+        },
+      );
+      recordFirestoreActivity(uid, 'write', 'sale-return-commit', Math.max(0, Number(result.writeCount) || 0));
+      return result;
+    } catch (error) {
+      throw adjustmentError(error);
+    }
+  }
   const callable = httpsCallable<Record<string, unknown>, SaleReturnResult>(
     functionsForCallables(), 'cashierSaleReturn', { timeout: 65000 },
   );

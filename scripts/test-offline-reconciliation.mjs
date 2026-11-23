@@ -17,7 +17,9 @@ const stubs = {
     export const firestore = {};
     export const firebaseConfig = { projectId: 'demo-minimart-offline' };
     export const FIREBASE_BUSINESS_ID = 'store-mini-main';
-    export const firebaseAuth = { currentUser: null };
+    export const firebaseAuth = {
+      get currentUser() { return globalThis.__authUser ?? null; },
+    };
   `,
   firestoreDiagnostics: `
     export const recordFirestoreActivity = () => {};
@@ -54,6 +56,36 @@ await build({
   define: { 'import.meta.env': '{"DEV":true,"PROD":false,"MODE":"emulator","VITE_WORKER_SALES_URL":"","VITE_WORKER_SALES_ENABLED":"false"}' },
   plugins: [{
     name: 'offline-queue-stubs',
+    setup(builder) {
+      builder.onResolve({ filter: /^firebase\/firestore$/ }, () => ({ path: stubs['firebase/firestore'], namespace: 'stub' }));
+      builder.onResolve({ filter: /^\.\/firebase$/ }, () => ({ path: stubs.firebase, namespace: 'stub' }));
+      builder.onResolve({ filter: /^\.\/firestoreDiagnostics$/ }, () => ({ path: stubs.firestoreDiagnostics, namespace: 'stub' }));
+      builder.onResolve({ filter: /^\.\/persistentStateStorage$/ }, () => ({ path: stubs.persistentStateStorage, namespace: 'stub' }));
+      builder.onResolve({ filter: /^\.\/cashierUnitSaleSync$/ }, () => ({ path: stubs.cashierUnitSaleSync, namespace: 'stub' }));
+      builder.onLoad({ filter: /.*/, namespace: 'stub' }, (args) => ({ contents: args.path, loader: 'js' }));
+    },
+  }],
+});
+
+await build({
+  entryPoints: [resolve(root, 'src/lib/cashierSalesSync.ts')],
+  outfile: resolve(outputDirectory, 'cashierSalesSyncWorker.mjs'),
+  bundle: true,
+  format: 'esm',
+  platform: 'node',
+  target: 'node18',
+  logLevel: 'warning',
+  define: {
+    'import.meta.env': JSON.stringify({
+      DEV: false,
+      PROD: false,
+      MODE: 'staging',
+      VITE_WORKER_SALES_URL: 'https://worker.example.test/api/sales/commit',
+      VITE_WORKER_SALES_ENABLED: 'true',
+    }),
+  },
+  plugins: [{
+    name: 'offline-queue-worker-stubs',
     setup(builder) {
       builder.onResolve({ filter: /^firebase\/firestore$/ }, () => ({ path: stubs['firebase/firestore'], namespace: 'stub' }));
       builder.onResolve({ filter: /^\.\/firebase$/ }, () => ({ path: stubs.firebase, namespace: 'stub' }));

@@ -230,3 +230,74 @@ test('two Cashier devices keep independent durable queues', async () => {
   assert.deepEqual([...globalThis.__commitState.sales.keys()].sort(), ['DEVICE-A-1', 'DEVICE-B-1']);
   assert.equal(globalThis.__commitState.stock.get('P1'), 18);
 });
+
+test('worker-enabled offline queue attaches cached allowance/lease metadata and handles expired-hold as needsReview', async () => {
+  const WORKER_BUNDLE = pathToFileURL(resolve(process.cwd(), '.qa-build/cashierSalesSyncWorker.mjs')).href;
+  const workerQueue = await import(WORKER_BUNDLE);
+  globalThis.__authUser = { uid: UID_A, getIdToken: async () => 'worker-test-token' };
+  const originalFetch = globalThis.fetch;
+  try {
+    await workerQueue.saveCachedOfflineAllowance(UID_A, BRANCH, {
+      allowanceId: 'allowance-1',
+      allowanceToken: 'tok_abcdefghijklmnopqrstuvwxyz012345',
+      leaseId: 'lease-1',
+      deviceId: 'dev-12345678',
+      issuedAt: '2026-11-23T09:00:00.000Z',
+      expiresAt: '2026-11-24T09:00:00.000Z',
+      leaseExpiresAt: '2026-11-26T09:00:00.000Z',
+    });
+
+    navigator.onLine = false;
+    await workerQueue.enqueueCashierSale(sale('WORKER-OFFLINE-1'), UID_A, BRANCH);
+    const queued = await workerQueue.readCashierSaleQueue(UID_A, BRANCH);
+    assert.equal(queued.length, 1);
+    assert.deepEqual(queued[0].offlineAllowance, {
+      allowanceId: 'allowance-1',
+      allowanceToken: 'tok_abcdefghijklmnopqrstuvwxyz012345',
+      leaseId: 'lease-1',
+      deviceId: 'dev-12345678',
+    });
+
+    const requests = [];
+    globalThis.fetch = async (url, init) => {
+      requests.push({ url, body: JSON.parse(init.body) });
+      return new Response(JSON.stringify({ ok: true, result: 'created', writeCount: 4 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    navigator.onLine = true;
+    const synced = await workerQueue.flushCashierSaleQueue(UID_A, BRANCH);
+    assert.equal(synced.synced, 1);
+    assert.equal(synced.pending, 0);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, 'https://worker.example.test/api/sales/commit');
+    assert.equal(requests[0].body.allowanceId, 'allowance-1');
+    assert.equal(requests[0].body.allowanceToken, 'tok_abcdefghijklmnopqrstuvwxyz012345');
+    assert.equal(requests[0].body.leaseId, 'lease-1');
+    assert.equal(requests[0].body.deviceId, 'dev-12345678');
+
+    navigator.onLine = false;
+    await workerQueue.enqueueCashierSale(sale('WORKER-EXPIRED-1'), UID_A, BRANCH);
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      ok: false,
+      code: 'expired-hold',
+      message: 'Offline Stock Allowance သက်တမ်း ကုန်ဆုံးပြီး Stock ကို Owner စစ်ဆေးရန် ထိန်းထားပါတယ်။',
+    }), {
+      status: 409,
+      headers: { 'content-type': 'application/json' },
+    });
+    navigator.onLine = true;
+    const held = await workerQueue.flushCashierSaleQueue(UID_A, BRANCH);
+    assert.equal(held.synced, 0);
+    assert.equal(held.pending, 1);
+    assert.equal(held.needsReview, 1);
+    const pendingAfterHold = await workerQueue.readCashierSaleQueue(UID_A, BRANCH);
+    assert.equal(pendingAfterHold[0].needsReview, true);
+    assert.match(pendingAfterHold[0].lastError || '', /Owner စစ်ဆေးရန်/);
+    assert.equal(await workerQueue.readCachedOfflineAllowance(UID_A, BRANCH), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.__authUser = null;
+  }
+});

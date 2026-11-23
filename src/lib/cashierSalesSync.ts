@@ -3,8 +3,21 @@ import { firebaseAuth, firebaseConfig, firestore, FIREBASE_BUSINESS_ID } from '.
 import { recordFirestoreActivity } from './firestoreDiagnostics';
 import { readDurableValue, writeDurableValue, removeDurableValue } from './persistentStateStorage';
 import { commitCashierUnitSaleToCloud } from './cashierUnitSaleSync';
-import { commitSaleThroughWorker, WorkerSaleError, workerSalesGate } from './workerSaleClient';
+import {
+  commitSaleThroughWorker,
+  type OfflineAllowanceBinding,
+  type OfflineAllowanceItemInput,
+  WorkerSaleError,
+  workerSalesGate,
+} from './workerSaleClient';
 import type { Sale } from '../store/usePosStore';
+
+export type CachedOfflineAllowance = OfflineAllowanceBinding & {
+  issuedAt: string;
+  expiresAt: string;
+  leaseExpiresAt: string;
+  items?: OfflineAllowanceItemInput[];
+};
 
 export type CashierSaleQueueEntry = {
   sale: Sale;
@@ -14,12 +27,14 @@ export type CashierSaleQueueEntry = {
   attempts: number;
   needsReview?: boolean;
   lastError?: string;
+  offlineAllowance?: OfflineAllowanceBinding;
 };
 
 export type CashierSaleCommitResult = 'created' | 'already-committed';
 
 const QUEUE_PREFIX = 'minimart-cashier-sale-queue-v2';
 const LEGACY_QUEUE_PREFIX = 'minimart-cashier-sale-queue-v1';
+const ALLOWANCE_PREFIX = 'minimart-offline-allowance-v1';
 const QUEUE_EVENT = 'minimart-cashier-sale-queued';
 const QUEUE_STATUS_EVENT = 'minimart-cashier-sale-status';
 type FlushResult = { synced: number; pending: number; needsReview: number; rulesError: boolean };
@@ -54,6 +69,61 @@ function queueKey(uid: string, branchId: string): string {
 
 function legacyQueueKey(uid: string, branchId: string): string {
   return `${LEGACY_QUEUE_PREFIX}:${firebaseConfig.projectId}:${FIREBASE_BUSINESS_ID}:${uid}:${branchId}`;
+}
+
+function allowanceKey(uid: string, branchId: string): string {
+  return `${ALLOWANCE_PREFIX}:${firebaseConfig.projectId}:${FIREBASE_BUSINESS_ID}:${uid}:${branchId}`;
+}
+
+function isCompleteAllowanceBinding(value: unknown): value is OfflineAllowanceBinding {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<OfflineAllowanceBinding>;
+  return Boolean(
+    typeof candidate.allowanceId === 'string' && candidate.allowanceId.trim()
+    && typeof candidate.allowanceToken === 'string' && candidate.allowanceToken.trim()
+    && typeof candidate.leaseId === 'string' && candidate.leaseId.trim()
+    && typeof candidate.deviceId === 'string' && candidate.deviceId.trim(),
+  );
+}
+
+function toAllowanceBinding(value: unknown): OfflineAllowanceBinding | undefined {
+  if (!isCompleteAllowanceBinding(value)) return undefined;
+  return {
+    allowanceId: value.allowanceId.trim(),
+    allowanceToken: value.allowanceToken.trim(),
+    leaseId: value.leaseId.trim(),
+    deviceId: value.deviceId.trim(),
+  };
+}
+
+export async function saveCachedOfflineAllowance(
+  uid: string,
+  branchId: string,
+  allowance: CachedOfflineAllowance,
+): Promise<void> {
+  if (!isCompleteAllowanceBinding(allowance)) {
+    throw new Error('Offline Allowance / Lease / Device အချက်အလက် မပြည့်စုံပါ။');
+  }
+  await writeDurableValue(allowanceKey(uid, branchId), JSON.stringify(allowance));
+}
+
+export async function readCachedOfflineAllowance(
+  uid: string,
+  branchId: string,
+): Promise<CachedOfflineAllowance | null> {
+  const raw = await readDurableValue(allowanceKey(uid, branchId));
+  if (raw === null) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<CachedOfflineAllowance>;
+    if (!isCompleteAllowanceBinding(parsed)) return null;
+    return parsed as CachedOfflineAllowance;
+  } catch {
+    return null;
+  }
+}
+
+export async function clearCachedOfflineAllowance(uid: string, branchId: string): Promise<void> {
+  await removeDurableValue(allowanceKey(uid, branchId));
 }
 
 function parseQueue(value: unknown): CashierSaleQueueEntry[] {
@@ -156,7 +226,12 @@ function saleFingerprint(sale: Sale): string {
  * When that gate is explicitly enabled in a Staging build, the Worker becomes
  * the only commit path; there is no direct Cashier Firestore sale writer.
  */
-export async function commitCashierSale(sale: Sale, uid: string, branchId: string): Promise<CashierSaleCommitResult> {
+export async function commitCashierSale(
+  sale: Sale,
+  uid: string,
+  branchId: string,
+  options?: { offlineAllowance?: OfflineAllowanceBinding | null },
+): Promise<CashierSaleCommitResult> {
   if (!firestore) throw new Error('Firebase Firestore မချိတ်ဆက်ရသေးပါ။');
   if (!uid || sale.createdByUid !== uid) throw new Error('Cashier UID နဲ့ Sale UID မကိုက်ညီပါ။');
   if (!branchId || sale.branchId !== branchId) throw new Error('Cashier ရဲ့ တာဝန်ပေးထားတဲ့ Branch နဲ့ Sale Branch မကိုက်ညီပါ။');
@@ -166,9 +241,12 @@ export async function commitCashierSale(sale: Sale, uid: string, branchId: strin
   if (worker.enabled) {
     const currentUser = firebaseAuth?.currentUser;
     if (!currentUser || currentUser.uid !== uid) throw new Error('Firebase Cashier Login မမှန်ပါ။');
+    const allowance = toAllowanceBinding(options?.offlineAllowance)
+      ?? toAllowanceBinding(await readCachedOfflineAllowance(uid, branchId));
     return commitSaleThroughWorker(sale, uid, branchId, {
       endpoint: worker.endpoint,
       getIdToken: () => currentUser.getIdToken(),
+      ...(allowance ? { allowance } : {}),
     });
   }
   return commitCashierUnitSaleToCloud(sale, uid, branchId);
@@ -211,11 +289,18 @@ export async function submitCashierVoidRequestToCloud(
   recordFirestoreActivity(uid, 'write', 'cashier-void-request-write', 1);
 }
 
-export async function enqueueCashierSale(sale: Sale, uid: string, branchId: string): Promise<void> {
+export async function enqueueCashierSale(
+  sale: Sale,
+  uid: string,
+  branchId: string,
+  options?: { offlineAllowance?: OfflineAllowanceBinding | null },
+): Promise<void> {
   if (!uid || sale.createdByUid !== uid || !branchId || sale.branchId !== branchId
     || sale.status !== 'completed' || !sale.id || !Array.isArray(sale.items) || sale.items.length === 0) {
     throw new Error('Offline Queue ထဲသိမ်းမည့် Sale ၏ UID / Branch / Status မမှန်ပါ။');
   }
+  const cachedAllowance = toAllowanceBinding(options?.offlineAllowance)
+    ?? (workerSalesGate().enabled ? toAllowanceBinding(await readCachedOfflineAllowance(uid, branchId)) : undefined);
   await withQueueLock(uid, branchId, async () => {
     const queue = await readCashierSaleQueueInternal(uid, branchId);
     const existing = queue.find((entry) => entry.sale.id === sale.id);
@@ -224,7 +309,14 @@ export async function enqueueCashierSale(sale: Sale, uid: string, branchId: stri
         throw new Error('တူညီသော Sale ID အတွက် အခြားအချက်အလက်ရှိနေပါတယ်။ Duplicate Queue ကို မအစားထိုးဘဲ ရပ်ထားပါတယ်။');
       }
     } else {
-      queue.push({ sale, uid, branchId, queuedAt: new Date().toISOString(), attempts: 0 });
+      queue.push({
+        sale,
+        uid,
+        branchId,
+        queuedAt: new Date().toISOString(),
+        attempts: 0,
+        ...(cachedAllowance ? { offlineAllowance: cachedAllowance } : {}),
+      });
       await saveQueue(uid, branchId, queue);
     }
   });
@@ -256,7 +348,7 @@ export async function flushCashierSaleQueue(uid: string, branchId: string): Prom
       if (entry.needsReview) continue;
       if (!navigator.onLine) break;
       try {
-        await commitCashierSale(entry.sale, uid, branchId);
+        await commitCashierSale(entry.sale, uid, branchId, { offlineAllowance: entry.offlineAllowance });
         const remainingQueue = queue.filter((candidate) => candidate.sale.id !== entry.sale.id);
         await saveQueue(uid, branchId, remainingQueue);
         queue = remainingQueue;
@@ -265,6 +357,9 @@ export async function flushCashierSaleQueue(uid: string, branchId: string): Prom
       } catch (error) {
         const code = errorCode(error);
         const workerError = error instanceof WorkerSaleError ? error : null;
+        if (workerError && (workerError.code === 'expired-hold' || workerError.code === 'authorization-expired')) {
+          await clearCachedOfflineAllowance(uid, branchId);
+        }
         rulesError = !workerError && code === 'permission-denied';
         const review = workerError
           ? workerError.needsReview
