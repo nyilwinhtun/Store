@@ -10,6 +10,7 @@ import { clearFirestoreDiagnostics, FIRESTORE_DIAGNOSTICS_EVENT, readFirestoreDi
 import { mergeActivityLogs } from '../lib/activityLogPolicy';
 import { isManifestSupersededByReset } from '../lib/syncSafety';
 import { preloadManifest, readManifest, saveManifest } from '../lib/syncManifestStorage';
+import { useAppDialog } from './AppDialog';
 import { branchRecordKinds, sharedRecordKinds } from '../lib/syncTypes';
 import type { BranchRecordKind, CloudRead, ManifestEntry, SharedRecordKind, SyncItem, SyncKind, SyncManifest, SyncScope } from '../lib/syncTypes';
 
@@ -377,6 +378,7 @@ export function importCloudItems(items: Map<string, SyncItem>, options: { unavai
 
 
 export function CloudSyncPanel({ onOpenProfile }: { onOpenProfile?: () => void }) {
+  const dialog = useAppDialog();
   const access = useBusinessAccess();
   const [user, setUser] = useState<User | null>(null);
   const [message, setMessage] = useState('');
@@ -443,7 +445,7 @@ export function CloudSyncPanel({ onOpenProfile }: { onOpenProfile?: () => void }
             <div><small>Listener Starts</small><strong>{diagnostics.listenerStarts.toLocaleString()}</strong></div>
           </div>
           {Object.entries(diagnostics.operations).sort((a, b) => b[1] - a[1]).slice(0, 5).length > 0 && <div className="cloud-diagnostics-breakdown"><strong>အများဆုံး လုပ်ဆောင်ချက်များ</strong>{Object.entries(diagnostics.operations).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([operation, count]) => <div key={operation}><span>{operation}</span><b>{count.toLocaleString()}</b></div>)}</div>}
-          <div className="cloud-diagnostics-actions"><button className="button button-outline" type="button" onClick={() => setDiagnostics(readFirestoreDiagnostics(user.uid))}>ကောင်တာ ပြန်ဖတ်ရန်</button><button className="button button-outline" type="button" onClick={() => { if (window.confirm('ဒီ Device ၏ Local Usage ကောင်တာကိုသာ ရှင်းမလား။ Firebase Data မထိခိုက်ပါ။')) { clearFirestoreDiagnostics(user.uid); setDiagnostics(readFirestoreDiagnostics(user.uid)); } }}>Local ကောင်တာ ရှင်းရန်</button></div>
+          <div className="cloud-diagnostics-actions"><button className="button button-outline" type="button" onClick={() => setDiagnostics(readFirestoreDiagnostics(user.uid))}>ကောင်တာ ပြန်ဖတ်ရန်</button><button className="button button-outline" type="button" onClick={() => { void (async () => { if (await dialog.confirm({ title: 'Local Usage ကောင်တာ ရှင်းရန်', message: 'ဒီ Device ၏ Local Usage ကောင်တာကိုသာ ရှင်းမလား။ Firebase Data မထိခိုက်ပါ။', confirmLabel: 'ရှင်းမည်' })) { clearFirestoreDiagnostics(user.uid); setDiagnostics(readFirestoreDiagnostics(user.uid)); } })(); }}>Local ကောင်တာ ရှင်းရန်</button></div>
           <small className="field-hint">မှတ်ချက်: Query Listener မှာ Server Snapshot ရောက်လာတဲ့ Added/Modified Document များနှင့် Code မှ ခြေရာခံထားသော Transaction Read/Write များကို ခန့်မှန်းတွက်ထားပါတယ်။ Firebase Console → Firestore → Usage ကိုသာ Billable Usage အတည်ပြုချက်အဖြစ် သုံးပါ။ Local-only activity ကြောင့် Browser/Device တစ်ခုချင်းစီမှာ ကောင်တာ သီးခြားဖြစ်ပါတယ်။</small>
         </div>
       </>}

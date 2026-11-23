@@ -4,6 +4,7 @@ import { usePosStore, type ActivityLog } from '../store/usePosStore';
 import { useBusinessAccess } from '../lib/businessAccess';
 import { loadBranchActivityLogs, loadBranchSalesAudit, type SalesAuditEvent } from '../lib/salesAudit';
 import { ACTIVITY_LOG_LOCAL_LIMIT, ACTIVITY_LOG_QUERY_PAGE_SIZE, ACTIVITY_LOG_SYNC_DAYS } from '../lib/activityLogPolicy';
+import { useAppDialog } from './AppDialog';
 
 const money = (value: number, currency = 'MMK') => `${new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(Math.round(value || 0))} ${currency}`;
 const dateTime = (value: string) => new Date(value).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -16,6 +17,7 @@ const downloadCsv = (name: string, rows: unknown[][]) => {
 };
 
 export function CashManagementPage() {
+  const dialog = useAppDialog();
   const access = useBusinessAccess();
   const allShifts = usePosStore((state) => state.cashShifts);
   const allMovements = usePosStore((state) => state.cashMovements);
@@ -76,11 +78,17 @@ export function CashManagementPage() {
     addCashMovement({ shiftId: activeShift.id, direction: movementDirection, amount, note: movementNote.trim(), createdByUid: access.uid || undefined, createdByName: access.displayName || access.email || 'Cashier' });
     setMovementAmount(''); setMovementNote('');
   };
-  const closeSubmit = (event: FormEvent) => {
+  const closeSubmit = async (event: FormEvent) => {
     event.preventDefault();
     const amount = Number(closingCash);
     if (!activeShift || !Number.isFinite(amount) || amount < 0) return;
-    if (!window.confirm('ရေတွက်ထားသောငွေပမာဏဖြင့် Cash Shift ကို ပိတ်မလား။ ပိတ်ပြီးလျှင် ဒီ Shift ကို ပြန်ဖွင့်၍မရပါ။')) return;
+    const confirmed = await dialog.confirm({
+      title: 'Cash Shift ပိတ်ရန်',
+      message: 'ရေတွက်ထားသောငွေပမာဏဖြင့် Cash Shift ကို ပိတ်မလား။ ပိတ်ပြီးလျှင် ဒီ Shift ကို ပြန်ဖွင့်၍မရပါ။',
+      confirmLabel: 'Shift ပိတ်မည်',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     closeCashShift(activeShift.id, amount, totals.expected, shiftNote.trim(), { uid: access.uid, name: access.displayName || access.email || 'Owner' });
     setClosingCash(''); setShiftNote('');
   };

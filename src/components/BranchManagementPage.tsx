@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { Archive, ArchiveRestore, CheckCircle2, Plus, Store, Tag, Pencil, ShieldCheck } from 'lucide-react';
 import { DEFAULT_CASHIER_EXPENSE_APPROVAL_LIMIT, usePosStore } from '../store/usePosStore';
+import { useAppDialog } from './AppDialog';
 
-export function BranchManagementPage({ authorize, notify, onOpenBranch }: { authorize: (action: string) => boolean; notify: (message: string) => void; onOpenBranch: (branchId: string) => void }) {
+export function BranchManagementPage({ authorize, notify, onOpenBranch }: { authorize: (action: string) => Promise<boolean>; notify: (message: string) => void; onOpenBranch: (branchId: string) => void }) {
+  const dialog = useAppDialog();
   const branches = usePosStore((state) => state.branches);
   const activeBranchId = usePosStore((state) => state.activeBranchId);
   const allCategories = usePosStore((state) => state.categories);
@@ -35,9 +37,9 @@ export function BranchManagementPage({ authorize, notify, onOpenBranch }: { auth
     return counts;
   }, [products]);
 
-  const submitBranch = (event: FormEvent) => {
+  const submitBranch = async (event: FormEvent) => {
     event.preventDefault();
-    if (!authorize('ဆိုင်ခွဲအသစ် ဖန်တီးရန်')) return;
+    if (!(await authorize('ဆိုင်ခွဲအသစ် ဖန်တီးရန်'))) return;
     if (activeBranches.some((branch) => branch.name.trim().toLocaleLowerCase() === branchName.trim().toLocaleLowerCase())) {
       notify('ဒီဆိုင်အမည် ရှိပြီးသားဖြစ်ပါတယ်။');
       return;
@@ -48,47 +50,73 @@ export function BranchManagementPage({ authorize, notify, onOpenBranch }: { auth
     notify('ဆိုင်ခွဲအသစ် ဖန်တီးပြီးပါပြီ။ ဆိုင်အသစ်မှာ Product / Category သီးခြားစတင်နိုင်ပါပြီ။');
   };
 
-  const renameBranch = (id: string, name: string) => {
-    if (!authorize('ဆိုင်အမည် ပြင်ဆင်ရန်')) return;
-    const next = window.prompt('ဆိုင်အမည်အသစ်', name);
+  const renameBranch = async (id: string, name: string) => {
+    if (!(await authorize('ဆိုင်အမည် ပြင်ဆင်ရန်'))) return;
+    const next = await dialog.prompt({
+      title: 'ဆိုင်အမည် ပြင်ဆင်ရန်',
+      label: 'ဆိုင်အမည်အသစ်',
+      defaultValue: name,
+      required: true,
+      confirmLabel: 'သိမ်းဆည်းမည်',
+    });
     if (next === null || !next.trim()) return;
     if (branches.some((branch) => branch.id !== id && branch.status === 'active' && branch.name.trim().toLocaleLowerCase() === next.trim().toLocaleLowerCase())) { notify('ဒီအမည်နဲ့ Active ဆိုင်တစ်ဆိုင် ရှိပြီးသားပါ။'); return; }
     updateBranch(id, { name: next.trim() });
     notify('ဆိုင်အချက်အလက် ပြင်ဆင်ပြီးပါပြီ။')
   };
 
-  const archive = (id: string, name: string) => {
-    if (!authorize('ဆိုင်ခွဲ Archive လုပ်ရန်')) return;
-    if (!window.confirm(`${name} ကို Archive လုပ်မလား။ အရင်စာရင်းတွေကို မဖျက်ဘဲ သိမ်းထားပါမယ်။`)) return;
+  const archive = async (id: string, name: string) => {
+    if (!(await authorize('ဆိုင်ခွဲ Archive လုပ်ရန်'))) return;
+    if (!(await dialog.confirm({
+      title: 'ဆိုင်ခွဲ Archive လုပ်ရန်',
+      message: `${name} ကို Archive လုပ်မလား။ အရင်စာရင်းတွေကို မဖျက်ဘဲ သိမ်းထားပါမယ်။`,
+      confirmLabel: 'Archive လုပ်မည်',
+      tone: 'danger',
+    }))) return;
     if (!archiveBranch(id)) { notify('ဒီဆိုင်ကို Archive မလုပ်နိုင်ပါ။ Default ဆိုင်၊ လက်ရှိရွေးထားသောဆိုင် သို့မဟုတ် နောက်ဆုံး Active ဆိုင် ဖြစ်နိုင်ပါတယ်။'); return; }
     notify('ဆိုင်ခွဲကို Archive လုပ်ပြီးပါပြီ။ မူလစာရင်းများ မဖျက်ထားပါ။');
   };
 
-  const restore = (id: string, name: string) => {
-    if (!authorize('ဆိုင်ခွဲ ပြန်ဖွင့်ရန်')) return;
-    if (!window.confirm(`${name} ကို ပြန်ဖွင့်မလား။ မူလ Data တွေကို ဆက်လက်အသုံးပြုနိုင်ပါမယ်။`)) return;
+  const restore = async (id: string, name: string) => {
+    if (!(await authorize('ဆိုင်ခွဲ ပြန်ဖွင့်ရန်'))) return;
+    if (!(await dialog.confirm({
+      title: 'ဆိုင်ခွဲ ပြန်ဖွင့်ရန်',
+      message: `${name} ကို ပြန်ဖွင့်မလား။ မူလ Data တွေကို ဆက်လက်အသုံးပြုနိုင်ပါမယ်။`,
+      confirmLabel: 'ပြန်ဖွင့်မည်',
+    }))) return;
     if (!restoreBranch(id)) { notify('ဒီဆိုင်ခွဲကို ပြန်ဖွင့်မရပါ။ အမည်တူ Active ဆိုင်ရှိမရှိ စစ်ပါ။'); return; }
     notify('ဆိုင်ခွဲကို ပြန်ဖွင့်ပြီးပါပြီ။');
   };
 
-  const submitCategory = (event: FormEvent) => {
+  const submitCategory = async (event: FormEvent) => {
     event.preventDefault();
-    if (!authorize('Category အသစ် ထည့်ရန်')) return;
+    if (!(await authorize('Category အသစ် ထည့်ရန်'))) return;
     if (!addCategory(categoryName)) { notify('Category အမည် အလွတ်ဖြစ်နေခြင်း သို့မဟုတ် ရှိပြီးသားဖြစ်နေခြင်းကြောင့် မထည့်နိုင်ပါ။'); return; }
     setCategoryName(''); notify('Category အသစ် ထည့်ပြီးပါပြီ။');
   };
 
-  const editCategory = (id: string, name: string) => {
-    if (!authorize('Category ပြင်ဆင်ရန်')) return;
-    const next = window.prompt('Category အမည်အသစ်', name);
+  const editCategory = async (id: string, name: string) => {
+    if (!(await authorize('Category ပြင်ဆင်ရန်'))) return;
+    const next = await dialog.prompt({
+      title: 'Category ပြင်ဆင်ရန်',
+      label: 'Category အမည်အသစ်',
+      defaultValue: name,
+      required: true,
+      confirmLabel: 'သိမ်းဆည်းမည်',
+    });
     if (next === null || !next.trim()) return;
     if (categories.some((category) => category.id !== id && category.isActive && category.name.trim().toLocaleLowerCase() === next.trim().toLocaleLowerCase())) { notify('ဒီ Category အမည် ရှိပြီးသားပါ။'); return; }
     updateCategory(id, next.trim()); notify('Category ပြင်ဆင်ပြီးပါပြီ။');
   };
 
-  const disableCategory = (id: string, name: string) => {
-    if (!authorize('Category ပိတ်ရန်')) return;
-    if (!window.confirm(`${name} ကို အသုံးမပြုတော့ရန် ပိတ်မလား။`)) return;
+  const disableCategory = async (id: string, name: string) => {
+    if (!(await authorize('Category ပိတ်ရန်'))) return;
+    if (!(await dialog.confirm({
+      title: 'Category ပိတ်ရန်',
+      message: `${name} ကို အသုံးမပြုတော့ရန် ပိတ်မလား။`,
+      confirmLabel: 'ပိတ်မည်',
+      tone: 'danger',
+    }))) return;
     const before = categories.find((category) => category.id === id);
     archiveCategory(id);
     const after = usePosStore.getState().categories.find((category) => category.id === id);
@@ -96,8 +124,8 @@ export function BranchManagementPage({ authorize, notify, onOpenBranch }: { auth
     else notify('Category ကို ပိတ်ထားပါပြီ။ အဟောင်း Product မှတ်တမ်းတွေ မပြောင်းပါ။');
   };
 
-  const enableCategory = (id: string, name: string) => {
-    if (!authorize('Category ပြန်ဖွင့်ရန်')) return;
+  const enableCategory = async (id: string, name: string) => {
+    if (!(await authorize('Category ပြန်ဖွင့်ရန်'))) return;
     if (!restoreCategory(id)) { notify('Category ပြန်ဖွင့်မရပါ။ အမည်တူ အသုံးပြုနေသော Category ရှိမရှိ စစ်ပါ။'); return; }
     notify(`${name} Category ကို ပြန်ဖွင့်ပြီးပါပြီ။`);
   };
@@ -140,11 +168,13 @@ export function BranchManagementPage({ authorize, notify, onOpenBranch }: { auth
 
     {currentBranch && <form className="panel form-panel" onSubmit={(event) => {
       event.preventDefault();
-      if (!authorize('Cashier Expense Approval Limit ပြင်ဆင်ရန်')) return;
-      const value = Number(expenseApprovalLimit);
-      if (!Number.isSafeInteger(value) || value < 0) { notify('Approval Limit ကို 0 သို့မဟုတ် အပေါင်း ပြည့်ကိန်းဖြင့် ထည့်ပါ။'); return; }
-      updateBranch(activeBranchId, { settings: { cashierExpenseApprovalLimit: value } });
-      notify(`Cashier Expense Approval Limit ကို ${value.toLocaleString('en-US')} MMK အဖြစ် သိမ်းပြီးပါပြီ။`);
+      void (async () => {
+        if (!(await authorize('Cashier Expense Approval Limit ပြင်ဆင်ရန်'))) return;
+        const value = Number(expenseApprovalLimit);
+        if (!Number.isSafeInteger(value) || value < 0) { notify('Approval Limit ကို 0 သို့မဟုတ် အပေါင်း ပြည့်ကိန်းဖြင့် ထည့်ပါ။'); return; }
+        updateBranch(activeBranchId, { settings: { cashierExpenseApprovalLimit: value } });
+        notify(`Cashier Expense Approval Limit ကို ${value.toLocaleString('en-US')} MMK အဖြစ် သိမ်းပြီးပါပြီ။`);
+      })();
     }}>
       <div className="panel-heading"><div className="panel-icon"><ShieldCheck size={18} /></div><div><h3>Cashier အသုံးစရိတ် Approval သတ်မှတ်ချက်</h3><p>{currentBranch.name} အတွက် တစ်ကြိမ်စာ အသုံးစရိတ် Limit သတ်မှတ်ပါ။</p></div></div>
       <label>Owner Approval မလိုဘဲ Cashier ကိုယ်တိုင် မှတ်တမ်းတင်နိုင်သည့် အများဆုံးပမာဏ (MMK)

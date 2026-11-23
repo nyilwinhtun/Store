@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { firebaseAuth, firebaseConfigured } from '../lib/firebase';
 import { migrateDataUrlImage, saveLocalImage, useLocalImageSource } from '../lib/localImages';
+import { useAppDialog } from './AppDialog';
 import { usePosStore } from '../store/usePosStore';
 import { TeamAccessPanel } from './TeamAccessPanel';
 
@@ -91,7 +92,8 @@ function UploadStatus({ state }: { state: UploadState }) {
   </div>;
 }
 
-export function ProfileManagementPage({ authorize, notify }: { authorize: (action: string) => boolean; notify: (message: string) => void }) {
+export function ProfileManagementPage({ authorize, notify }: { authorize: (action: string) => Promise<boolean>; notify: (message: string) => void }) {
+  const dialog = useAppDialog();
   const branches = usePosStore((state) => state.branches);
   const activeBranchId = usePosStore((state) => state.activeBranchId);
   const branch = branches.find((item) => item.id === activeBranchId);
@@ -277,9 +279,9 @@ export function ProfileManagementPage({ authorize, notify }: { authorize: (actio
     event.target.value = '';
   };
 
-  const saveShopProfile = (event: FormEvent) => {
+  const saveShopProfile = async (event: FormEvent) => {
     event.preventDefault();
-    if (!branch || !authorize('Shop Profile ပြင်ဆင်ရန်')) return;
+    if (!branch || !(await authorize('Shop Profile ပြင်ဆင်ရန်'))) return;
     if (isShopUploading || isBannerUploading) { notify('ပုံသိမ်းဆည်းနေဆဲဖြစ်လို့ ပြီးမှ သိမ်းပါ။'); return; }
     if (!shopDraft.name.trim()) { notify('ဆိုင်အမည် ဖြည့်ပါ။'); return; }
     if (branches.some((item) => item.id !== activeBranchId && item.status === 'active' && item.name.trim().toLocaleLowerCase() === shopDraft.name.trim().toLocaleLowerCase())) { notify('ဒီအမည်နဲ့ Active ဆိုင် ရှိပြီးသားပါ။'); return; }
@@ -293,7 +295,7 @@ export function ProfileManagementPage({ authorize, notify }: { authorize: (actio
 
   const saveOwnerProfile = async (event: FormEvent) => {
     event.preventDefault();
-    if (!authorize('Owner Profile ပြင်ဆင်ရန်')) return;
+    if (!(await authorize('Owner Profile ပြင်ဆင်ရန်'))) return;
     if (isOwnerUploading) { notify('Profile ဓာတ်ပုံ တင်နေဆဲဖြစ်လို့ ပြီးမှ သိမ်းပါ။'); return; }
     if (!ownerDraft.displayName.trim()) { notify('Owner အမည် ဖြည့်ပါ။'); return; }
     setBusy(true); setError('');
@@ -310,7 +312,13 @@ export function ProfileManagementPage({ authorize, notify }: { authorize: (actio
 
   const signOutAccount = async () => {
     if (!firebaseAuth) return;
-    if (!window.confirm('ဒီလုပ်ဆောင်ချက်သည် လက်ရှိ Minimart App တစ်ခုလုံး၏ Firebase Account ကို Sign Out လုပ်ပါမည်။ ပြီးနောက် Website ရဲ့ ပထမစာမျက်နှာရှိ Login နေရာသို့ ပြန်ရောက်ပါမယ်။ ဆက်လုပ်မလား။')) return;
+    const confirmed = await dialog.confirm({
+      title: 'Sign Out အတည်ပြုရန်',
+      message: 'ဒီလုပ်ဆောင်ချက်သည် လက်ရှိ Minimart App တစ်ခုလုံး၏ Firebase Account ကို Sign Out လုပ်ပါမည်။ ပြီးနောက် Website ရဲ့ ပထမစာမျက်နှာရှိ Login နေရာသို့ ပြန်ရောက်ပါမယ်။ ဆက်လုပ်မလား။',
+      confirmLabel: 'Sign Out လုပ်မည်',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
     setBusy(true); setError(''); setStatus('');
     try { await signOut(firebaseAuth); setStatus('App Firebase Account မှ Sign Out လုပ်ပြီးပါပြီ။'); }
     catch (reason) { setError(getErrorMessage(reason)); }

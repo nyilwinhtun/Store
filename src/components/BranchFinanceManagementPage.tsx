@@ -6,7 +6,7 @@ import { KPAY_QR_ACCEPT, isAllowedKpayQrDataUrl, nextKpayQrVersion, prepareKpayQ
 import { isKpayEnabled } from '../lib/kpayAccount';
 import type { BranchFinanceChannel, BranchFinanceDirection, BranchFinanceReconciliationRecord, CashierSettlementRecord } from '../types/finance';
 
-type Props = { authorize: (action: string) => boolean; notify: (message: string) => void };
+type Props = { authorize: (action: string) => Promise<boolean>; notify: (message: string) => void };
 type LedgerRow = {
   id: string; date: string; channel: BranchFinanceChannel; direction: BranchFinanceDirection;
   amount: number; title: string; source: string; reference?: string; note?: string; actor?: string;
@@ -215,15 +215,15 @@ export function BranchFinanceManagementPage({ authorize, notify }: Props) {
     }
   };
 
-  const removeQr = () => {
-    if (!authorize('Branch KPay QR ကို ဖယ်ရှားရန်')) return;
+  const removeQr = async () => {
+    if (!(await authorize('Branch KPay QR ကို ဖယ်ရှားရန်'))) return;
     setKpayQrDataUrl('');
     setKpayQrDirty(true);
   };
 
-  const saveAccount = (event: FormEvent) => {
+  const saveAccount = async (event: FormEvent) => {
     event.preventDefault();
-    if (!activeBranch || !authorize('Branch KPay Account နှင့် Ledger အဖွင့်လက်ကျန် ပြင်ဆင်ရန်')) return;
+    if (!activeBranch || !(await authorize('Branch KPay Account နှင့် Ledger အဖွင့်လက်ကျန် ပြင်ဆင်ရန်'))) return;
     const cash = Number(openingCash); const kpay = Number(openingKPay);
     if (!Number.isSafeInteger(cash) || cash < 0 || !Number.isSafeInteger(kpay) || kpay < 0) { notify('အဖွင့်လက်ကျန်ကို သုည သို့မဟုတ် အပေါင်းပြည့်ကိန်းဖြင့် ဖြည့်ပါ။'); return; }
     if ((kpayAccountName.trim() && !kpayAccountNumber.trim()) || (!kpayAccountName.trim() && kpayAccountNumber.trim())) { notify('KPay Account အမည်နဲ့ ဖုန်းနံပါတ်ကို နှစ်ခုလုံးဖြည့်ပါ၊ သို့မဟုတ် နှစ်ခုလုံးရှင်းပါ။'); return; }
@@ -250,9 +250,9 @@ export function BranchFinanceManagementPage({ authorize, notify }: Props) {
     notify('Branch KPay Account၊ QR နဲ့ Ledger အဖွင့်လက်ကျန် သိမ်းပြီးပါပြီ။ Cloud Sync ပြီးနောက် ဒီ Branch ရဲ့ Cashier ဖုန်းမှာလည်း ရောက်ပါမယ်။');
   };
 
-  const addManualEntry = (event: FormEvent) => {
+  const addManualEntry = async (event: FormEvent) => {
     event.preventDefault();
-    if (!authorize('Branch Cash / KPay Ledger မှတ်တမ်းတင်ရန်')) return;
+    if (!(await authorize('Branch Cash / KPay Ledger မှတ်တမ်းတင်ရန်'))) return;
     const amount = Number(entryAmount);
     if (!Number.isSafeInteger(amount) || amount <= 0 || !entryNote.trim()) { notify('ပမာဏနဲ့ အကြောင်းအရင်းကို မှန်ကန်စွာ ဖြည့်ပါ။'); return; }
     if (channel === 'kpay' && (!activeBranch?.settings.kpayAccountNumber || !entryReference.trim())) { notify('KPay Account အရင်သတ်မှတ်ပြီး Transaction ID ဖြည့်ပါ။'); return; }
@@ -263,9 +263,9 @@ export function BranchFinanceManagementPage({ authorize, notify }: Props) {
     setEntryAmount(''); setEntryNote(''); setEntryReference(''); notify('Cash / KPay Ledger မှတ်တမ်း သိမ်းပြီးပါပြီ။');
   };
 
-  const reconcileAdvance = (event: FormEvent) => {
+  const reconcileAdvance = async (event: FormEvent) => {
     event.preventDefault();
-    if (!selectedAdvance || !authorize('Cashier Cash Advance ရှင်းတမ်း မှတ်တမ်းတင်ရန်')) return;
+    if (!selectedAdvance || !(await authorize('Cashier Cash Advance ရှင်းတမ်း မှတ်တမ်းတင်ရန်'))) return;
     const amount = reconcileKind === 'expense-applied' ? Number(chosenExpense?.amount || 0) : Number(reconcileAmount);
     if (!Number.isSafeInteger(amount) || amount <= 0 || amount > selectedAdvance.outstanding) { notify('ရှင်းတမ်းပမာဏကို ကျန်ရှိ Cash Advance ထက် မပိုအောင် ဖြည့်ပါ။'); return; }
     if (reconcileKind === 'expense-applied' && !chosenExpense) { notify('Advance နဲ့ ချိတ်မယ့် Branch-funded Expense ကို ရွေးပါ။'); return; }
@@ -285,9 +285,9 @@ export function BranchFinanceManagementPage({ authorize, notify }: Props) {
     notify('Cash Advance ရှင်းတမ်း မှတ်တမ်းတင်ပြီးပါပြီ။');
   };
 
-  const saveDailyReconciliation = (event: FormEvent) => {
+  const saveDailyReconciliation = async (event: FormEvent) => {
     event.preventDefault();
-    if (!activeBranch || !authorize('နေ့စဉ် Cash / KPay စာရင်းတိုက်စစ်ရန်')) return;
+    if (!activeBranch || !(await authorize('နေ့စဉ် Cash / KPay စာရင်းတိုက်စစ်ရန်'))) return;
     if (reconciliationDate < ledgerStartDate || reconciliationDate > dayKey()) { notify(`တိုက်စစ်မည့်နေ့ကို Ledger စတင်ရက် ${ledgerStartDate} မှ ယနေ့ ${dayKey()} အတွင်း ရွေးပါ။`); return; }
     const cash = Number(actualCashBalance);
     const hasKPay = !!activeBranch.settings.kpayAccountNumber?.trim();

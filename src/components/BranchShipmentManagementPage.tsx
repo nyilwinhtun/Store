@@ -7,6 +7,7 @@ import { AUTO_SYNC_STATUS_EVENT, readAutoSyncStatus, type AutoSyncStatus } from 
 import { formatQuantity, isValidQuantity, quantityMin, quantityModeForProduct, summarizeQuantities } from '../lib/quantity';
 import { UNIT_TRANSFER_UNSUPPORTED_MESSAGE, productIsUnitTracked } from '../lib/unitTracking';
 import { usePosStore, type BranchShipmentDraftItem, type BranchStockShipment, type Product, type StockBatch } from '../store/usePosStore';
+import { useAppDialog } from './AppDialog';
 
 const dateLabel = (value: string) => new Date(value).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 type DraftLine = { key: string; productId: string; quantity: string };
@@ -86,7 +87,8 @@ function ShipmentHistoryCard({ shipment, onApprove, onCancel, busy }: {
   </article>;
 }
 
-export function BranchShipmentManagementPage({ authorize, notify }: { authorize: (action: string) => boolean; notify: (message: string) => void }) {
+export function BranchShipmentManagementPage({ authorize, notify }: { authorize: (action: string) => Promise<boolean>; notify: (message: string) => void }) {
+  const dialog = useAppDialog();
   const access = useBusinessAccess();
   const branches = usePosStore((state) => state.branches);
   const products = usePosStore((state) => state.products);
@@ -198,7 +200,7 @@ export function BranchShipmentManagementPage({ authorize, notify }: { authorize:
       notify('ယခင် Shipment ရဲ့ Cloud အတည်ပြုချက် မသေချာသေးပါ။ Shipment History ကို အရင်စစ်ပြီး Page ကို Refresh လုပ်ပါ။ ထပ်မပို့ပါနှင့်။');
       return;
     }
-    if (!authorize('ဆိုင်ခွဲသို့ ပစ္စည်းအများအပြား ပို့ရန်')) return;
+    if (!(await authorize('ဆိုင်ခွဲသို့ ပစ္စည်းအများအပြား ပို့ရန်'))) return;
     const inputItems: BranchShipmentDraftItem[] = [];
     const batchMismatchWarnings: string[] = [];
     const used = new Set<string>();
@@ -225,8 +227,16 @@ export function BranchShipmentManagementPage({ authorize, notify }: { authorize:
       inputItems.push({ sourceProductId: product.id, quantity });
     }
     if (inputItems.length === 0) { notify('ပို့မည့်ပစ္စည်း အနည်းဆုံးတစ်မျိုး ရွေးပါ။'); return; }
-    if (batchMismatchWarnings.length && !window.confirm(`အောက်ပါပစ္စည်းများ၏ Batch စာရင်းကို Product Stock နဲ့ တိုက်စစ်ရန် လိုအပ်ပါတယ်။\n${batchMismatchWarnings.join('\n')}\n\nမပိုပို့နိုင်အောင် System က ကန့်သတ်ထားပါတယ်။ Audit မှတ်တမ်းတင်ပြီး ဆက်လုပ်မလား?`)) return;
-    if (!window.confirm(`${sourceBranch.name} မှ ${destinationBranch.name} သို့ ပစ္စည်း ${inputItems.length} မျိုး ပို့မလား?\n\nပို့ပြီးတာနဲ့ Source Stock လျှော့ပါမယ်။ Destination Stock က Receiver လက်ခံမှု အပြည့်ဖြစ်မှ Auto Complete ဖြစ်မယ်။ ကွာခြားချက်ရှိမှ Owner Review လုပ်ပါမယ်။`)) return;
+    if (batchMismatchWarnings.length && !(await dialog.confirm({
+      title: 'Batch စာရင်း တိုက်စစ်ရန်',
+      message: `အောက်ပါပစ္စည်းများ၏ Batch စာရင်းကို Product Stock နဲ့ တိုက်စစ်ရန် လိုအပ်ပါတယ်။\n${batchMismatchWarnings.join('\n')}\n\nမပိုပို့နိုင်အောင် System က ကန့်သတ်ထားပါတယ်။ Audit မှတ်တမ်းတင်ပြီး ဆက်လုပ်မလား?`,
+      confirmLabel: 'ဆက်လုပ်မည်',
+    }))) return;
+    if (!(await dialog.confirm({
+      title: 'ကုန်ပစ္စည်းပို့မှု အတည်ပြုရန်',
+      message: `${sourceBranch.name} မှ ${destinationBranch.name} သို့ ပစ္စည်း ${inputItems.length} မျိုး ပို့မလား?\n\nပို့ပြီးတာနဲ့ Source Stock လျှော့ပါမယ်။ Destination Stock က Receiver လက်ခံမှု အပြည့်ဖြစ်မှ Auto Complete ဖြစ်မယ်။ ကွာခြားချက်ရှိမှ Owner Review လုပ်ပါမယ်။`,
+      confirmLabel: 'ပို့မည်',
+    }))) return;
 
     setBusy(true);
     const beforeState = usePosStore.getState();
@@ -285,8 +295,8 @@ export function BranchShipmentManagementPage({ authorize, notify }: { authorize:
     }
   };
 
-  const approve = (shipment: BranchStockShipment) => {
-    if (busy || shipment.status !== 'received' || !authorize('ပစ္စည်းရောက်ရှိမှု အတည်ပြုရန်')) return;
+  const approve = async (shipment: BranchStockShipment) => {
+    if (busy || shipment.status !== 'received' || !(await authorize('ပစ္စည်းရောက်ရှိမှု အတည်ပြုရန်'))) return;
     const hasUnitTrackedItem = shipment.items.some((item) => {
       const sourceProduct = products.find((product) => product.id === item.sourceProductId && product.branchId === shipment.fromBranchId);
       return productIsUnitTracked(sourceProduct || { id: item.sourceProductId }, stockUnitRegistries, shipment.fromBranchId);
@@ -306,7 +316,11 @@ export function BranchShipmentManagementPage({ authorize, notify }: { authorize:
       const received = shipment.receivedItems?.find((entry) => entry.sourceProductId === item.sourceProductId);
       return !received || received.receivedQuantity !== item.quantity || received.damagedQuantity > 0;
     });
-    if (!window.confirm(`${shipment.shipmentNo} ကို Owner အဖြစ် အတည်ပြုမလား?\n\n${mismatch ? 'ပို့ထားတဲ့အရေအတွက်နဲ့ လက်ခံရရှိမှု မတူတာ/ပျက်စီးမှု ရှိပါတယ်။ အောက်ပါ Accepted Quantity ကိုသာ Stock ထဲ ထည့်ပါမယ်။' : 'လက်ခံရရှိသော ပစ္စည်းအားလုံးကို Destination Stock ထဲ ထည့်ပါမယ်။'}\n\nအတည်ပြုပြီးနောက် ဒီ Shipment ကို ထပ်မံ Approve လုပ်လို့မရပါ။`)) return;
+    if (!(await dialog.confirm({
+      title: 'Owner Approval အတည်ပြုရန်',
+      message: `${shipment.shipmentNo} ကို Owner အဖြစ် အတည်ပြုမလား?\n\n${mismatch ? 'ပို့ထားတဲ့အရေအတွက်နဲ့ လက်ခံရရှိမှု မတူတာ/ပျက်စီးမှု ရှိပါတယ်။ အောက်ပါ Accepted Quantity ကိုသာ Stock ထဲ ထည့်ပါမယ်။' : 'လက်ခံရရှိသော ပစ္စည်းအားလုံးကို Destination Stock ထဲ ထည့်ပါမယ်။'}\n\nအတည်ပြုပြီးနောက် ဒီ Shipment ကို ထပ်မံ Approve လုပ်လို့မရပါ။`,
+      confirmLabel: 'အတည်ပြုမည်',
+    }))) return;
     setBusy(true);
     try {
       const user = firebaseAuth?.currentUser;
@@ -315,9 +329,16 @@ export function BranchShipmentManagementPage({ authorize, notify }: { authorize:
     } finally { setBusy(false); }
   };
 
-  const cancel = (shipment: BranchStockShipment) => {
-    if (busy || shipment.status !== 'dispatched' || !authorize('ကုန်ပို့မှု ပယ်ဖျက်ရန်')) return;
-    const reason = window.prompt(`${shipment.shipmentNo} ကို မလက်ခံရသေးခင် ပယ်ဖျက်မယ်။ အကြောင်းပြချက် ထည့်ပါ။`, 'ပို့မှု မှားယွင်းသွားသည်');
+  const cancel = async (shipment: BranchStockShipment) => {
+    if (busy || shipment.status !== 'dispatched' || !(await authorize('ကုန်ပို့မှု ပယ်ဖျက်ရန်'))) return;
+    const reason = await dialog.prompt({
+      title: 'ကုန်ပို့မှု ပယ်ဖျက်ရန်',
+      message: `${shipment.shipmentNo} ကို မလက်ခံရသေးခင် ပယ်ဖျက်မယ်။ အကြောင်းပြချက် ထည့်ပါ။`,
+      label: 'အကြောင်းပြချက်',
+      defaultValue: 'ပို့မှု မှားယွင်းသွားသည်',
+      required: true,
+      confirmLabel: 'ပယ်ဖျက်မည်',
+    });
     if (!reason?.trim()) return;
     setBusy(true);
     try {

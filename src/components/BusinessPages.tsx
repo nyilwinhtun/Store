@@ -5,6 +5,7 @@ import { usePosStore } from '../store/usePosStore';
 import { formatQuantity, isValidQuantity, quantityModeForProduct, quantityStep } from '../lib/quantity';
 import { productIsUnitTracked } from '../lib/unitTracking';
 import { useBusinessAccess } from '../lib/businessAccess';
+import { useAppDialog } from './AppDialog';
 import {
   buildCustomerStatement,
   buildCustomerStatementText,
@@ -78,6 +79,7 @@ function StatementDocument({ statement, paper, variant }: { statement: CustomerS
 }
 
 export function CustomerCreditPage() {
+  const dialog = useAppDialog();
   const customers = usePosStore((state) => state.customers);
   const branches = usePosStore((state) => state.branches);
   const allSales = usePosStore((state) => state.sales);
@@ -235,13 +237,19 @@ export function CustomerCreditPage() {
     setStatementPrinting(true);
   };
 
-  const editCustomer = (customer: (typeof customers)[number]) => {
-    const nextName = window.prompt('Customer အမည်', customer.name);
-    if (nextName === null || !nextName.trim()) return;
-    const nextPhone = window.prompt('ဖုန်းနံပါတ်', customer.phone); if (nextPhone === null) return;
-    const nextAddress = window.prompt('လိပ်စာ', customer.address); if (nextAddress === null) return;
-    const nextNote = window.prompt('မှတ်ချက်', customer.note); if (nextNote === null) return;
-    if (!updateCustomer(customer.id, { name: nextName.trim(), phone: nextPhone.trim(), address: nextAddress.trim(), note: nextNote.trim() })) {
+  const editCustomer = async (customer: (typeof customers)[number]) => {
+    const values = await dialog.form({
+      title: 'Customer အချက်အလက် ပြင်ဆင်ရန်',
+      fields: [
+        { name: 'name', label: 'Customer အမည်', defaultValue: customer.name, required: true },
+        { name: 'phone', label: 'ဖုန်းနံပါတ်', defaultValue: customer.phone },
+        { name: 'address', label: 'လိပ်စာ', defaultValue: customer.address },
+        { name: 'note', label: 'မှတ်ချက်', defaultValue: customer.note },
+      ],
+      confirmLabel: 'သိမ်းဆည်းမည်',
+    });
+    if (!values || !values.name.trim()) return;
+    if (!updateCustomer(customer.id, { name: values.name.trim(), phone: values.phone.trim(), address: values.address.trim(), note: values.note.trim() })) {
       window.alert('ဒီဖုန်းနံပါတ် သို့မဟုတ် Customer အချက်အလက်နဲ့ တူညီတဲ့ Shared Customer ရှိပြီးသားပါ။ ရှိပြီးသား Customer ကို ပြင်ဆင်အသုံးပြုပါ။');
     }
   };
@@ -359,6 +367,7 @@ export function CustomerCreditPage() {
 }
 
 export function SupplierPurchasePage() {
+  const dialog = useAppDialog();
   const allProducts = usePosStore((state) => state.products);
   const suppliers = usePosStore((state) => state.suppliers);
   const allPurchases = usePosStore((state) => state.purchases);
@@ -428,13 +437,19 @@ export function SupplierPurchasePage() {
     return { branch, purchaseCount: rows.length, total, paid, returned, due: total - paid - returned };
   });
 
-  const editSupplier = (supplier: (typeof suppliers)[number]) => {
-    const nextName = window.prompt('Supplier အမည်', supplier.name);
-    if (nextName === null || !nextName.trim()) return;
-    const nextPhone = window.prompt('ဖုန်းနံပါတ်', supplier.phone); if (nextPhone === null) return;
-    const nextAddress = window.prompt('လိပ်စာ', supplier.address); if (nextAddress === null) return;
-    const nextNote = window.prompt('မှတ်ချက်', supplier.note); if (nextNote === null) return;
-    if (!updateSupplier(supplier.id, { name: nextName.trim(), phone: nextPhone.trim(), address: nextAddress.trim(), note: nextNote.trim() })) window.alert('ဒီဖုန်းနံပါတ် သို့မဟုတ် Supplier အချက်အလက်နဲ့ တူညီတဲ့ Shared Supplier ရှိပြီးသားပါ။');
+  const editSupplier = async (supplier: (typeof suppliers)[number]) => {
+    const values = await dialog.form({
+      title: 'Supplier အချက်အလက် ပြင်ဆင်ရန်',
+      fields: [
+        { name: 'name', label: 'Supplier အမည်', defaultValue: supplier.name, required: true },
+        { name: 'phone', label: 'ဖုန်းနံပါတ်', defaultValue: supplier.phone },
+        { name: 'address', label: 'လိပ်စာ', defaultValue: supplier.address },
+        { name: 'note', label: 'မှတ်ချက်', defaultValue: supplier.note },
+      ],
+      confirmLabel: 'သိမ်းဆည်းမည်',
+    });
+    if (!values || !values.name.trim()) return;
+    if (!updateSupplier(supplier.id, { name: values.name.trim(), phone: values.phone.trim(), address: values.address.trim(), note: values.note.trim() })) window.alert('ဒီဖုန်းနံပါတ် သို့မဟုတ် Supplier အချက်အလက်နဲ့ တူညီတဲ့ Shared Supplier ရှိပြီးသားပါ။');
   };
   const addSupplierSubmit = (event: FormEvent) => {
     event.preventDefault();
@@ -463,13 +478,18 @@ export function SupplierPurchasePage() {
     if (!saved) { window.alert('ပေးချေငွေ မသိမ်းနိုင်ပါ။ Invoice ကျန်ငွေနှင့် လက်ရှိဆိုင်ကို ပြန်စစ်ပါ။'); return; }
     setSupplierPaymentAmount(''); setSupplierPaymentNote(''); setSupplierPaymentMethod('Cash');
   };
-  const purchaseReturnSubmit = (event: FormEvent) => {
+  const purchaseReturnSubmit = async (event: FormEvent) => {
     event.preventDefault();
     const qty = Number(returnQuantity);
     const returnProduct = selectedReturnPurchase ? products.find((product) => product.id === selectedReturnPurchase.productId) : undefined;
     if (!selectedReturnPurchase || !selectedReturnBatch || !returnProduct || !isValidQuantity(qty, quantityModeForProduct(returnProduct)) || qty > selectedReturnBatch.quantity) return;
     if (productIsUnitTracked(returnProduct, stockUnitRegistries, activeBranchId)) { window.alert('ဒီ Product မှာ Unit Barcode Tracking အသုံးပြုနေပါတယ်။ Barcode တစ်ခုချင်း Supplier Return မလုပ်နိုင်သေးတဲ့အတွက် စာရင်းမပြောင်းလဲထားပါ။'); return; }
-    if (!window.confirm(`${selectedReturnPurchase.productName} ${qty} ခုကို Supplier သို့ ပြန်ပို့မလား။ Stock လျှော့ပြီး Supplier လက်ကျန်ကို ပြန်တွက်ပါမယ်။`)) return;
+    if (!(await dialog.confirm({
+      title: 'Supplier သို့ ပြန်ပို့ရန်',
+      message: `${selectedReturnPurchase.productName} ${qty} ခုကို Supplier သို့ ပြန်ပို့မလား။ Stock လျှော့ပြီး Supplier လက်ကျန်ကို ပြန်တွက်ပါမယ်။`,
+      confirmLabel: 'ပြန်ပို့မည်',
+      tone: 'danger',
+    }))) return;
     addPurchaseReturn(selectedReturnPurchase.id, qty, returnNote);
     setReturnQuantity('1'); setReturnNote('');
   };
