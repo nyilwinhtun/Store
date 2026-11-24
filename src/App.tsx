@@ -50,6 +50,10 @@ import { exportLocalImages, importLocalImages, migrateDataUrlImage, useLocalImag
 import { isAllowedKpayQrDataUrl } from './lib/kpayQr';
 import { isKpayEnabled } from './lib/kpayAccount';
 import { cleanQuantity, formatQuantity, hasLegacyFractionalQuantity, inferQuantityMode, isValidQuantity, quantityModeForProduct, quantityStep, type QuantityMode } from './lib/quantity';
+import {
+  cartItemTotalQuantityForProduct, cartLineKey, computeAmountBundleQuantity, DEFAULT_AMOUNT_PRESETS,
+  formatAmountPresets, formatReceiptItemDetail, isStickUnit, normalizeSticksPerPack, parseAmountPresets,
+} from './lib/cigaretteSelling';
 import { getStorageHealth, STORAGE_HEALTH_EVENT } from './lib/persistentStateStorage';
 import { announceLocalDataReplacement, markLocalDataReplacement } from './lib/syncSafety';
 import { makeReceiptNo } from './lib/receiptNumber';
@@ -61,11 +65,15 @@ type ProductDraft = {
   name: string; sku: string; barcode: string; category: string; costPrice: string; retailPrice: string;
   wholesalePrice: string; stock: string; lowStockAt: string; unit: string; quantityMode: QuantityMode;
   tracksIndividualUnits: boolean;
+  sticksPerPack: string; stickProductId: string; stickPrice: string;
+  amountSaleEnabled: boolean; amountPresetsText: string;
 };
 
 const emptyDraft: ProductDraft = {
   name: '', sku: '', barcode: '', category: 'အထွေထွေ', costPrice: '0', retailPrice: '0',
   wholesalePrice: '0', stock: '0', lowStockAt: '5', unit: 'ခု', quantityMode: 'whole', tracksIndividualUnits: false,
+  sticksPerPack: '', stickProductId: '', stickPrice: '',
+  amountSaleEnabled: false, amountPresetsText: formatAmountPresets([...DEFAULT_AMOUNT_PRESETS]),
 };
 const money = (value: number, currency = 'MMK') => `${new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(Math.round(value || 0))} ${currency}`;
 const dateLabel = (value: string) => new Date(value).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -140,6 +148,8 @@ function App() {
   const [toastActionPage, setToastActionPage] = useState<Page | null>(null);
   const [installPrompt, setInstallPrompt] = useState<(() => Promise<void>) | null>(null);
   const [showProductModal, setShowProductModal] = useState(false);
+  const [amountModalProduct, setAmountModalProduct] = useState<Product | null>(null);
+  const [customAmountMmk, setCustomAmountMmk] = useState('1000');
   const [returnSale, setReturnSale] = useState<Sale | null>(null);
   const [adjustmentBusy, setAdjustmentBusy] = useState(false);
   const [cameraScannerTarget, setCameraScannerTarget] = useState<'product' | 'pos' | 'inventory' | null>(null);
@@ -235,6 +245,8 @@ function App() {
   const deleteProduct = usePosStore((s) => s.deleteProduct);
   const addCategory = usePosStore((s) => s.addCategory);
   const adjustStock = usePosStore((s) => s.adjustStock);
+  const convertPackToSticks = usePosStore((s) => s.convertPackToSticks);
+  const createLinkedStickProduct = usePosStore((s) => s.createLinkedStickProduct);
   const addSale = usePosStore((s) => s.addSale);
   const updateSaleCloudSyncStatus = usePosStore((s) => s.updateSaleCloudSyncStatus);
   const voidSale = usePosStore((s) => s.voidSale);
@@ -632,12 +644,18 @@ const openManualCopyPrompt = (value: string, label: string) => dialog.prompt({
   };
   const openEditProduct = (product: Product) => {
     setEditingProduct(product);
+    const linkedStick = product.stickProductId ? productMap.get(product.stickProductId) : undefined;
     setProductDraft({
       name: product.name, sku: product.sku, barcode: product.barcode || '', category: product.category,
       costPrice: String(product.costPrice), retailPrice: String(product.retailPrice),
       wholesalePrice: String(product.wholesalePrice), stock: String(product.stock),
       lowStockAt: String(product.lowStockAt), unit: product.unit, quantityMode: quantityModeForProduct(product),
       tracksIndividualUnits: productIsUnitTracked(product, stockUnitRegistries, activeBranchId),
+      sticksPerPack: product.sticksPerPack ? String(product.sticksPerPack) : '',
+      stickProductId: product.stickProductId || '',
+      stickPrice: linkedStick ? String(linkedStick.retailPrice) : '',
+      amountSaleEnabled: !!product.amountSaleEnabled,
+      amountPresetsText: formatAmountPresets(product.amountPresets),
     });
     setShowProductModal(true);
   };
@@ -646,7 +664,8 @@ const openManualCopyPrompt = (value: string, label: string) => dialog.prompt({
     if (!productDraft.name.trim()) { notify('ပစ္စည်းအမည် ဖြည့်ပါ။'); return; }
     if (!categories.includes(productDraft.category)) { notify('လက်ရှိဆိုင်အတွက် Category ရွေးပါ သို့မဟုတ် အသစ်ထည့်ပါ။'); return; }
     const unit = productDraft.unit.trim() || 'ခု';
-    const quantityMode = productDraft.quantityMode || inferQuantityMode(unit);
+    const amountSaleEnabled = productDraft.amountSaleEnabled;
+    const quantityMode = amountSaleEnabled ? 'decimal' : (productDraft.quantityMode || inferQuantityMode(unit));
     const tracksIndividualUnits = productDraft.tracksIndividualUnits;
     const stock = Math.max(0, Number(productDraft.stock) || 0);
     const lowStockAt = Math.max(0, Number(productDraft.lowStockAt) || 0);
@@ -662,6 +681,19 @@ const openManualCopyPrompt = (value: string, label: string) => dialog.prompt({
       return;
     }
     if (!isValidQuantity(lowStockAt, quantityMode, true)) { notify('Low Stock Alert ကို သတ်မှတ်ထားသော ယူနစ်ပုံစံနဲ့ ကိုက်ညီအောင် ထည့်ပါ။'); return; }
+    const sticksPerPack = normalizeSticksPerPack(productDraft.sticksPerPack);
+    if (productDraft.sticksPerPack.trim() !== '' && !sticksPerPack) {
+      notify('တစ်ဘူးပါ အလိပ်အရေအတွက်ကို ၂ မှ ၁၀၀၀ အတွင်း ပြည့်ကိန်းဖြင့် ထည့်ပါ။');
+      return;
+    }
+    const autoCreateStick = productDraft.stickProductId === '__auto__';
+    const stickPriceNum = Math.max(0, Number(productDraft.stickPrice) || 0);
+    if (autoCreateStick && (!(sticksPerPack && sticksPerPack >= 2) || !(stickPriceNum > 0))) {
+      notify('အလိပ် Product အလိုအလျောက်ဖန်တီးရန် တစ်ဘူးပါ အလိပ်အရေအတွက်နဲ့ တစ်လိပ်ဈေးကို ထည့်ပါ။');
+      return;
+    }
+    const stickProductId = !autoCreateStick && productDraft.stickProductId ? productDraft.stickProductId : undefined;
+    const amountPresets = amountSaleEnabled ? parseAmountPresets(productDraft.amountPresetsText) : undefined;
     const payload = {
       name: productDraft.name.trim(), sku: productDraft.sku.trim() || `SKU-${Date.now().toString().slice(-6)}`,
       barcode: normalizeBarcode(productDraft.barcode) || undefined,
@@ -669,6 +701,10 @@ const openManualCopyPrompt = (value: string, label: string) => dialog.prompt({
       retailPrice: Math.max(0, Number(productDraft.retailPrice) || 0),
       wholesalePrice: Math.max(0, Number(productDraft.wholesalePrice) || 0),
       stock, lowStockAt, unit, quantityMode, tracksIndividualUnits,
+      sticksPerPack,
+      stickProductId,
+      amountSaleEnabled: amountSaleEnabled || undefined,
+      amountPresets,
     };
     const normalizedSku = normalizeBarcode(payload.sku);
     const normalizedBarcode = normalizeBarcode(payload.barcode);
@@ -682,35 +718,52 @@ const openManualCopyPrompt = (value: string, label: string) => dialog.prompt({
     if (duplicateCode) { notify('ဒီဆိုင်မှာ SKU သို့မဟုတ် Barcode နံပါတ် တူညီပြီးသားရှိပါတယ်။'); return; }
     if (editingProduct) {
       updateProduct(editingProduct.id, payload);
+      if (autoCreateStick) createLinkedStickProduct(editingProduct.id, stickPriceNum);
     } else if (!addProduct(payload)) {
       notify('ဒီဆိုင်မှာ SKU / Barcode တူညီပြီးသားရှိပါတယ်။');
       return;
+    } else if (autoCreateStick) {
+      const created = usePosStore.getState().products.find((p) => p.branchId === activeBranchId && normalizeBarcode(p.sku) === normalizedSku);
+      if (created) createLinkedStickProduct(created.id, stickPriceNum);
     }
     setShowProductModal(false);
     notify(editingProduct ? 'ပစ္စည်းအချက်အလက် ပြင်ဆင်ပြီးပါပြီ။' : 'ပစ္စည်းအသစ် ထည့်ပြီးပါပြီ။');
   };
 
   const isTrackedProduct = (product: Product) => productIsUnitTracked(product, stockUnitRegistries, activeBranchId);
-  const addToCart = (product: Product) => {
+  const addToCart = (product: Product, options?: { mode?: PriceMode; quantity?: number; amountBased?: boolean }) => {
     if (isTrackedProduct(product)) { notify('ဒီပစ္စည်းကို Sticker Barcode Scan ဖြင့်သာ Cart ထဲထည့်နိုင်ပါတယ်။ Factory EAN/UPC နဲ့ မရောင်းပါ။'); return; }
-    if (!(product.retailPrice > 0)) { notify('ဒီပစ္စည်းရဲ့ လက်လီဈေး မသတ်မှတ်ရသေးပါ။ Inventory မှာ ဈေးထည့်ပါ။'); return; }
+    const targetMode: PriceMode = options?.mode || 'retail';
+    const unitPrice = targetMode === 'wholesale' ? product.wholesalePrice : product.retailPrice;
+    if (!(unitPrice > 0)) { notify(targetMode === 'wholesale' ? 'ဒီပစ္စည်းရဲ့ လက်ကား/ဘူးဈေး မသတ်မှတ်ရသေးပါ။' : 'ဒီပစ္စည်းရဲ့ လက်လီဈေး မသတ်မှတ်ရသေးပါ။ Inventory မှာ ဈေးထည့်ပါ။'); return; }
     const available = sellableStock(product);
     if (available <= 0) { notify('ရောင်းချနိုင်သော Stock မရှိပါ။ Expiry Date ကို စစ်ဆေးပါ။'); return; }
     const mode = quantityModeForProduct(product);
+    const requestedQty = options?.quantity !== undefined ? cleanQuantity(options.quantity, mode) : (mode === 'decimal' ? Math.min(1, cleanQuantity(available, 'decimal')) : 1);
+    if (!(requestedQty > 0)) return;
     setCart((current) => {
-      const found = current.find((item) => item.productId === product.id);
+      const totalUsed = cartItemTotalQuantityForProduct(current, product.id);
+      const found = current.find((item) => item.productId === product.id && item.mode === targetMode);
       if (found) {
-        const increment = mode === 'decimal' ? 0.1 : 1;
-        if (found.quantity + increment > available + 1e-8) { notify('သက်တမ်းမကုန်သေးသော လက်ကျန် Stock ထက် ပိုမရောင်းနိုင်ပါ။'); return current; }
-        return current.map((item) => item.productId === product.id ? { ...item, quantity: cleanQuantity(item.quantity + increment, mode) } : item);
+        const increment = options?.quantity !== undefined ? requestedQty : (mode === 'decimal' ? 0.1 : 1);
+        if (totalUsed + increment > available + 1e-8) { notify('သက်တမ်းမကုန်သေးသော လက်ကျန် Stock ထက် ပိုမရောင်းနိုင်ပါ။'); return current; }
+        return current.map((item) => (item.productId === product.id && item.mode === targetMode)
+          ? { ...item, quantity: cleanQuantity(item.quantity + increment, mode), ...(options?.amountBased ? { amountBased: true } : {}) }
+          : item);
       }
-      const initialQty = mode === 'decimal' ? Math.min(1, cleanQuantity(available, 'decimal')) : 1;
+      if (totalUsed + requestedQty > available + 1e-8) { notify('သက်တမ်းမကုန်သေးသော လက်ကျန် Stock ထက် ပိုမရောင်းနိုင်ပါ။'); return current; }
       return [...current, {
-        productId: product.id, name: product.name, sku: product.sku, quantity: initialQty,
-        unitPrice: product.retailPrice, costPrice: product.costPrice, mode: 'retail', stockAtAdd: product.stock,
+        productId: product.id, name: product.name, sku: product.sku, quantity: requestedQty,
+        unitPrice, costPrice: product.costPrice, mode: targetMode, stockAtAdd: product.stock,
         unit: product.unit, quantityMode: mode, priceGroupId: product.priceGroupId, priceVersion: product.priceVersion,
+        ...(options?.amountBased ? { amountBased: true } : {}),
       }];
     });
+  };
+  const addAmountToCart = (product: Product, amountMmk: number) => {
+    const calc = computeAmountBundleQuantity(amountMmk, product.retailPrice);
+    if (!calc.ok) { notify(calc.message); return; }
+    addToCart(product, { mode: 'retail', quantity: calc.quantity, amountBased: true });
   };
   const addScannedProductToCart = (rawCode: string) => {
     const code = normalizeBarcode(rawCode);
@@ -788,32 +841,45 @@ const openManualCopyPrompt = (value: string, label: string) => dialog.prompt({
       setInventorySearch(normalizeBarcode(rawCode));
     }
   };
-  const changeCartQty = (productId: string, quantity: number) => {
+  const changeCartQty = (productId: string, quantity: number, lineMode?: PriceMode) => {
     const product = productMap.get(productId);
-    if (quantity <= 0) { setCart((items) => items.filter((item) => item.productId !== productId)); return; }
+    const matchesLine = (item: CartItem) => item.productId === productId && (lineMode ? item.mode === lineMode : true);
+    if (quantity <= 0) { setCart((items) => items.filter((item) => !matchesLine(item))); return; }
     const tracked = !!product && isTrackedProduct(product);
     if (tracked) {
-      const current = cart.find((item) => item.productId === productId);
+      const current = cart.find(matchesLine);
       if (!current) return;
       if (quantity > current.quantity + 1e-8) { notify('Unit Tracking ပစ္စည်းကို Sticker Barcode Scan ဖြင့်သာ တစ်ခုချင်း ထပ်ထည့်နိုင်ပါတယ်။'); return; }
       const removeCount = Math.round(current.quantity - quantity);
       const selections = current.stockUnitSelections || [];
       if (removeCount <= 0) return;
       if (selections.length < removeCount) { notify('Barcode Unit Selection နဲ့ ပမာဏ မကိုက်ညီပါ။ Cart ကို ရှင်းပြီး ပြန် Scan ပါ။'); return; }
-      setCart((items) => items.map((item) => item.productId === productId ? {
+      setCart((items) => items.map((item) => matchesLine(item) ? {
         ...item, quantity: Math.round(quantity * 1000) / 1000,
         stockUnitSelections: selections.slice(0, selections.length - removeCount),
       } : item));
       return;
     }
-    if (product && (!isValidQuantity(quantity, quantityModeForProduct(product)) || quantity > sellableStock(product) + 1e-8)) { notify(quantityModeForProduct(product) === 'whole' ? 'ဒီပစ္စည်းကို အရေအတွက်ပြည့်ကိန်းသာ ရောင်းနိုင်ပါတယ်။' : 'အရေအတွက်ကို ဒသမ ၃ နေရာအထိ ထည့်ပါ။ Stock ထက် မပိုရပါ။'); return; }
-    setCart((items) => items.map((item) => item.productId === productId ? { ...item, quantity: Math.round(quantity * 1000) / 1000 } : item));
+    const otherLinesQty = cart.filter((item) => item.productId === productId && !matchesLine(item)).reduce((sum, item) => sum + item.quantity, 0);
+    if (product && (!isValidQuantity(quantity, quantityModeForProduct(product)) || (otherLinesQty + quantity) > sellableStock(product) + 1e-8)) { notify(quantityModeForProduct(product) === 'whole' ? 'ဒီပစ္စည်းကို အရေအတွက်ပြည့်ကိန်းသာ ရောင်းနိုင်ပါတယ်။' : 'အရေအတွက်ကို ဒသမ ၃ နေရာအထိ ထည့်ပါ။ Stock ထက် မပိုရပါ။'); return; }
+    setCart((items) => items.map((item) => matchesLine(item) ? { ...item, quantity: Math.round(quantity * 1000) / 1000 } : item));
   };
   const changePriceMode = (item: CartItem, mode: PriceMode) => {
+    if (item.mode === mode) return;
     const product = productMap.get(item.productId);
     const unitPrice = mode === 'retail' ? (product?.retailPrice ?? item.unitPrice) : (product?.wholesalePrice ?? item.unitPrice);
     if (!(unitPrice > 0)) { notify(mode === 'retail' ? 'လက်လီဈေး မသတ်မှတ်ရသေးပါ။' : 'လက်ကားဈေး မသတ်မှတ်ရသေးပါ။'); return; }
-    setCart((items) => items.map((entry) => entry.productId === item.productId ? { ...entry, mode, unitPrice } : entry));
+    setCart((items) => {
+      const targetExists = items.some((entry) => entry.productId === item.productId && entry.mode === mode);
+      if (targetExists) {
+        return items
+          .map((entry) => entry.productId === item.productId && entry.mode === mode
+            ? { ...entry, quantity: cleanQuantity(entry.quantity + item.quantity, product ? quantityModeForProduct(product) : 'whole') }
+            : entry)
+          .filter((entry) => !(entry.productId === item.productId && entry.mode === item.mode));
+      }
+      return items.map((entry) => (entry.productId === item.productId && entry.mode === item.mode) ? { ...entry, mode, unitPrice } : entry);
+    });
   };
   const setAside = (item: CartItem) => {
     if ((item.stockUnitSelections || []).length) {
@@ -821,7 +887,7 @@ const openManualCopyPrompt = (value: string, label: string) => dialog.prompt({
       return;
     }
     holdItem(item);
-    setCart((items) => items.filter((entry) => entry.productId !== item.productId));
+    setCart((items) => items.filter((entry) => !(entry.productId === item.productId && entry.mode === item.mode)));
     notify('မယူတော့သောပစ္စည်းစာရင်းထဲ သိမ်းပြီးပါပြီ။');
   };
   const restoreHeld = (productId: string) => {
@@ -891,7 +957,7 @@ const openManualCopyPrompt = (value: string, label: string) => dialog.prompt({
     }
 
     if (cart.some((item) => !Number.isFinite(item.unitPrice) || item.unitPrice <= 0)) { notify('ဈေးနှုန်း မသတ်မှတ်ရသေးသော ပစ္စည်းရှိနေပါတယ်။ အရင်ဆုံး ဈေးဖြည့်ပါ။'); return false; }
-    const insufficient = cart.find((item) => { const product = productMap.get(item.productId); return !product || sellableStock(product) < item.quantity; });
+    const insufficient = cart.find((item) => { const product = productMap.get(item.productId); return !product || sellableStock(product) + 1e-8 < cartItemTotalQuantityForProduct(cart, item.productId); });
     if (insufficient) { notify(`${insufficient.name} Stock မလုံလောက်ပါ။`); return false; }
     const seenUnits = new Set<string>();
     for (const item of cart) {
@@ -1560,13 +1626,159 @@ const openManualCopyPrompt = (value: string, label: string) => dialog.prompt({
                   ? <EmptyState icon={<AlertTriangle size={25} />} title="Cloud မှ ပစ္စည်းစာရင်း မရနိုင်သေးပါ" text={`${autoSyncStatus.message} Internet ချိတ်ဆက်မှုကို စစ်ပြီး ပြန်စမ်းပါ။`} />
                   : <EmptyState icon={<ShoppingBag size={25} />} title={`${activeBranch?.name || 'ဒီဆိုင်'} တွင် ပစ္စည်း မရှိသေးပါ`} text={otherBranchProducts.length > 0 ? `ဒီဆိုင်အတွက် ပြသနိုင်တဲ့ Product မရှိပါ။ ${otherBranchProducts.map((branch) => `${branch.name} (${branch.count} မျိုး)`).join(' · ')} တွင် ပစ္စည်းရှိပါတယ်။ ဆိုင်ခွဲ ပြောင်းပြီး POS ပြန်ဖွင့်ပါ။` : 'အရင်ဆုံး ဒီဆိုင်ရဲ့ Inventory ထဲမှာ ပစ္စည်းထည့်ပြီးမှ POS မှာ ရောင်းချနိုင်ပါမယ်။'} action={otherBranchProducts.length > 0 ? 'ဆိုင်ခွဲ ရွေးချယ်ရန်' : 'ပစ္စည်းထည့်ရန်'} onAction={() => setPage(otherBranchProducts.length > 0 ? 'overview' : 'inventory')} />) :
                 filteredProducts.length === 0 ? <EmptyState icon={<Search size={25} />} title="မတွေ့ပါ" text="ရှာဖွေမှု စကားလုံး သို့မဟုတ် Category ကို ပြောင်းကြည့်ပါ။" /> :
-                <><div className="product-grid">{visibleProducts.map((product) => <button key={product.id} className={`product-tile ${!isProductSelectable(product, expiredBatchUnits) ? 'out-of-stock' : ''}`} onClick={() => addToCart(product)} disabled={!isProductSelectable(product, expiredBatchUnits)}><div className="product-tile-icon"><ShoppingBag size={22} /></div><strong>{product.name}</strong><span className="product-sku">{product.sku}</span><div className="product-tile-bottom"><b>{product.retailPrice > 0 ? money(product.retailPrice, settings.currency) : 'ဈေးမသတ်မှတ်ရသေး'}</b><span className={sellableStock(product) <= product.lowStockAt ? 'stock-warning' : 'stock-ok'}>{formatQuantity(sellableStock(product), quantityModeForProduct(product))} {product.unit} ရောင်းနိုင်</span></div></button>)}</div>{visibleProducts.length < filteredProducts.length && <div className="product-grid-more"><span>ပြသနေသည် {visibleProducts.length} / {filteredProducts.length}</span><button className="button button-outline" type="button" onClick={() => setVisibleProductCount((count) => count + POS_PRODUCT_PAGE_SIZE)}>နောက်ထပ် {Math.min(POS_PRODUCT_PAGE_SIZE, filteredProducts.length - visibleProducts.length)} မျိုး ပြမယ်</button></div>}</>}
+                <><div className="product-grid">{visibleProducts.map((product) => {
+                  const selectable = isProductSelectable(product, expiredBatchUnits);
+                  const linkedStick = product.stickProductId ? productMap.get(product.stickProductId) : undefined;
+                  const stickHasPackShortcut = isStickUnit(product.unit) && (product.sticksPerPack || 0) >= 2 && product.wholesalePrice > 0;
+                  const showCigaretteDual = !!linkedStick || stickHasPackShortcut;
+                  const showAmountPresets = !showCigaretteDual && !!product.amountSaleEnabled;
+                  if (showCigaretteDual) {
+                    const packCount = product.sticksPerPack || 20;
+                    const stickSellable = linkedStick ? sellableStock(linkedStick) : sellableStock(product);
+                    const packSellable = linkedStick ? sellableStock(product) : Math.floor(sellableStock(product) / packCount);
+                    const canOpenPack = !cashierMode && !!linkedStick && stickSellable <= 0 && packSellable >= 1;
+                    return (
+                      <div key={product.id} className={`product-tile product-tile-multi ${!selectable && stickSellable <= 0 ? 'out-of-stock' : ''}`}>
+                        <div className="product-tile-head">
+                          <div className="product-tile-icon"><ShoppingBag size={20} /></div>
+                          <span className={sellableStock(product) <= product.lowStockAt ? 'stock-warning' : 'stock-ok'}>
+                            {linkedStick
+                              ? `${formatQuantity(packSellable, quantityModeForProduct(product))} ${product.unit} · ${formatQuantity(stickSellable, quantityModeForProduct(linkedStick))} ${linkedStick.unit}`
+                              : `${formatQuantity(sellableStock(product), quantityModeForProduct(product))} ${product.unit}`}
+                          </span>
+                        </div>
+                        <strong>{product.name}</strong>
+                        <span className="product-sku">{product.sku}</span>
+                        <div className="product-quick-actions">
+                          <button
+                            type="button"
+                            className="product-quick-btn"
+                            disabled={linkedStick ? !selectable : packSellable < 1}
+                            onClick={() => linkedStick ? addToCart(product) : addToCart(product, { mode: 'wholesale', quantity: packCount })}
+                          >
+                            <span>ဘူး ({packCount} လိပ်)</span>
+                            <b>{money(linkedStick ? product.retailPrice : product.wholesalePrice * packCount, settings.currency)}</b>
+                          </button>
+                          <button
+                            type="button"
+                            className="product-quick-btn product-quick-btn-alt"
+                            disabled={linkedStick ? (stickSellable <= 0 && !canOpenPack) : !selectable}
+                            onClick={() => {
+                              if (linkedStick) {
+                                if (stickSellable > 0) {
+                                  addToCart(linkedStick);
+                                } else if (!cashierMode && packSellable >= 1) {
+                                  const res = convertPackToSticks(product.id, 1);
+                                  notify(res.message);
+                                  if (res.ok) {
+                                    const updatedStick = usePosStore.getState().products.find((p) => p.id === linkedStick.id && p.branchId === activeBranchId);
+                                    if (updatedStick) addToCart(updatedStick);
+                                  }
+                                } else {
+                                  notify('အလိပ် Stock မရှိပါ — Owner မှ ဘူးဖောက်ပေးရန် လိုအပ်ပါတယ်။');
+                                }
+                              } else {
+                                addToCart(product, { mode: 'retail', quantity: 1 });
+                              }
+                            }}
+                          >
+                            <span>{canOpenPack ? '၁ ဘူးဖောက် + လိပ်' : 'အလိပ်'}</span>
+                            <b>{money(linkedStick ? linkedStick.retailPrice : product.retailPrice, settings.currency)}</b>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  }
+                  if (showAmountPresets) {
+                    const presets = product.amountPresets && product.amountPresets.length > 0 ? product.amountPresets : [...DEFAULT_AMOUNT_PRESETS];
+                    return (
+                      <div key={product.id} className={`product-tile product-tile-multi ${!selectable ? 'out-of-stock' : ''}`}>
+                        <div className="product-tile-head">
+                          <div className="product-tile-icon"><ShoppingBag size={20} /></div>
+                          <span className={sellableStock(product) <= product.lowStockAt ? 'stock-warning' : 'stock-ok'}>
+                            {formatQuantity(sellableStock(product), quantityModeForProduct(product))} {product.unit}
+                          </span>
+                        </div>
+                        <strong>{product.name}</strong>
+                        <span className="product-sku">{product.sku} · {money(product.retailPrice, settings.currency)}/{product.unit}</span>
+                        <div className="product-quick-actions product-quick-amounts">
+                          {presets.slice(0, 3).map((amount) => (
+                            <button
+                              key={amount}
+                              type="button"
+                              className="product-quick-btn"
+                              disabled={!selectable}
+                              onClick={() => addAmountToCart(product, amount)}
+                            >
+                              <b>{new Intl.NumberFormat('en-US').format(amount)}</b>
+                            </button>
+                          ))}
+                          <button
+                            type="button"
+                            className="product-quick-btn product-quick-btn-alt"
+                            disabled={!selectable}
+                            onClick={() => { setAmountModalProduct(product); setCustomAmountMmk(String(presets[1] || presets[0] || 1000)); }}
+                          >
+                            <span>စိတ်ကြိုက်</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  }
+                  return (
+                    <button key={product.id} className={`product-tile ${!selectable ? 'out-of-stock' : ''}`} onClick={() => addToCart(product)} disabled={!selectable}>
+                      <div className="product-tile-icon"><ShoppingBag size={22} /></div>
+                      <strong>{product.name}</strong>
+                      <span className="product-sku">{product.sku}</span>
+                      <div className="product-tile-bottom">
+                        <b>{product.retailPrice > 0 ? money(product.retailPrice, settings.currency) : 'ဈေးမသတ်မှတ်ရသေး'}</b>
+                        <span className={sellableStock(product) <= product.lowStockAt ? 'stock-warning' : 'stock-ok'}>{formatQuantity(sellableStock(product), quantityModeForProduct(product))} {product.unit} ရောင်းနိုင်</span>
+                      </div>
+                    </button>
+                  );
+                })}</div>{visibleProducts.length < filteredProducts.length && <div className="product-grid-more"><span>ပြသနေသည် {visibleProducts.length} / {filteredProducts.length}</span><button className="button button-outline" type="button" onClick={() => setVisibleProductCount((count) => count + POS_PRODUCT_PAGE_SIZE)}>နောက်ထပ် {Math.min(POS_PRODUCT_PAGE_SIZE, filteredProducts.length - visibleProducts.length)} မျိုး ပြမယ်</button></div>}</>}
             </div>
             <aside className="cart-panel">
               <div className="cart-title"><div><h2><ShoppingCart size={19} /> စျေးခြင်း</h2><p>{cart.length} မျိုး</p></div><button className="text-button" type="button" disabled={cart.length === 0} onClick={() => { void (async () => { if (cart.length > 0 && !(await dialog.confirm({ title: 'စျေးခြင်းရှင်းရန်', message: `စျေးခြင်းထဲမှ ပစ္စည်း ${cart.length} မျိုးကို ဖယ်ရှားမလား။`, confirmLabel: 'ရှင်းမည်', tone: 'danger' }))) return; setCart([]); setDiscount('0'); setPaymentMethod('Cash'); setCashReceived(''); setKpayTransactionReference(''); setShowPaymentModal(false); setMobileCustomerOpen(false); })(); }}>ရှင်းမယ်</button></div>
               <div className="cart-scroll">
               <div className={`cart-customer ${(!customer.trim() || customer.trim() === 'လက်လီဝယ်သူ') && !mobileCustomerOpen && paymentMethod !== 'Credit' ? 'cart-customer-compact' : ''}`}><button className="cart-customer-toggle" type="button" onClick={() => setMobileCustomerOpen(true)}><b>ဝယ်သူ: {customer.trim() || 'လက်လီဝယ်သူ'}</b><span>ပြောင်းရန်</span></button><label>ဝယ်သူ</label><input list="pos-customer-options" value={customer} onChange={(e) => { setCustomer(e.target.value); setCashReceived(''); }} placeholder="ဝယ်သူအမည်" /><datalist id="pos-customer-options">{customers.map((entry) => <option key={entry.id} value={entry.name} />)}</datalist><div className="payment-switch"><button type="button" className={paymentMethodsEnabled && paymentMethod === 'Cash' ? 'selected' : ''} disabled={!paymentMethodsEnabled} onClick={() => { setPaymentMethod('Cash'); setCashReceived(''); setKpayTransactionReference(''); }}><Wallet size={15} /> ငွေသား</button><button type="button" className={paymentMethodsEnabled && paymentMethod === 'KPay' ? 'selected' : ''} disabled={!kpaySelectable} title={!kpaySelectable ? (kpayUnavailable ? describeKpayUnavailable(kpayUnavailable) : 'Cart ထဲ ပစ္စည်းထည့်မှ KPay ရွေးနိုင်ပါမယ်။') : ''} onClick={() => { setPaymentMethod('KPay'); setCashReceived(''); }}><CreditCard size={15} /> KPay</button><button type="button" className={paymentMethodsEnabled && paymentMethod === 'Credit' ? 'selected' : ''} disabled={!paymentMethodsEnabled} onClick={() => { setPaymentMethod('Credit'); setCashReceived(''); setKpayTransactionReference(''); setMobileCustomerOpen(true); }}><CreditCard size={15} /> အကြွေး</button></div>{cart.length === 0 && <small className="payment-switch-hint">ပစ္စည်းထည့်ပြီးမှ ငွေပေးချေနည်း ရွေးနိုင်ပါမယ်။</small>}{kpayUnavailable && <small className="payment-switch-hint payment-switch-warning">KPay ရွေးလို့မရပါ — {describeKpayUnavailable(kpayUnavailable)}</small>}</div>
-              <div className="cart-items">{cart.length === 0 ? <div className="cart-empty"><ShoppingCart size={27} /><strong>Cart ထဲမှာ ဘာမှမရှိသေးပါ</strong><span>ဘယ်ဘက်က ပစ္စည်းတစ်ခုကို ရွေးပါ။</span></div> : cart.map((item) => <div className="cart-line" key={item.productId}><div className="cart-line-top"><div><strong>{item.name}</strong><small>{item.sku}{(item.stockUnitSelections || []).length ? ` · Sticker Unit ${item.stockUnitSelections!.length}` : ''}</small></div><button className="icon-btn danger-icon" onClick={() => setAside(item)} title="Not buying list ထဲသိမ်း" aria-label="Not buying list ထဲသိမ်း"><ArchiveRestore size={16} /></button></div><div className="price-mode"><button className={item.mode === 'retail' ? 'active' : ''} onClick={() => changePriceMode(item, 'retail')}>လက်လီ</button><button className={item.mode === 'wholesale' ? 'active' : ''} onClick={() => changePriceMode(item, 'wholesale')}>လက်ကား</button><span>{money(item.unitPrice, settings.currency)}</span></div><div className="cart-line-bottom"><div className="qty-control"><button type="button" aria-label="အရေအတွက် လျှော့ရန်" onClick={() => { const product = productMap.get(item.productId); const step = product && quantityModeForProduct(product) === 'decimal' ? 0.1 : 1; changeCartQty(item.productId, Math.round((item.quantity - step) * 1000) / 1000); }}><Minus size={14} /></button><b>{formatQuantity(item.quantity, productMap.get(item.productId) ? quantityModeForProduct(productMap.get(item.productId)!) : 'whole')}</b><button type="button" aria-label="အရေအတွက် တိုးရန်" disabled={!!productMap.get(item.productId) && isTrackedProduct(productMap.get(item.productId)!)} title={productMap.get(item.productId) && isTrackedProduct(productMap.get(item.productId)!) ? 'Sticker Barcode ထပ်မံ Scan ပါ' : undefined} onClick={() => { const product = productMap.get(item.productId); if (product && isTrackedProduct(product)) { notify('ဒီပစ္စည်းအတွက် Sticker Barcode တစ်ခု ထပ်မံ Scan ပါ။'); return; } const step = product && quantityModeForProduct(product) === 'decimal' ? 0.1 : 1; changeCartQty(item.productId, Math.round((item.quantity + step) * 1000) / 1000); }}><Plus size={14} /></button></div><strong>{money(item.unitPrice * item.quantity, settings.currency)}</strong></div></div>)}</div>
+              <div className="cart-items">{cart.length === 0 ? <div className="cart-empty"><ShoppingCart size={27} /><strong>Cart ထဲမှာ ဘာမှမရှိသေးပါ</strong><span>ဘယ်ဘက်က ပစ္စည်းတစ်ခုကို ရွေးပါ။</span></div> : cart.map((item) => {
+                const product = productMap.get(item.productId);
+                const qMode = product ? quantityModeForProduct(product) : (item.quantityMode || 'whole');
+                const smallestPreset = product?.amountPresets?.[0] || DEFAULT_AMOUNT_PRESETS[0];
+                const step = item.amountBased && product && product.retailPrice > 0
+                  ? cleanQuantity(smallestPreset / product.retailPrice, 'decimal')
+                  : (qMode === 'decimal' ? 0.1 : 1);
+                const lineAmount = Math.round(item.unitPrice * item.quantity * 100) / 100;
+                return (
+                  <div className="cart-line" key={cartLineKey(item)}>
+                    <div className="cart-line-top">
+                      <div>
+                        <strong>{item.name}</strong>
+                        <small>
+                          {item.sku}
+                          {item.amountBased ? ` · ${money(lineAmount, settings.currency)} ဖိုး` : ''}
+                          {(item.stockUnitSelections || []).length ? ` · Sticker Unit ${item.stockUnitSelections!.length}` : ''}
+                        </small>
+                      </div>
+                      <button className="icon-btn danger-icon" onClick={() => setAside(item)} title="Not buying list ထဲသိမ်း" aria-label="Not buying list ထဲသိမ်း"><ArchiveRestore size={16} /></button>
+                    </div>
+                    <div className="price-mode">
+                      <button className={item.mode === 'retail' ? 'active' : ''} onClick={() => changePriceMode(item, 'retail')}>လက်လီ</button>
+                      <button className={item.mode === 'wholesale' ? 'active' : ''} onClick={() => changePriceMode(item, 'wholesale')}>လက်ကား</button>
+                      <span>{money(item.unitPrice, settings.currency)}</span>
+                    </div>
+                    <div className="cart-line-bottom">
+                      <div className="qty-control">
+                        <button type="button" aria-label="အရေအတွက် လျှော့ရန်" onClick={() => changeCartQty(item.productId, Math.round((item.quantity - step) * 1000) / 1000, item.mode)}><Minus size={14} /></button>
+                        <b>{item.amountBased ? `${money(lineAmount, settings.currency)}` : `${formatQuantity(item.quantity, qMode)} ${item.unit || ''}`.trim()}</b>
+                        <button type="button" aria-label="အရေအတွက် တိုးရန်" disabled={!!product && isTrackedProduct(product)} title={product && isTrackedProduct(product) ? 'Sticker Barcode ထပ်မံ Scan ပါ' : undefined} onClick={() => { if (product && isTrackedProduct(product)) { notify('ဒီပစ္စည်းအတွက် Sticker Barcode တစ်ခု ထပ်မံ Scan ပါ။'); return; } changeCartQty(item.productId, Math.round((item.quantity + step) * 1000) / 1000, item.mode); }}><Plus size={14} /></button>
+                      </div>
+                      <strong>{money(lineAmount, settings.currency)}</strong>
+                    </div>
+                  </div>
+                );
+              })}</div>
               {heldItems.length > 0 && <div className={`held-section ${showHeldItems ? 'held-section-open' : ''}`}><button className="held-heading held-toggle" type="button" onClick={() => setShowHeldItems((current) => !current)} aria-expanded={showHeldItems}><span>မယူတော့သောပစ္စည်းစာရင်း</span><b>{heldItems.length} မျိုး</b><ChevronDown size={15} className={showHeldItems ? 'held-chevron-open' : ''} /></button>{showHeldItems && <div className="held-list">{heldItems.map((item) => <div className="held-row" key={item.productId}><span>{item.name} × {formatQuantity(item.quantity, productMap.get(item.productId) ? quantityModeForProduct(productMap.get(item.productId)!) : 'whole')}</span><button type="button" onClick={() => restoreHeld(item.productId)}>Cart ထဲပြန်ထည့်</button></div>)}</div>}</div>}
               </div>
               <div className="cart-summary"><div><span>ပစ္စည်းဖိုး</span><b>{money(subtotal, settings.currency)}</b></div><div className="discount-row"><label htmlFor="discount-input">လျှော့ဈေး (MMK){cashierMode ? ` · Max ${maxCashierDiscountPercent}%` : ''}</label><input id="discount-input" type="number" min="0" max={maxAllowedDiscount} value={discount} onChange={(e) => setDiscount(e.target.value)} /></div><div className="total-row"><span>စုစုပေါင်း</span><strong>{money(checkoutTotal, settings.currency)}</strong></div><div className="printer-tools"><label>Receipt စက္ကူ<select aria-label="Receipt paper width" value={paperWidth} onChange={(event) => setPaperWidth(event.target.value === '58' ? '58' : '80')}><option value="58">58 mm</option><option value="80">80 mm</option></select></label><button className="button button-outline printer-test-button" type="button" onClick={printTestReceipt}><Printer size={15} /> Test Print</button></div><button className="button button-primary checkout-button" type="button" onClick={startCheckout} disabled={!cart.length}><Check size={18} /> {cart.length > 0 ? `ငွေရှင်းမယ် · ${money(checkoutTotal, settings.currency)}` : 'ငွေရှင်းမယ်'}</button></div>
@@ -1578,7 +1790,7 @@ const openManualCopyPrompt = (value: string, label: string) => dialog.prompt({
           {page === 'transfers' && <StockTransferPage authorize={authorize} notify={notify} onViewDestination={viewBranchInventory} />}
           {page === 'shipments' && <BranchShipmentManagementPage authorize={authorize} notify={notify} />}
           {page === 'branchReceiving' && <BranchStockReceivingPage notify={notify} />}
-          {page === 'inventory' && <section className="page-stack"><div className="section-heading"><div><h2>ပစ္စည်းစာရင်း</h2><p>ပစ္စည်း၊ ဈေးနှုန်းနှင့် လက်ကျန် Stock ကို စီမံပါ။</p></div><div className="heading-actions">{canManageSharedPricing && <button className="button button-outline" onClick={() => navTo('pricing')}><CircleDollarSign size={15} /> မျှဝေဈေးနှုန်း</button>}<button className="button button-outline" onClick={exportProductsCsv}><Download size={15} /> CSV</button><button className="button button-primary" onClick={openNewProduct}><Plus size={17} /> ပစ္စည်းအသစ်</button></div></div><div className="mini-stats"><MiniStat icon={<Boxes size={17} />} label="ပစ္စည်းအမျိုးအစား" value={String(products.length)} /><MiniStat icon={<PackagePlus size={17} />} label="လက်ကျန်ရှိသော ပစ္စည်း" value={String(stockedProductCount)} /><MiniStat icon={<AlertTriangle size={17} />} label="Stock နည်းနေသောပစ္စည်း" value={String(lowStockProducts.length)} tone="warning" /></div><div className="panel">{legacyFractionalStockCount > 0 && <div className="backup-warning"><AlertTriangle size={16} /><span>အရေအတွက်ယူနစ်ဖြစ်သော်လည်း ဒသမလက်ကျန်ရှိသော Product {legacyFractionalStockCount} မျိုးရှိပါတယ်။ လက်တွေ့ရေတွက်ပြီး Stock ± ဖြင့် အမှန်တကယ်လက်ကျန်ကို ပြင်ပါ။ App က ဒသမကို အလိုအလျောက် Round မလုပ်ပါ။</span></div>}<div className="table-toolbar"><div className="search-box"><Search size={16} /><input value={inventorySearch} onChange={(e) => setInventorySearch(e.target.value)} placeholder="ပစ္စည်း / SKU / Barcode ရှာရန်..." aria-label="Inventory ပစ္စည်း၊ SKU သို့မဟုတ် Barcode ရှာရန်" />{inventorySearch && <button className="pos-search-clear" type="button" title="ရှာဖွေမှု ရှင်းရန်" aria-label="ရှာဖွေမှု ရှင်းရန်" onClick={() => setInventorySearch('')}><X size={15} /></button>}<button className="barcode-inline-camera" type="button" title="Camera ဖြင့် Barcode ရှာရန်" aria-label="Camera ဖြင့် Barcode ရှာရန်" onClick={() => setCameraScannerTarget('inventory')}><Camera size={16} /></button></div><span className="subtle-count">{inventoryProducts.length} မျိုး</span></div><div className="table-wrap table-cards"><table><thead><tr><th>ပစ္စည်း</th><th>Category</th><th>Cost</th><th>လက်လီ</th><th>လက်ကား</th><th>ရောင်းနိုင် / စုစုပေါင်း</th><th>လုပ်ဆောင်ချက်</th></tr></thead><tbody>{(inventoryExpanded ? inventoryProducts : inventoryProducts.slice(0, 20)).map((product) => <tr key={product.id}><td data-label="ပစ္စည်း"><div className="table-product"><span className="table-product-icon"><ShoppingBag size={17} /></span><span><strong>{product.name}</strong><small>SKU: {product.sku || '—'}{product.barcode ? ` · Barcode: ${product.barcode}` : ' · Barcode မထည့်ရသေး'}{product.priceGroupId ? ' · မျှဝေဈေးနှုန်းချိတ်ထားသည်' : ' · သီးခြားဈေးနှုန်း'}</small></span></div></td><td data-label="Category"><span className="tag">{product.category}</span></td><td data-label="Cost">{money(product.costPrice, settings.currency)}</td><td data-label="လက်လီ"><b>{money(product.retailPrice, settings.currency)}</b></td><td data-label="လက်ကား">{money(product.wholesalePrice, settings.currency)}</td><td data-label="ရောင်းနိုင် / စုစုပေါင်း"><span className={sellableStock(product) <= product.lowStockAt ? 'stock-warning' : 'stock-ok'}>{formatQuantity(sellableStock(product), quantityModeForProduct(product))} / {formatQuantity(product.stock, quantityModeForProduct(product))} {product.unit}{hasLegacyFractionalQuantity(product.stock, quantityModeForProduct(product)) ? <small className="stock-warning">ဒသမလက်ကျန် · ပြန်စစ်ရန်</small> : null}</span></td><td className="table-card-actions" data-label="လုပ်ဆောင်ချက်"><div className="table-actions"><button className="small-action" onClick={() => openEditProduct(product)}>ပြင်ရန်</button><button className="small-action" onClick={() => { void (async () => { if (productIsUnitTracked(product, stockUnitRegistries, activeBranchId)) { notify('Unit Tracking ပစ္စည်းဖြစ်လို့ Stock ကို ဒီနေရာမှ မပြင်နိုင်ပါ။ Unit Barcode ကုန်လက်ခံစာမျက်နှာတွင် Sticker Scan ဖြင့်သာ တိုးပါ။'); return; } const amountText = await dialog.prompt({ title: `Stock ± (${product.name})`, message: `Stock ဘယ်လောက် တိုး/လျှော့မလဲ။ ${quantityModeForProduct(product) === 'whole' ? 'နောက်ဆုံးလက်ကျန်က အရေအတွက်ပြည့်ကိန်း ဖြစ်ရပါမယ်။ ဒသမလက်ကျန်ကို မှန်ကန်အောင် ပြင်ရန် 0.012 လို correction amount ထည့်နိုင်ပါတယ်။' : 'ဒသမ ၃ နေရာအထိ ထည့်နိုင်ပါတယ်။'}`, label: `အရေအတွက် (${product.unit})`, inputType: 'number', inputMode: 'decimal', step: 'any', placeholder: 'ဥပမာ +5 သို့မဟုတ် -2', confirmLabel: 'Stock ပြင်မည်' }); if (amountText !== null) { const amount = Number(amountText); if (Number.isFinite(amount) && amount !== 0) { if (adjustStock(product.id, amount)) notify('Stock ပြင်ဆင်ပြီးပါပြီ။'); else notify('Stock ပြင်မရပါ။ ယူနစ်၊ လက်ကျန်နဲ့ အရေအတွက်ကို ပြန်စစ်ပါ။'); } } })(); }}>Stock ±</button><button className="icon-btn danger-icon" title="Delete" onClick={() => { void (async () => { if ((await authorize('ပစ္စည်းဖျက်ရန်')) && (await dialog.confirm({ title: 'ပစ္စည်းဖျက်ရန်', message: `${product.name} ကို ဖျက်မလား။`, confirmLabel: 'ဖျက်မည်', tone: 'danger' }))) { if (!deleteProduct(product.id)) { notify(product.priceGroupId ? 'ဒီ Product ကို မျှဝေဈေးနှုန်းအုပ်စုမှ အရင်ဖြုတ်ပါ။' : productIsUnitTracked(product, stockUnitRegistries, activeBranchId) ? 'Unit Barcode History ရှိနေသေးလို့ ဒီ Product ကို မဖျက်နိုင်ပါ။' : 'ပစ္စည်းဖျက်မရပါ။'); return; } setCart((items) => items.filter((item) => item.productId !== product.id)); notify('ပစ္စည်းဖျက်ပြီးပါပြီ။'); } })(); }}><Trash2 size={15} /></button></div></td></tr>)}</tbody></table>{inventoryProducts.length === 0 && <EmptyState icon={<Boxes size={24} />} title="စာရင်းမရှိသေးပါ" text="ပစ္စည်းအသစ်ထည့်ပြီး စတင်အသုံးပြုပါ။" action="ပစ္စည်းထည့်ရန်" onAction={openNewProduct} />}</div><ListLimitToggle total={inventoryProducts.length} shown={Math.min(20, inventoryProducts.length)} expanded={inventoryExpanded} onToggle={() => setInventoryExpanded((v) => !v)} unitLabel="မျိုး" /></div></section>}
+          {page === 'inventory' && <section className="page-stack"><div className="section-heading"><div><h2>ပစ္စည်းစာရင်း</h2><p>ပစ္စည်း၊ ဈေးနှုန်းနှင့် လက်ကျန် Stock ကို စီမံပါ။</p></div><div className="heading-actions">{canManageSharedPricing && <button className="button button-outline" onClick={() => navTo('pricing')}><CircleDollarSign size={15} /> မျှဝေဈေးနှုန်း</button>}<button className="button button-outline" onClick={exportProductsCsv}><Download size={15} /> CSV</button><button className="button button-primary" onClick={openNewProduct}><Plus size={17} /> ပစ္စည်းအသစ်</button></div></div><div className="mini-stats"><MiniStat icon={<Boxes size={17} />} label="ပစ္စည်းအမျိုးအစား" value={String(products.length)} /><MiniStat icon={<PackagePlus size={17} />} label="လက်ကျန်ရှိသော ပစ္စည်း" value={String(stockedProductCount)} /><MiniStat icon={<AlertTriangle size={17} />} label="Stock နည်းနေသောပစ္စည်း" value={String(lowStockProducts.length)} tone="warning" /></div><div className="panel">{legacyFractionalStockCount > 0 && <div className="backup-warning"><AlertTriangle size={16} /><span>အရေအတွက်ယူနစ်ဖြစ်သော်လည်း ဒသမလက်ကျန်ရှိသော Product {legacyFractionalStockCount} မျိုးရှိပါတယ်။ လက်တွေ့ရေတွက်ပြီး Stock ± ဖြင့် အမှန်တကယ်လက်ကျန်ကို ပြင်ပါ။ App က ဒသမကို အလိုအလျောက် Round မလုပ်ပါ။</span></div>}<div className="table-toolbar"><div className="search-box"><Search size={16} /><input value={inventorySearch} onChange={(e) => setInventorySearch(e.target.value)} placeholder="ပစ္စည်း / SKU / Barcode ရှာရန်..." aria-label="Inventory ပစ္စည်း၊ SKU သို့မဟုတ် Barcode ရှာရန်" />{inventorySearch && <button className="pos-search-clear" type="button" title="ရှာဖွေမှု ရှင်းရန်" aria-label="ရှာဖွေမှု ရှင်းရန်" onClick={() => setInventorySearch('')}><X size={15} /></button>}<button className="barcode-inline-camera" type="button" title="Camera ဖြင့် Barcode ရှာရန်" aria-label="Camera ဖြင့် Barcode ရှာရန်" onClick={() => setCameraScannerTarget('inventory')}><Camera size={16} /></button></div><span className="subtle-count">{inventoryProducts.length} မျိုး</span></div><div className="table-wrap table-cards"><table><thead><tr><th>ပစ္စည်း</th><th>Category</th><th>Cost</th><th>လက်လီ</th><th>လက်ကား</th><th>ရောင်းနိုင် / စုစုပေါင်း</th><th>လုပ်ဆောင်ချက်</th></tr></thead><tbody>{(inventoryExpanded ? inventoryProducts : inventoryProducts.slice(0, 20)).map((product) => <tr key={product.id}><td data-label="ပစ္စည်း"><div className="table-product"><span className="table-product-icon"><ShoppingBag size={17} /></span><span><strong>{product.name}</strong><small>SKU: {product.sku || '—'}{product.barcode ? ` · Barcode: ${product.barcode}` : ' · Barcode မထည့်ရသေး'}{product.priceGroupId ? ' · မျှဝေဈေးနှုန်းချိတ်ထားသည်' : ' · သီးခြားဈေးနှုန်း'}</small></span></div></td><td data-label="Category"><span className="tag">{product.category}</span></td><td data-label="Cost">{money(product.costPrice, settings.currency)}</td><td data-label="လက်လီ"><b>{money(product.retailPrice, settings.currency)}</b></td><td data-label="လက်ကား">{money(product.wholesalePrice, settings.currency)}</td><td data-label="ရောင်းနိုင် / စုစုပေါင်း"><span className={sellableStock(product) <= product.lowStockAt ? 'stock-warning' : 'stock-ok'}>{formatQuantity(sellableStock(product), quantityModeForProduct(product))} / {formatQuantity(product.stock, quantityModeForProduct(product))} {product.unit}{hasLegacyFractionalQuantity(product.stock, quantityModeForProduct(product)) ? <small className="stock-warning">ဒသမလက်ကျန် · ပြန်စစ်ရန်</small> : null}</span></td><td className="table-card-actions" data-label="လုပ်ဆောင်ချက်"><div className="table-actions"><button className="small-action" onClick={() => openEditProduct(product)}>ပြင်ရန်</button>{product.stickProductId && (product.sticksPerPack || 0) >= 2 && product.stock >= 1 && <button className="small-action" type="button" onClick={() => { const res = convertPackToSticks(product.id, 1); notify(res.message); }}>၁ ဘူးဖောက် (+{product.sticksPerPack})</button>}<button className="small-action" onClick={() => { void (async () => { if (productIsUnitTracked(product, stockUnitRegistries, activeBranchId)) { notify('Unit Tracking ပစ္စည်းဖြစ်လို့ Stock ကို ဒီနေရာမှ မပြင်နိုင်ပါ။ Unit Barcode ကုန်လက်ခံစာမျက်နှာတွင် Sticker Scan ဖြင့်သာ တိုးပါ။'); return; } const amountText = await dialog.prompt({ title: `Stock ± (${product.name})`, message: `Stock ဘယ်လောက် တိုး/လျှော့မလဲ။ ${quantityModeForProduct(product) === 'whole' ? 'နောက်ဆုံးလက်ကျန်က အရေအတွက်ပြည့်ကိန်း ဖြစ်ရပါမယ်။ ဒသမလက်ကျန်ကို မှန်ကန်အောင် ပြင်ရန် 0.012 လို correction amount ထည့်နိုင်ပါတယ်။' : 'ဒသမ ၃ နေရာအထိ ထည့်နိုင်ပါတယ်။'}`, label: `အရေအတွက် (${product.unit})`, inputType: 'number', inputMode: 'decimal', step: 'any', placeholder: 'ဥပမာ +5 သို့မဟုတ် -2', confirmLabel: 'Stock ပြင်မည်' }); if (amountText !== null) { const amount = Number(amountText); if (Number.isFinite(amount) && amount !== 0) { if (adjustStock(product.id, amount)) notify('Stock ပြင်ဆင်ပြီးပါပြီ။'); else notify('Stock ပြင်မရပါ။ ယူနစ်၊ လက်ကျန်နဲ့ အရေအတွက်ကို ပြန်စစ်ပါ။'); } } })(); }}>Stock ±</button><button className="icon-btn danger-icon" title="Delete" onClick={() => { void (async () => { if ((await authorize('ပစ္စည်းဖျက်ရန်')) && (await dialog.confirm({ title: 'ပစ္စည်းဖျက်ရန်', message: `${product.name} ကို ဖျက်မလား။`, confirmLabel: 'ဖျက်မည်', tone: 'danger' }))) { if (!deleteProduct(product.id)) { notify(product.priceGroupId ? 'ဒီ Product ကို မျှဝေဈေးနှုန်းအုပ်စုမှ အရင်ဖြုတ်ပါ။' : productIsUnitTracked(product, stockUnitRegistries, activeBranchId) ? 'Unit Barcode History ရှိနေသေးလို့ ဒီ Product ကို မဖျက်နိုင်ပါ။' : 'ပစ္စည်းဖျက်မရပါ။'); return; } setCart((items) => items.filter((item) => item.productId !== product.id)); notify('ပစ္စည်းဖျက်ပြီးပါပြီ။'); } })(); }}><Trash2 size={15} /></button></div></td></tr>)}</tbody></table>{inventoryProducts.length === 0 && <EmptyState icon={<Boxes size={24} />} title="စာရင်းမရှိသေးပါ" text="ပစ္စည်းအသစ်ထည့်ပြီး စတင်အသုံးပြုပါ။" action="ပစ္စည်းထည့်ရန်" onAction={openNewProduct} />}</div><ListLimitToggle total={inventoryProducts.length} shown={Math.min(20, inventoryProducts.length)} expanded={inventoryExpanded} onToggle={() => setInventoryExpanded((v) => !v)} unitLabel="မျိုး" /></div></section>}
 
           {page === 'sales' && <section className="page-stack"><div className="section-heading"><div><h2>အရောင်းမှတ်တမ်း</h2><p>{cashierMode ? 'မိမိ၏ အရောင်းမှတ်တမ်းများကို ကြည့်ရှုနိုင်ပါတယ်။' : 'ရောင်းချပြီးသော မှတ်တမ်းများကို ကြည့်ရှု၊ Voucher ပြန်ထုတ်နိုင်ပါတယ်။'}</p></div><div className="heading-actions"><button className="button button-outline" onClick={exportSalesCsv}><Download size={15} /> CSV</button><div className="sales-summary-chip"><TrendingUp size={17} /> {visibleSales.filter((sale) => sale.status === 'completed').length} ကြိမ်</div></div></div><div className="mini-stats"><MiniStat icon={<Receipt size={17} />} label="ပြီးစီးအရောင်း" value={`${visibleSales.filter((sale) => sale.status === 'completed').length} ကြိမ်`} /><MiniStat icon={<TrendingUp size={17} />} label="စုစုပေါင်းရောင်းအား" value={money(visibleSales.filter((sale) => sale.status === 'completed').reduce((sum, sale) => sum + sale.total, 0), settings.currency)} /><MiniStat icon={<CreditCard size={17} />} label="ကြွေးကျန်" value={money(visibleSales.filter((sale) => sale.status === 'completed').reduce((sum, sale) => sum + saleOutstandingDue(sale), 0), settings.currency)} tone="warning" /></div><div className="panel"><div className="table-toolbar"><div className="search-box"><Search size={16} /><input value={saleSearch} onChange={(e) => setSaleSearch(e.target.value)} placeholder="Voucher No / ဝယ်သူ ရှာရန်..." /></div><div className="ledger-filter-row"><button type="button" className={`small-action ${saleFilter === 'all' ? 'active' : ''}`} onClick={() => setSaleFilter('all')}>အားလုံး</button><button type="button" className={`small-action ${saleFilter === 'Cash' ? 'active' : ''}`} onClick={() => setSaleFilter('Cash')}>Cash</button><button type="button" className={`small-action ${saleFilter === 'KPay' ? 'active' : ''}`} onClick={() => setSaleFilter('KPay')}>KPay</button><button type="button" className={`small-action ${saleFilter === 'Credit' ? 'active' : ''}`} onClick={() => setSaleFilter('Credit')}>Credit</button><button type="button" className={`small-action ${saleFilter === 'voided' ? 'active' : ''}`} onClick={() => setSaleFilter('voided')}>Voided</button></div><span className="subtle-count">{filteredSales.length} ခု</span></div><div className="table-wrap table-cards"><table><thead><tr><th>Voucher</th><th>နေ့စွဲ</th><th>ဝယ်သူ</th><th>ပစ္စည်း</th><th>ငွေပေးချေမှု</th><th>စုစုပေါင်း</th><th>ကျန်ငွေ</th><th>အခြေအနေ</th></tr></thead><tbody>{(salesExpanded ? filteredSales : filteredSales.slice(0, 20)).map((sale) => <tr key={sale.id}><td data-label="Voucher"><strong className="mono">{sale.receiptNo}</strong></td><td data-label="နေ့စွဲ">{dateLabel(sale.date)}</td><td data-label="ဝယ်သူ">{sale.customer}</td><td data-label="ပစ္စည်း">{sale.items.length} မျိုး</td><td data-label="ငွေပေးချေမှု"><span className={`tag ${sale.paymentMethod === 'Credit' ? 'tag-warn' : ''}`}>{sale.paymentMethod}</span>{sale.paymentMethod === 'KPay' && sale.kpayTransactionReference && <small>TX: {sale.kpayTransactionReference}</small>}{sale.paymentMethod === 'KPay' && (sale.kpayAccountNameSnapshot || sale.kpayAccountNumberSnapshot) && <small>KPay: {sale.kpayAccountNameSnapshot || '-'} · {sale.kpayAccountNumberSnapshot || '-'}</small>}</td><td data-label="စုစုပေါင်း"><b>{money(sale.total, settings.currency)}</b></td><td data-label="ကျန်ငွေ">{money(sale.status === 'voided' ? 0 : saleOutstandingDue(sale), settings.currency)}</td><td className="table-card-actions" data-label="အခြေအနေ"><div className="table-actions">{sale.status === 'voided' ? <span className="tag tag-danger">Voided</span> : sale.voidRequested ? <span className="tag tag-warn" title={sale.voidRequestReason}>Void တောင်းဆိုထား ({sale.voidRequestReason})</span> : cashierMode && sale.cloudSyncStatus === 'pending' ? <span className="tag tag-warn" title={sale.cloudSyncError || 'Cloud Sync စောင့်နေပါတယ်။'}>Cloud Sync စောင့်နေ</span> : <span className="tag tag-success">ပြီးစီး</span>}<button className="icon-btn" title="Print" onClick={() => printReceipt(sale)}><Printer size={15} /></button><button className="icon-btn" title="Copy voucher" onClick={() => void copyReceipt(sale)}><FileJson size={15} /></button>{sale.returnCount ? <span className="tag tag-warn">Returned ×{sale.returnCount}</span> : null}{sale.voidRefundStatus ? <small>Refund: {sale.voidRefundStatus}</small> : null}{sale.status === 'completed' && canUseCloudAdjustments && sale.cloudSyncStatus !== 'pending' && !sale.voidRequested && <button className="small-action" type="button" title="Return / ပြန်အမ်းရန်" onClick={() => setReturnSale(sale)}><RotateCcw size={14} /> Return</button>}{(!cashierMode || canUseCloudAdjustments) && sale.status === 'completed' && (sale.paymentMethod === 'Cash' || (sale.paidAmount ?? 0) === 0) && <button className="icon-btn danger-icon" title={cashierMode ? 'Void sale' : 'Void sale (Owner)'} onClick={() => void handleVoidSale(sale)}><X size={15} /></button>}</div></td></tr>)}</tbody></table>{filteredSales.length === 0 && <EmptyState icon={<Receipt size={24} />} title="အရောင်းမှတ်တမ်း မရှိသေးပါ" text={cashierMode ? 'အရောင်းပြုလုပ်ပြီးနောက် မိမိ၏ မှတ်တမ်းများ ဒီနေရာမှာ ပေါ်လာပါမယ်။' : 'POS မှာ အရောင်းပြုလုပ်ပြီးနောက် မှတ်တမ်းများ ဒီနေရာမှာ ပေါ်လာပါမယ်။'} />}</div><ListLimitToggle total={filteredSales.length} shown={Math.min(20, filteredSales.length)} expanded={salesExpanded} onToggle={() => setSalesExpanded((v) => !v)} /></div></section>}
 
@@ -1831,16 +2043,34 @@ const openManualCopyPrompt = (value: string, label: string) => dialog.prompt({
       </nav>
 
       {showPaymentModal && <div className="modal-backdrop payment-confirm-backdrop" role="presentation" onMouseDown={(event) => { if (!pendingPersistenceSale && !savingSale && event.target === event.currentTarget) setShowPaymentModal(false); }}><section className="modal-card payment-confirm-card" role="dialog" aria-modal="true" aria-labelledby="payment-confirm-title"><div className="modal-header"><div><h2 id="payment-confirm-title">ငွေရှင်းအတည်ပြုရန်</h2><p>ပစ္စည်းစာရင်းနဲ့ Customer ပေးငွေကို နောက်ဆုံးစစ်ဆေးပါ။</p></div><button className="icon-btn" type="button" onClick={() => setShowPaymentModal(false)} disabled={Boolean(pendingPersistenceSale) || savingSale} aria-label="ပိတ်ရန်"><X size={19} /></button></div><div className="payment-confirm-total"><small>ကျသင့်ငွေ စုစုပေါင်း</small><strong>{money(checkoutTotal, settings.currency)}</strong><span>{cart.length} မျိုး ရွေးထားပါတယ်</span></div>{paymentMethod === 'Cash' ? <><label className="payment-cash-field">Customer ပေးငွေ ({settings.currency})<input type="number" min="0" step="1" inputMode="numeric" value={cashReceived} onChange={(event) => setCashReceived(event.target.value)} placeholder="Customer ပေးလိုက်တဲ့ငွေ ထည့်ပါ" /></label><button className="payment-exact-button" type="button" onClick={() => setCashReceived(String(requiredCash))}>ကျသင့်ငွေအတိအကျ ထည့်မယ်</button>{cashShortfall > 0 ? <div className="payment-shortfall"><strong>ငွေမလောက်သေးပါ</strong><span>{money(cashShortfall, settings.currency)} ထပ်လိုနေပါတယ်။ Sale မသိမ်းရသေးပါ၊ Stock လည်း မလျှော့ထားပါ။</span><button className="button button-outline" type="button" onClick={() => setShowPaymentModal(false)}>ပစ္စည်းလျှော့ / Cart ပြန်ပြင်မယ်</button></div> : <div className="payment-change"><span>ပြန်အမ်းရမည့်ငွေ</span><strong>{money(cashChange, settings.currency)}</strong></div>}</> : paymentMethod === 'KPay' ? <div className="payment-kpay-panel"><strong>Branch KPay Account</strong><div className="payment-kpay-account"><span>Account အမည်</span><b>{activeBranch?.settings.kpayAccountName}</b></div><div className="payment-kpay-account"><span>ဖုန်းနံပါတ် / Account</span><b>{activeBranch?.settings.kpayAccountNumber}</b></div>{activeBranch?.settings.kpayAccountLabel && <small>{activeBranch.settings.kpayAccountLabel}</small>}{branchKpayQrSource && <div className="payment-kpay-qr-wrap"><img className="payment-kpay-qr" src={branchKpayQrSource} alt="Branch KPay QR" /><small>ဒီ QR ကို Customer ဖုန်းနဲ့ Scan ဖတ်ပြီး ငွေလွှဲနိုင်ပါတယ်။</small></div>}<button className="payment-exact-button" type="button" onClick={() => void copyAccessValue(activeBranch?.settings.kpayAccountNumber || '', 'Branch KPay Account', openManualCopyPrompt, notify)}>KPay Account နံပါတ် ကူးရန်</button><label className="payment-cash-field">KPay Transaction ID *<input required value={kpayTransactionReference} onChange={(event) => setKpayTransactionReference(event.target.value)} placeholder="KPay ငွေလွှဲပြီးနောက် Transaction ID ထည့်ပါ" maxLength={120} aria-invalid={kpayTransactionReference.trim() !== '' && !kpayReferenceCheck.ok} aria-describedby="kpay-reference-state" /></label><div className="payment-verification" id="kpay-reference-state">{kpayReferenceCheck.ok ? <><span className="tag tag-success">Transaction ID ဖြည့်ပြီး · အတည်ပြုနိုင်သည်</span><small>Cashier က KPay App မှ ငွေလွှဲအောင်မြင်ကြောင်း စစ်ဆေးပြီး မှတ်တမ်းတင်ထားပါသည်။</small></> : <><span className="tag tag-warn">ငွေလွှဲအတည်ပြုချက် · မစစ်ဆေးရသေးပါ</span><small>Transaction ID မှန်ကန်စွာ မထည့်မချင်း Sale ကို သိမ်း၍ မရပါ။</small></>}</div>{kpayTransactionReference.trim() !== '' && !kpayReferenceCheck.ok && <p className="payment-verify-error" role="alert">{kpayReferenceCheck.message}</p>}<small className="field-hint">KPay App မှ ငွေလွှဲပြီး Transaction အောင်မြင်ကြောင်း စစ်ဆေးပြီးမှ Sale ကို အတည်ပြုပါ။</small></div> : <div className="payment-credit-note"><strong>Credit Sale</strong><span>{customer.trim()} အမည်ဖြင့် {money(checkoutTotal, settings.currency)} အကြွေးစာရင်းထဲ ထည့်သိမ်းပါမယ်။</span></div>}<div className="payment-confirm-actions"><button className="button button-outline" type="button" onClick={() => setShowPaymentModal(false)} disabled={Boolean(pendingPersistenceSale) || savingSale}>ပြန်စစ်မယ်</button><button className="button button-primary" type="button" onClick={() => void completeSale()} disabled={savingSale || (!pendingPersistenceSale && ((paymentMethod === 'Cash' && cashShortfall > 0) || (paymentMethod === 'KPay' && !kpayReferenceCheck.ok)))}><Check size={16} /> {savingSale ? 'သိမ်းဆည်းနေသည်…' : pendingPersistenceSale ? 'Local Save ပြန်ကြိုးစားရန်' : paymentMethod === 'KPay' ? 'KPay အတည်ပြုပြီး သိမ်းမယ်' : 'Sale အတည်ပြုပြီး သိမ်းမယ်'}</button></div><small className="payment-confirm-footnote">အတည်ပြုမှသာ အရောင်းစာရင်းသိမ်းပြီး Stock လျှော့ပါမယ်။ KPay ငွေကို App က အလိုအလျောက် မလွှဲပါ။</small></section></div>}
-      {showCheckoutResult && checkoutResultSale && <div className="modal-backdrop checkout-result-backdrop" role="presentation"><section className="modal-card checkout-result-card" role="dialog" aria-modal="true" aria-labelledby="checkout-result-title"><div className="checkout-result-icon"><Check size={24} /></div><div className="checkout-result-heading"><h2 id="checkout-result-title">{amountOnlyMode ? 'ကျသင့်ငွေ' : 'ငွေရှင်းအောင်မြင်ပါပြီ'}</h2><p>{amountOnlyMode ? 'Receipt မထုတ်ဘဲ ယူထားတဲ့ပစ္စည်းစာရင်းနဲ့ စုစုပေါင်းပမာဏကို ပြထားပါတယ်။' : 'အရောင်းစာရင်းကို သိမ်းဆည်းပြီးပါပြီ။ ယူထားတဲ့ပစ္စည်းတွေကို စစ်ပြီး Receipt ထုတ်နိုင်ပါတယ်။'}</p></div><div className="checkout-result-total"><small>စုစုပေါင်းကျသင့်ငွေ</small><strong>{money(checkoutResultSale.total, settings.currency)}</strong><span>Voucher: {checkoutResultSale.receiptNo}</span></div><div className="checkout-result-meta"><span>ပစ္စည်း {checkoutResultSale.items.length} မျိုး</span><span>{checkoutResultSale.paymentMethod === 'Credit' ? 'အကြွေး' : checkoutResultSale.paymentMethod === 'KPay' ? 'KPay' : 'ငွေသား'}</span></div>{checkoutResultSale.paymentMethod === 'KPay' && <div className="payment-verification"><span className="tag tag-warn">Manual verification</span><small>TX {checkoutResultSale.kpayTransactionReference} · KPay နှင့် အလိုအလျောက် အတည်ပြုခြင်း မဟုတ်ပါ။</small></div>}<div className="checkout-result-items"><div className="checkout-result-items-heading"><strong>ယူထားတဲ့ပစ္စည်းများ</strong><small>{checkoutResultSale.items.length} မျိုး</small></div>{checkoutResultSale.items.map((item, index) => { const product = productMap.get(item.productId); const quantityMode = item.quantityMode || (product ? quantityModeForProduct(product) : 'whole'); const quantityText = `${formatQuantity(item.quantity, quantityMode)} ${item.unit || product?.unit || ''}`.trim(); return <div className="checkout-result-item" key={`${item.productId}-${index}`}><div className="checkout-result-item-info"><strong>{item.name}</strong><small>{quantityText} × {money(item.unitPrice, settings.currency)} · {item.mode === 'wholesale' ? 'လက်ကား' : 'လက်လီ'}</small></div><b>{money(item.unitPrice * item.quantity, settings.currency)}</b></div>; })}</div><div className="checkout-result-breakdown"><div><span>ပစ္စည်းဖိုး</span><b>{money(checkoutResultSale.subtotal, settings.currency)}</b></div>{checkoutResultSale.discount > 0 && <div><span>လျှော့ဈေး</span><b>−{money(checkoutResultSale.discount, settings.currency)}</b></div>}<div className="checkout-result-breakdown-total"><span>ကျသင့်ငွေ</span><b>{money(checkoutResultSale.total, settings.currency)}</b></div>{checkoutResultSale.paymentMethod === 'Cash' && <><div><span>လက်ခံရရှိငွေ</span><b>{money(checkoutResultSale.cashReceivedAmount ?? checkoutResultSale.total, settings.currency)}</b></div><div><span>ပြန်အမ်းငွေ</span><b>{money(checkoutResultSale.changeAmount ?? 0, settings.currency)}</b></div></>}</div>{amountOnlyMode ? <div className="checkout-result-actions"><button className="button button-primary" type="button" onClick={closeCheckoutResult}>ပြီးပါပြီ</button></div> : <><div className="checkout-result-printer-row"><label>Receipt စက္ကူ<select aria-label="Receipt paper width" value={paperWidth} onChange={(event) => setPaperWidth(event.target.value === '58' ? '58' : '80')}><option value="58">58 mm</option><option value="80">80 mm</option></select></label><button className="button button-outline" type="button" onClick={printTestReceipt}><Printer size={14} /> Test Print</button></div><div className="checkout-result-actions"><button className="button button-primary" type="button" onClick={() => { const sale = checkoutResultSale; setShowCheckoutResult(false); setCheckoutResultSale(null); setAmountOnlyMode(false); printReceipt(sale); }}><Printer size={17} /> Printer နဲ့ Receipt ထုတ်မယ်</button><button className="button button-outline" type="button" onClick={finishWithoutPrinting}>မထုတ်တော့ဘူး · ပစ္စည်းစာရင်းပဲကြည့်မယ်</button></div></>}<small className="checkout-result-note">Printer မချိတ်ထားပါက Print Dialog ထဲမှာ Save as PDF သို့မဟုတ် ချိတ်ထားသော Printer ကို ရွေးနိုင်ပါတယ်။</small></section></div>}
+      {showCheckoutResult && checkoutResultSale && <div className="modal-backdrop checkout-result-backdrop" role="presentation"><section className="modal-card checkout-result-card" role="dialog" aria-modal="true" aria-labelledby="checkout-result-title"><div className="checkout-result-icon"><Check size={24} /></div><div className="checkout-result-heading"><h2 id="checkout-result-title">{amountOnlyMode ? 'ကျသင့်ငွေ' : 'ငွေရှင်းအောင်မြင်ပါပြီ'}</h2><p>{amountOnlyMode ? 'Receipt မထုတ်ဘဲ ယူထားတဲ့ပစ္စည်းစာရင်းနဲ့ စုစုပေါင်းပမာဏကို ပြထားပါတယ်။' : 'အရောင်းစာရင်းကို သိမ်းဆည်းပြီးပါပြီ။ ယူထားတဲ့ပစ္စည်းတွေကို စစ်ပြီး Receipt ထုတ်နိုင်ပါတယ်။'}</p></div><div className="checkout-result-total"><small>စုစုပေါင်းကျသင့်ငွေ</small><strong>{money(checkoutResultSale.total, settings.currency)}</strong><span>Voucher: {checkoutResultSale.receiptNo}</span></div><div className="checkout-result-meta"><span>ပစ္စည်း {checkoutResultSale.items.length} မျိုး</span><span>{checkoutResultSale.paymentMethod === 'Credit' ? 'အကြွေး' : checkoutResultSale.paymentMethod === 'KPay' ? 'KPay' : 'ငွေသား'}</span></div>{checkoutResultSale.paymentMethod === 'KPay' && <div className="payment-verification"><span className="tag tag-warn">Manual verification</span><small>TX {checkoutResultSale.kpayTransactionReference} · KPay နှင့် အလိုအလျောက် အတည်ပြုခြင်း မဟုတ်ပါ။</small></div>}<div className="checkout-result-items"><div className="checkout-result-items-heading"><strong>ယူထားတဲ့ပစ္စည်းများ</strong><small>{checkoutResultSale.items.length} မျိုး</small></div>{checkoutResultSale.items.map((item, index) => { const product = productMap.get(item.productId); const quantityMode = item.quantityMode || (product ? quantityModeForProduct(product) : 'whole'); const detailText = formatReceiptItemDetail({ ...item, unit: item.unit || product?.unit, quantityMode }, settings.currency, formatQuantity, money); return <div className="checkout-result-item" key={`${item.productId}-${index}`}><div className="checkout-result-item-info"><strong>{item.name}</strong><small>{detailText}</small></div><b>{money(item.unitPrice * item.quantity, settings.currency)}</b></div>; })}</div><div className="checkout-result-breakdown"><div><span>ပစ္စည်းဖိုး</span><b>{money(checkoutResultSale.subtotal, settings.currency)}</b></div>{checkoutResultSale.discount > 0 && <div><span>လျှော့ဈေး</span><b>−{money(checkoutResultSale.discount, settings.currency)}</b></div>}<div className="checkout-result-breakdown-total"><span>ကျသင့်ငွေ</span><b>{money(checkoutResultSale.total, settings.currency)}</b></div>{checkoutResultSale.paymentMethod === 'Cash' && <><div><span>လက်ခံရရှိငွေ</span><b>{money(checkoutResultSale.cashReceivedAmount ?? checkoutResultSale.total, settings.currency)}</b></div><div><span>ပြန်အမ်းငွေ</span><b>{money(checkoutResultSale.changeAmount ?? 0, settings.currency)}</b></div></>}</div>{amountOnlyMode ? <div className="checkout-result-actions"><button className="button button-primary" type="button" onClick={closeCheckoutResult}>ပြီးပါပြီ</button></div> : <><div className="checkout-result-printer-row"><label>Receipt စက္ကူ<select aria-label="Receipt paper width" value={paperWidth} onChange={(event) => setPaperWidth(event.target.value === '58' ? '58' : '80')}><option value="58">58 mm</option><option value="80">80 mm</option></select></label><button className="button button-outline" type="button" onClick={printTestReceipt}><Printer size={14} /> Test Print</button></div><div className="checkout-result-actions"><button className="button button-primary" type="button" onClick={() => { const sale = checkoutResultSale; setShowCheckoutResult(false); setCheckoutResultSale(null); setAmountOnlyMode(false); printReceipt(sale); }}><Printer size={17} /> Printer နဲ့ Receipt ထုတ်မယ်</button><button className="button button-outline" type="button" onClick={finishWithoutPrinting}>မထုတ်တော့ဘူး · ပစ္စည်းစာရင်းပဲကြည့်မယ်</button></div></>}<small className="checkout-result-note">Printer မချိတ်ထားပါက Print Dialog ထဲမှာ Save as PDF သို့မဟုတ် ချိတ်ထားသော Printer ကို ရွေးနိုင်ပါတယ်။</small></section></div>}
 
       {showProductModal && <div className="modal-backdrop" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget) setShowProductModal(false); }}><form className="modal-card" onSubmit={saveProduct}><div className="modal-header"><div><h2>{editingProduct ? 'ပစ္စည်းပြင်ဆင်ရန်' : 'ပစ္စည်းအသစ်ထည့်ရန်'}</h2><p>အရင်းဈေးနဲ့ Stock ကို ဆိုင်အလိုက် စီမံပါ။ မျှဝေဈေးနှုန်းချိတ်ထားသော Product ၏ ရောင်းဈေးကို ဒီ Form မှာ မပြင်နိုင်ပါ။</p></div><button className="icon-btn" type="button" onClick={() => setShowProductModal(false)}><X size={19} /></button></div><div className="form-grid"><label className="span-2">ပစ္စည်းအမည် *<input required value={productDraft.name} onChange={(e) => setProductDraft({ ...productDraft, name: e.target.value })} placeholder="ဥပမာ - Drinking Water" /></label><label>SKU / Product Code<input value={productDraft.sku} onChange={(e) => setProductDraft({ ...productDraft, sku: e.target.value })} placeholder="SKU အမှတ် (မဖြည့်လည်းရ)" /></label><label>Factory Barcode (EAN / UPC)<div className="barcode-field-control"><input value={productDraft.barcode} onChange={(e) => setProductDraft({ ...productDraft, barcode: e.target.value })} placeholder="Bluetooth Scanner သို့မဟုတ် ကိုယ်တိုင်ထည့်ပါ" inputMode="text" onKeyDown={(event) => { if (event.key === 'Enter') event.preventDefault(); }} /><button className="button button-outline barcode-camera-button" type="button" onClick={() => setCameraScannerTarget('product')} title="Camera ဖြင့် Barcode ဖတ်ရန်"><Camera size={15} /> Scan</button></div></label><label>Category<select value={productDraft.category} onChange={(e) => { if (e.target.value === '__add_category__') { void (async () => { const name = await dialog.prompt({ title: 'Category အသစ်ထည့်ရန်', label: 'Category အမည်', placeholder: 'ဥပမာ - အချိုရည်', required: true, confirmLabel: 'ထည့်မည်' }); if (name?.trim()) { if (addCategory(name.trim())) { setProductDraft((current) => ({ ...current, category: name.trim() })); notify('Category အသစ် ထည့်ပြီးပါပြီ။'); } else notify('Category အမည် ရှိပြီးသား သို့မဟုတ် မမှန်ကန်ပါ။'); } })(); } else setProductDraft({ ...productDraft, category: e.target.value }); }}><option value="">Category ရွေးပါ</option>{categories.map((category) => <option key={category}>{category}</option>)}<option value="__add_category__">＋ Category အသစ်ထည့်ရန်</option></select></label><label>အရင်းဈေး (Cost Price)<input type="number" min="0" value={productDraft.costPrice} onChange={(e) => setProductDraft({ ...productDraft, costPrice: e.target.value })} /></label><label>လက်လီရောင်းဈေး (Retail Price)<input type="number" min="0" disabled={!!editingProduct?.priceGroupId} value={productDraft.retailPrice} onChange={(e) => setProductDraft({ ...productDraft, retailPrice: e.target.value })} /></label><label>လက်ကားရောင်းဈေး (Wholesale Price)<input type="number" min="0" disabled={!!editingProduct?.priceGroupId} value={productDraft.wholesalePrice} onChange={(e) => setProductDraft({ ...productDraft, wholesalePrice: e.target.value })} /></label><label>လက်ကျန် Stock<input type="number" min="0" step={quantityStep(productDraft.quantityMode)} value={productDraft.stock} disabled={productDraft.tracksIndividualUnits} onChange={(e) => setProductDraft({ ...productDraft, stock: e.target.value })} /><small className="field-hint">{productDraft.tracksIndividualUnits ? 'Unit Tracking ပစ္စည်းများကို Stock Receiving → Unit Barcode Scan မှသာ တိုးနိုင်ပါတယ်။' : ''}</small></label><label>Low Stock Alert<input type="number" min="0" step={quantityStep(productDraft.quantityMode)} value={productDraft.lowStockAt} onChange={(e) => setProductDraft({ ...productDraft, lowStockAt: e.target.value })} /></label><label>Unit<input value={productDraft.unit} onChange={(e) => setProductDraft({ ...productDraft, unit: e.target.value, quantityMode: inferQuantityMode(e.target.value) })} placeholder="ခု / ဘူး / ထုပ် / kg / L" /></label><label>အရေအတွက်တွက်ချက်ပုံ<select value={productDraft.quantityMode} disabled={productDraft.tracksIndividualUnits} onChange={(e) => setProductDraft({ ...productDraft, quantityMode: e.target.value as QuantityMode })}><option value="whole">ပြည့်ကိန်းသာ (ခု / ဘူး / ထုပ်)</option><option value="decimal">ဒသမခွင့်ပြု (kg / L / m)</option></select></label><label className="span-2 unit-tracking-setting"><input type="checkbox" checked={productDraft.tracksIndividualUnits} onChange={(e) => {
                 const enabled = e.target.checked;
                 const currentlyTracked = !!editingProduct && productIsUnitTracked(editingProduct, stockUnitRegistries, activeBranchId);
                 setProductDraft({ ...productDraft, tracksIndividualUnits: enabled, ...(enabled ? { quantityMode: 'whole' as const, ...(!currentlyTracked ? { stock: '0' } : {}) } : {}) });
-              }} /><span><b>Individual Unit Tracking</b><small>ဖွင့်ထားလျှင် ပစ္စည်းတစ်ခုချင်းစီအတွက် Sticker Barcode မဖြစ်မနေ Scan ရပါမယ်။ Factory EAN/UPC သည် optional သာဖြစ်ပြီး ရောင်းချရန် မသုံးပါ။</small></span></label></div>{editingProduct?.priceGroupId && <div className="backup-warning"><CircleDollarSign size={16} /><span>ဒီ Product သည် မျှဝေဈေးနှုန်းအုပ်စုနှင့် ချိတ်ထားပါတယ်။ ဆိုင်အားလုံး၏ ရောင်းဈေးကို မပြောင်းမီ 'မျှဝေဈေးနှုန်း' စာမျက်နှာမှ ပြင်ဆင်ပါ။</span></div>}<div className="modal-actions"><button className="button button-outline" type="button" onClick={() => setShowProductModal(false)}>ပယ်ဖျက်</button><button className="button button-primary" type="submit"><Check size={16} /> သိမ်းဆည်းမည်</button></div></form></div>}
+              }} /><span><b>Individual Unit Tracking</b><small>ဖွင့်ထားလျှင် ပစ္စည်းတစ်ခုချင်းစီအတွက် Sticker Barcode မဖြစ်မနေ Scan ရပါမယ်။ Factory EAN/UPC သည် optional သာဖြစ်ပြီး ရောင်းချရန် မသုံးပါ။</small></span></label>
+              <div className="span-2 cigarette-config-box">
+                <strong>ဆေးလိပ် / ပြန်စီး ရောင်းချမှု ပုံစံ (Optional)</strong>
+                <div className="cigarette-config-grid">
+                  <label>တစ်ဘူးပါ အလိပ် (Sticks/Pack)<input type="number" min="2" max="1000" step="1" inputMode="numeric" value={productDraft.sticksPerPack} onChange={(e) => setProductDraft({ ...productDraft, sticksPerPack: e.target.value })} placeholder="ဥပမာ 20" /></label>
+                  {!isStickUnit(productDraft.unit) && <>
+                    <label>ချိတ်ဆက်မည့် အလိပ် Product<select value={productDraft.stickProductId} onChange={(e) => setProductDraft({ ...productDraft, stickProductId: e.target.value })}><option value="">မချိတ်ဆက်ပါ</option><option value="__auto__">+ အလိပ် Product အလိုအလျောက်ဖန်တီးမည်</option>{products.filter((p) => p.id !== editingProduct?.id && isStickUnit(p.unit)).map((p) => <option key={p.id} value={p.id}>{p.name} ({money(p.retailPrice, settings.currency)})</option>)}</select></label>
+                    {productDraft.stickProductId === '__auto__' && <label>တစ်လိပ် လက်လီဈေး (MMK)<input type="number" min="1" step="1" inputMode="numeric" value={productDraft.stickPrice} onChange={(e) => setProductDraft({ ...productDraft, stickPrice: e.target.value })} placeholder="ဥပမာ 200" /></label>}
+                  </>}
+                </div>
+                <label className="unit-tracking-setting">
+                  <input type="checkbox" checked={productDraft.amountSaleEnabled} onChange={(e) => setProductDraft({ ...productDraft, amountSaleEnabled: e.target.checked, ...(e.target.checked ? { quantityMode: 'decimal' as const } : {}) })} />
+                  <span><b>MMK ပမာဏဖြင့် အမြန်ရောင်းမည် (ပြန်စီး / လှကျော် ၁၀၀၀ ဖိုး)</b><small>ဖွင့်ထားလျှင် POS ကတ်ပေါ်မှာ 500 / 1,000 / 2,000 / စိတ်ကြိုက် MMK ခလုတ်များ ပေါ်ပါမယ်။ (လက်လီဈေး 1,000 ထားပါက မည်သည့် MMK ပမာဏမဆို တိကျစွာ တွက်ချက်ပါမယ်)</small></span>
+                </label>
+                {productDraft.amountSaleEnabled && <label>အမြန်ရွေး MMK ပမာဏများ (ကော်မာခြားထည့်ပါ)<input value={productDraft.amountPresetsText} onChange={(e) => setProductDraft({ ...productDraft, amountPresetsText: e.target.value })} placeholder="500, 1000, 2000" /></label>}
+              </div>
+              </div>{editingProduct?.priceGroupId && <div className="backup-warning"><CircleDollarSign size={16} /><span>ဒီ Product သည် မျှဝေဈေးနှုန်းအုပ်စုနှင့် ချိတ်ထားပါတယ်။ ဆိုင်အားလုံး၏ ရောင်းဈေးကို မပြောင်းမီ 'မျှဝေဈေးနှုန်း' စာမျက်နှာမှ ပြင်ဆင်ပါ။</span></div>}<div className="modal-actions">{editingProduct?.stickProductId && (editingProduct.sticksPerPack || 0) >= 2 && editingProduct.stock >= 1 && <button className="button button-outline" type="button" onClick={() => { const res = convertPackToSticks(editingProduct.id, 1); notify(res.message); if (res.ok) setShowProductModal(false); }}>၁ ဘူးဖောက် (+{editingProduct.sticksPerPack} လိပ်)</button>}<button className="button button-outline" type="button" onClick={() => setShowProductModal(false)}>ပယ်ဖျက်</button><button className="button button-primary" type="submit"><Check size={16} /> သိမ်းဆည်းမည်</button></div></form></div>}
+
+      {amountModalProduct && <div className="modal-backdrop" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget) setAmountModalProduct(null); }}><form className="modal-card amount-sale-modal" onSubmit={(e) => { e.preventDefault(); const amount = Number(customAmountMmk); addAmountToCart(amountModalProduct, amount); setAmountModalProduct(null); }}><div className="modal-header"><div><h2>{amountModalProduct.name}</h2><p>ရောင်းချမည့် MMK ပမာဏကို ရွေးပါ သို့မဟုတ် ကိုယ်တိုင်ထည့်ပါ ({money(amountModalProduct.retailPrice, settings.currency)}/{amountModalProduct.unit})</p></div><button className="icon-btn" type="button" onClick={() => setAmountModalProduct(null)} aria-label="ပိတ်ရန်"><X size={19} /></button></div><div className="amount-modal-presets">{[300, 500, 1000, 1500, 2000, 3000].map((preset) => <button key={preset} type="button" className="button button-outline" onClick={() => { addAmountToCart(amountModalProduct, preset); setAmountModalProduct(null); }}>{money(preset, settings.currency)}</button>)}</div><label className="payment-cash-field">စိတ်ကြိုက် MMK ပမာဏ<input type="number" min="50" step="50" inputMode="numeric" autoFocus value={customAmountMmk} onChange={(e) => setCustomAmountMmk(e.target.value)} placeholder="ဥပမာ 1000" /></label><div className="modal-actions"><button className="button button-outline" type="button" onClick={() => setAmountModalProduct(null)}>ပယ်ဖျက်</button><button className="button button-primary" type="submit"><Check size={16} /> Cart ထဲထည့်မည်</button></div></form></div>}
 
       {(lastSale || printTestMode) && <div className="receipt-print-area"><div className={`receipt-paper receipt-paper-${paperWidth}`}>
-        {printTestMode ? <><h2>{activeBranch?.name || settings.storeName}</h2><p className="receipt-test-title">*** PRINTER TEST ***</p><p>{new Date().toLocaleString()}</p><hr /><div className="receipt-item"><span>စမ်းသပ်ပစ္စည်း × 1</span><b>1,000 {settings.currency}</b></div><hr /><div className="receipt-total receipt-grand"><span>TEST TOTAL</span><b>1,000 {settings.currency}</b></div><p className="receipt-footer">မြန်မာစာ စမ်းသပ်ခြင်း · {settings.receiptFooter}</p></> : lastSale && <>{activeBranchLogoSource && <img className="receipt-shop-logo" src={activeBranchLogoSource} alt="Shop logo" />}<h2>{activeBranch?.name || settings.storeName}</h2>{lastSale.status === 'voided' && <p className="receipt-test-title">*** VOIDED ***</p>}{activeBranch?.settings.receiptHeader && <p className="receipt-shop-extra">{activeBranch.settings.receiptHeader}</p>}{activeBranch?.address && <p>{activeBranch.address}</p>}{activeBranch?.phone && <p>ဖုန်း: {activeBranch.phone}</p>}<p>Voucher: {lastSale.receiptNo}</p><p>{dateLabel(lastSale.date)}</p><p>Customer: {lastSale.customer}</p><hr />{lastSale.items.map((item, index) => { const product = productMap.get(item.productId); const quantityMode = item.quantityMode || (product ? quantityModeForProduct(product) : 'whole'); const quantityText = `${formatQuantity(item.quantity, quantityMode)} ${item.unit || product?.unit || ''}`.trim(); return <div className="receipt-item receipt-item-detailed" key={`${item.productId}-${index}`}><div className="receipt-item-info"><strong>{item.name}</strong><small>{quantityText} × {money(item.unitPrice, settings.currency)} · {item.mode === 'wholesale' ? 'လက်ကား' : 'လက်လီ'}</small></div><b>{money(item.unitPrice * item.quantity, settings.currency)}</b></div>; })}<hr /><div className="receipt-total"><span>Subtotal</span><b>{money(lastSale.subtotal, settings.currency)}</b></div><div className="receipt-total"><span>Discount</span><b>{money(lastSale.discount, settings.currency)}</b></div><div className="receipt-total receipt-grand"><span>Total</span><b>{money(lastSale.total, settings.currency)}</b></div><p>Payment: {lastSale.paymentMethod}</p>{lastSale.paymentMethod === 'KPay' && lastSale.kpayTransactionReference && <p>KPay Transaction ID: {lastSale.kpayTransactionReference}</p>}{lastSale.paymentMethod === 'KPay' && (lastSale.kpayAccountNameSnapshot || lastSale.kpayAccountNumberSnapshot) && <><p>KPay Account: {lastSale.kpayAccountNameSnapshot || '-'}</p><p>KPay Account No: {lastSale.kpayAccountNumberSnapshot || '-'}</p></>}<p>Paid: {money(lastSale.paidAmount ?? (lastSale.paymentMethod === 'Cash' || lastSale.paymentMethod === 'KPay' ? lastSale.total : 0), settings.currency)}</p>{lastSale.paymentMethod === 'Cash' && <><p>Cash Received: {money(lastSale.cashReceivedAmount ?? lastSale.total, settings.currency)}</p><p>Change: {money(lastSale.changeAmount ?? 0, settings.currency)}</p></>}<p>Due: {money(lastSale.dueAmount ?? (lastSale.paymentMethod === 'Credit' ? lastSale.total : 0), settings.currency)}</p><p className="receipt-footer">{settings.receiptFooter}</p></>}</div></div>}
+        {printTestMode ? <><h2>{activeBranch?.name || settings.storeName}</h2><p className="receipt-test-title">*** PRINTER TEST ***</p><p>{new Date().toLocaleString()}</p><hr /><div className="receipt-item"><span>စမ်းသပ်ပစ္စည်း × 1</span><b>1,000 {settings.currency}</b></div><hr /><div className="receipt-total receipt-grand"><span>TEST TOTAL</span><b>1,000 {settings.currency}</b></div><p className="receipt-footer">မြန်မာစာ စမ်းသပ်ခြင်း · {settings.receiptFooter}</p></> : lastSale && <>{activeBranchLogoSource && <img className="receipt-shop-logo" src={activeBranchLogoSource} alt="Shop logo" />}<h2>{activeBranch?.name || settings.storeName}</h2>{lastSale.status === 'voided' && <p className="receipt-test-title">*** VOIDED ***</p>}{activeBranch?.settings.receiptHeader && <p className="receipt-shop-extra">{activeBranch.settings.receiptHeader}</p>}{activeBranch?.address && <p>{activeBranch.address}</p>}{activeBranch?.phone && <p>ဖုန်း: {activeBranch.phone}</p>}<p>Voucher: {lastSale.receiptNo}</p><p>{dateLabel(lastSale.date)}</p><p>Customer: {lastSale.customer}</p><hr />{lastSale.items.map((item, index) => { const product = productMap.get(item.productId); const quantityMode = item.quantityMode || (product ? quantityModeForProduct(product) : 'whole'); const detailText = formatReceiptItemDetail({ ...item, unit: item.unit || product?.unit, quantityMode }, settings.currency, formatQuantity, money); return <div className="receipt-item receipt-item-detailed" key={`${item.productId}-${index}`}><div className="receipt-item-info"><strong>{item.name}</strong><small>{detailText}</small></div><b>{money(item.unitPrice * item.quantity, settings.currency)}</b></div>; })}<hr /><div className="receipt-total"><span>Subtotal</span><b>{money(lastSale.subtotal, settings.currency)}</b></div><div className="receipt-total"><span>Discount</span><b>{money(lastSale.discount, settings.currency)}</b></div><div className="receipt-total receipt-grand"><span>Total</span><b>{money(lastSale.total, settings.currency)}</b></div><p>Payment: {lastSale.paymentMethod}</p>{lastSale.paymentMethod === 'KPay' && lastSale.kpayTransactionReference && <p>KPay Transaction ID: {lastSale.kpayTransactionReference}</p>}{lastSale.paymentMethod === 'KPay' && (lastSale.kpayAccountNameSnapshot || lastSale.kpayAccountNumberSnapshot) && <><p>KPay Account: {lastSale.kpayAccountNameSnapshot || '-'}</p><p>KPay Account No: {lastSale.kpayAccountNumberSnapshot || '-'}</p></>}<p>Paid: {money(lastSale.paidAmount ?? (lastSale.paymentMethod === 'Cash' || lastSale.paymentMethod === 'KPay' ? lastSale.total : 0), settings.currency)}</p>{lastSale.paymentMethod === 'Cash' && <><p>Cash Received: {money(lastSale.cashReceivedAmount ?? lastSale.total, settings.currency)}</p><p>Change: {money(lastSale.changeAmount ?? 0, settings.currency)}</p></>}<p>Due: {money(lastSale.dueAmount ?? (lastSale.paymentMethod === 'Credit' ? lastSale.total : 0), settings.currency)}</p><p className="receipt-footer">{settings.receiptFooter}</p></>}</div></div>}
       {returnSale && <SaleReturnDialog key={returnSale.id} sale={returnSale} registries={stockUnitRegistries} products={products} currency={settings.currency} busy={adjustmentBusy} onClose={() => { if (!adjustmentBusy) setReturnSale(null); }} onSubmit={handleReturnSubmit} />}
       {cameraScannerTarget !== null && <Suspense fallback={<div className="modal-backdrop"><section className="modal-card"><p>Barcode Scanner ဖွင့်နေပါတယ်…</p></section></div>}><BarcodeCameraScanner open onClose={() => setCameraScannerTarget(null)} onDetected={handleCameraBarcodeDetected} title={cameraScannerTarget === 'product' ? 'ပစ္စည်း Barcode ထည့်ရန်' : cameraScannerTarget === 'inventory' ? 'Inventory Barcode ရှာရန်' : 'POS Barcode ဖတ်ရန်'} /></Suspense>}
       {toast && (toastActionPage

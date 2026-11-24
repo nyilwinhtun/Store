@@ -63,8 +63,9 @@ const SUITES = {
       { entry: 'src/lib/kpayAccount.ts', outfile: 'kpayAccount.mjs' },
       { entry: 'src/lib/posPaymentState.ts', outfile: 'posPaymentState.mjs' },
       { entry: 'src/lib/posProductSelection.ts', outfile: 'posProductSelection.mjs' },
+      { entry: 'src/lib/cigaretteSelling.ts', outfile: 'cigaretteSelling.mjs' },
     ],
-    tests: ['tests/unit/pos-checkout.test.mjs', 'tests/unit/pos-product-payment.test.mjs'],
+    tests: ['tests/unit/pos-checkout.test.mjs', 'tests/unit/pos-product-payment.test.mjs', 'tests/unit/cigarette-selling.test.mjs'],
   },
   store: {
     builds: [
@@ -75,7 +76,7 @@ const SUITES = {
       },
       { entry: 'src/lib/receiptNumber.ts', outfile: 'receiptNumber.mjs' },
     ],
-    tests: ['tests/unit/pos-store-inventory.test.mjs'],
+    tests: ['tests/unit/pos-store-inventory.test.mjs', 'tests/unit/cigarette-store.test.mjs'],
     env: { TZ: 'Asia/Yangon' },
   },
   units: {

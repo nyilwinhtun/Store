@@ -3170,3 +3170,150 @@ body {
 .ios-subtabs-wrap {
   overscroll-behavior-x: contain;
 }
+
+/* Cigarette & Repacked Bundle POS Cards, Config & Amount Modal */
+.product-tile-multi {
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+  cursor: default;
+}
+.product-tile-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.product-tile-head .product-tile-icon {
+  margin-bottom: 0;
+}
+.product-tile-head span {
+  font-size: 9px;
+  font-weight: 700;
+  text-align: right;
+}
+.product-quick-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: auto;
+  padding-top: 8px;
+}
+.product-quick-amounts {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.product-quick-btn {
+  min-height: 38px;
+  padding: 5px 6px;
+  border-radius: 8px;
+  border: 1px solid #cce3df;
+  background: #f0f9f7;
+  color: var(--teal-dark);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.2;
+  transition: .15s;
+}
+.product-quick-btn:hover:not(:disabled) {
+  background: var(--teal);
+  border-color: var(--teal);
+  color: #fff;
+}
+.product-quick-btn b {
+  font-size: 10px;
+  font-weight: 800;
+}
+.product-quick-btn-alt {
+  background: #f8fafc;
+  border-color: #dce6e8;
+  color: var(--ink);
+}
+.product-quick-btn-alt:hover:not(:disabled) {
+  background: #172b2a;
+  border-color: #172b2a;
+  color: #fff;
+}
+.cigarette-config-box {
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  padding: 12px;
+  background: #f8fbfb;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.cigarette-config-box > strong {
+  font-size: 11px;
+  color: var(--teal-dark);
+}
+.cigarette-config-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.amount-sale-modal {
+  max-width: 420px;
+}
+.amount-modal-presets {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.amount-modal-presets .button {
+  min-height: 42px;
+  font-size: 12px;
+}
+
+/* Keep modal/form inputs >= 16px on mobile to prevent iOS Safari auto-zoom */
+.form-grid input,
+.form-grid select,
+.cigarette-config-box input,
+.cigarette-config-box select,
+.amount-sale-modal input,
+.payment-cash-field input {
+  font-size: 16px;
+}
+
+:root[data-theme="dark"] .product-quick-btn {
+  background: #133136;
+  border-color: #245759;
+  color: #8be0d5;
+}
+:root[data-theme="dark"] .product-quick-btn-alt {
+  background: #192638;
+  border-color: #2c3e55;
+  color: #e2e8f0;
+}
+:root[data-theme="dark"] .cigarette-config-box {
+  background: #101d2d;
+  border-color: #23344a;
+}
+
+@media (max-width: 600px) {
+  .cigarette-config-grid {
+    grid-template-columns: 1fr;
+  }
+  .pos-layout-mobile-split .product-tile-multi {
+    min-height: 126px;
+    padding: 8px;
+  }
+  .pos-layout-mobile-split .product-quick-actions {
+    gap: 5px;
+    padding-top: 6px;
+  }
+  .pos-layout-mobile-split .product-quick-btn {
+    min-height: 38px;
+    padding: 4px 5px;
+    font-size: 8px;
+  }
+  .pos-layout-mobile-split .product-quick-btn b {
+    font-size: 9px;
+  }
+}
