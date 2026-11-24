@@ -595,10 +595,10 @@ export function ExpiryTrackingPage() {
   const [batchesExpanded, setBatchesExpanded] = useState(false);
 
   return <section className="page-stack">
-    <div className="section-heading"><div><h2>Expiry Date & Stock Tracking</h2><p>Purchase တစ်ကြိမ်ချင်းစီ၏ သက်တမ်းကုန်ရက်ကို စောင့်ကြည့်ပါ။</p></div><div className="sales-summary-chip"><CalendarClock size={16} /> Tracked {totalTracked.toLocaleString()} units</div></div>
+    <div className="section-heading"><div><h2>Expiry Date & Stock Tracking</h2><p>Purchase တစ်ကြိမ်ချင်းစီ၏ သက်တမ်းကုန်ရက်ကို စောင့်ကြည့်ပါ။</p></div><div className="sales-summary-chip"><CalendarClock size={16} /> Tracked {formatQuantity(totalTracked, 'decimal')} units</div></div>
     <div className="mini-stats">
-      <div className="mini-stat"><div className="mini-stat-icon warning"><AlertTriangle size={17} /></div><div><small>သက်တမ်းကုန်ပြီး</small><strong>{expired.reduce((sum, batch) => sum + batch.quantity, 0)} units</strong></div></div>
-      <div className="mini-stat"><div className="mini-stat-icon"><CalendarClock size={17} /></div><div><small>ရက် ၃၀ အတွင်း ကုန်မည့်</small><strong>{dueSoon.reduce((sum, batch) => sum + batch.quantity, 0)} units</strong></div></div>
+      <div className="mini-stat"><div className="mini-stat-icon warning"><AlertTriangle size={17} /></div><div><small>သက်တမ်းကုန်ပြီး</small><strong>{formatQuantity(expired.reduce((sum, batch) => sum + batch.quantity, 0), 'decimal')} units</strong></div></div>
+      <div className="mini-stat"><div className="mini-stat-icon"><CalendarClock size={17} /></div><div><small>ရက် ၃၀ အတွင်း ကုန်မည့်</small><strong>{formatQuantity(dueSoon.reduce((sum, batch) => sum + batch.quantity, 0), 'decimal')} units</strong></div></div>
       <div className="mini-stat"><div className="mini-stat-icon"><PackagePlus size={17} /></div><div><small>Expiry ထည့်ထားသော Batch</small><strong>{activeBatches.length}</strong></div></div>
     </div>
     <div className="panel expiry-notice"><AlertTriangle size={18} /><div><strong>အရေးကြီးသော မှတ်ချက်</strong><p>Expiry စာရင်းသည် Purchase မှတ်တမ်းတွင် Expiry Date ထည့်ထားသော Batch များကို အခြေခံထားပါတယ်။ အရင်က လက်ဖြင့်ထည့်ထားသော Opening Stock တွင် Expiry Date မရှိနိုင်ပါ။ Expired ပစ္စည်းတွေကို ရောင်းချမီ ကိုယ်တိုင်စစ်ဆေးပြီး Stock Adjustment လုပ်ပါ။</p></div></div>
@@ -606,7 +606,7 @@ export function ExpiryTrackingPage() {
       const days = daysUntil(batch.expiryDate);
       const product = products.find((entry) => entry.id === batch.productId);
       const status = days < 0 ? 'သက်တမ်းကုန်ပြီး' : days <= 7 ? '၇ ရက်အတွင်း' : days <= 30 ? '၃၀ ရက်အတွင်း' : 'အဆင်ပြေ';
-      return <tr key={batch.id}><td><b>{product?.name || 'ဖျက်ထားသောပစ္စည်း'}</b></td><td>{product?.sku || '—'}</td><td>{batch.quantity} {product?.unit || ''}</td><td>{dateLabel(batch.expiryDate)}</td><td>{days < 0 ? `${Math.abs(days)} ရက်ကျော်` : `${days} ရက်`}</td><td><span className={`tag ${days < 0 ? 'tag-danger' : days <= 30 ? 'tag-warn' : 'tag-success'}`}>{status}</span></td></tr>;
+      return <tr key={batch.id}><td><b>{product?.name || 'ဖျက်ထားသောပစ္စည်း'}</b></td><td>{product?.sku || '—'}</td><td>{formatQuantity(batch.quantity, product ? quantityModeForProduct(product) : 'decimal')} {product?.unit || ''}</td><td>{dateLabel(batch.expiryDate)}</td><td>{days < 0 ? `${Math.abs(days)} ရက်ကျော်` : `${days} ရက်`}</td><td><span className={`tag ${days < 0 ? 'tag-danger' : days <= 30 ? 'tag-warn' : 'tag-success'}`}>{status}</span></td></tr>;
     })}</tbody></table></div><ListLimitToggle total={activeBatches.length} shown={Math.min(20, activeBatches.length)} expanded={batchesExpanded} onToggle={() => setBatchesExpanded((v) => !v)} unitLabel="batches" /></>}</div>
     <div className="panel"><div className="panel-heading"><div><h3>Expiry Batch တန်ဖိုး</h3><p>ကုန်ဝယ် Cost Price အပေါ် အခြေခံသော ခန့်မှန်းတန်ဖိုး</p></div></div><div className="ledger-balance"><span>Expiry Date ပါဝင်သော Batch များ၏ ကျန်တန်ဖိုး</span><strong>{money(activeBatches.reduce((sum, batch) => sum + batch.quantity * batch.unitCost, 0), settings.currency)}</strong></div></div>
   </section>;

@@ -1198,7 +1198,7 @@ export const usePosStore = create<PosState>()(
         })) return state;
         const nextUnit = changes.unit || current?.unit || 'ခု';
         const nextMode = changes.quantityMode || current?.quantityMode || inferQuantityMode(nextUnit);
-        const nextStock = typeof changes.stock === 'number' && Number.isFinite(changes.stock) ? Math.max(0, changes.stock) : current?.stock;
+        const nextStock = typeof changes.stock === 'number' && Number.isFinite(changes.stock) ? cleanQuantity(Math.max(0, changes.stock), nextMode) : current?.stock;
         const stockWasChanged = !!current && nextStock !== undefined && Math.abs(nextStock - current.stock) > 1e-8;
         const quantityModeWasChanged = !!current && changes.quantityMode !== undefined && changes.quantityMode !== quantityModeForProduct(current);
         if (nextStock !== undefined && (stockWasChanged || quantityModeWasChanged) && !isValidQuantity(nextStock, nextMode, true)) return state;
@@ -1235,11 +1235,14 @@ export const usePosStore = create<PosState>()(
         const state = get();
         if (!Number.isFinite(quantity) || quantity === 0) return false;
         const target = state.products.find((product) => product.id === id && product.branchId === state.activeBranchId);
-        if (!target || productIsUnitTracked(target, state.stockUnitRegistries, state.activeBranchId) || !isValidQuantity(Math.abs(quantity), 'decimal') || !isValidQuantity(target.stock + quantity, quantityModeForProduct(target), true) || target.stock + quantity < 0) return false;
+        if (!target || productIsUnitTracked(target, state.stockUnitRegistries, state.activeBranchId) || !isValidQuantity(Math.abs(quantity), 'decimal')) return false;
+        const mode = quantityModeForProduct(target);
+        const nextStockRaw = target.stock + quantity;
+        const nextStock = cleanQuantity(nextStockRaw, mode);
+        if (nextStockRaw < -1e-8 || nextStock < 0 || !isValidQuantity(nextStock, mode, true)) return false;
         const receivedAt = new Date().toISOString();
-        const nextStock = cleanQuantity(target.stock + quantity, quantityModeForProduct(target));
         const stockBatches = quantity < 0
-          ? [...state.stockBatches.filter((batch) => batch.branchId !== state.activeBranchId), ...removeBatchQuantity(state.stockBatches.filter((batch) => batch.branchId === state.activeBranchId), id, -quantity, quantityModeForProduct(target))]
+          ? [...state.stockBatches.filter((batch) => batch.branchId !== state.activeBranchId), ...removeBatchQuantity(state.stockBatches.filter((batch) => batch.branchId === state.activeBranchId), id, -quantity, mode)]
           : [{ id: newId(), branchId: state.activeBranchId, productId: id, purchaseId: '', supplierId: '', quantity, receivedAt, expiryDate: '', unitCost: target.costPrice }, ...state.stockBatches];
         set((current) => ({
           stockBatches,
@@ -2976,7 +2979,7 @@ export const usePosStore = create<PosState>()(
         return {
           purchaseReturns: [saved, ...state.purchaseReturns],
           stockBatches: state.stockBatches.map((entry) => entry.id === batch.id && entry.branchId === state.activeBranchId ? { ...entry, quantity: cleanQuantity(entry.quantity - qty, quantityModeForProduct(product)) } : entry),
-          products: state.products.map((entry) => entry.id === product.id && entry.branchId === state.activeBranchId ? { ...entry, stock: Math.max(0, entry.stock - qty) } : entry),
+          products: state.products.map((entry) => entry.id === product.id && entry.branchId === state.activeBranchId ? { ...entry, stock: cleanQuantity(Math.max(0, entry.stock - qty), quantityModeForProduct(entry)) } : entry),
           activityLogs: prependAudit(state.activityLogs, makeAudit('PURCHASE_RETURN', 'Inventory', `${purchase.supplierName} သို့ ${purchase.productName} ${qty} ခု ပြန်ပို့သည် · ${total} MMK`, saved.id, state.activeBranchId)),
         };
       }),
