@@ -5,7 +5,7 @@
       <stop offset="100%" stop-color="#0066e6" />
     </linearGradient>
   </defs>
-  <rect width="128" height="128" rx="28" fill="url(#ios-bg)" />
+  <rect width="128" height="128" fill="url(#ios-bg)" />
   <g transform="translate(24 24) scale(2.5)">
     <path
       d="M10.5 12.2L13.4 6.2M21.5 12.2L18.6 6.2"

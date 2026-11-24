@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { ArrowUpCircle, Banknote, CalendarDays, CheckCircle2, ClipboardList, CreditCard, Download, Plus, QrCode, RefreshCw, Store, Wallet } from 'lucide-react';
+import { ArrowUpCircle, Banknote, CalendarDays, CheckCircle2, ClipboardList, CreditCard, Download, QrCode, RefreshCw, Store, Wallet } from 'lucide-react';
 import { usePosStore, type Expense } from '../store/usePosStore';
 import { useBusinessAccess } from '../lib/businessAccess';
 import { KPAY_QR_ACCEPT, isAllowedKpayQrDataUrl, nextKpayQrVersion, prepareKpayQrDataUrl } from '../lib/kpayQr';
@@ -435,17 +435,22 @@ export function BranchFinanceManagementPage({ authorize, notify }: Props) {
         </div>
         {filteredLedgerRows.length === 0 ? <div className="empty-state"><div className="empty-icon"><Wallet size={23}/></div><strong>Ledger မှတ်တမ်း မရှိသေးပါ</strong><p>POS Sale၊ Expense၊ Cashier Settlement သို့မဟုတ် Manual Entry မှတ်တမ်းအသစ်များ စတင်သည့်အခါ ဒီနေရာမှာ ပေါ်လာပါမယ်။</p></div> : <><div className="table-wrap"><table><thead><tr><th>အချိန်</th><th>Account</th><th>အကြောင်းအရာ</th><th>Source</th><th>Ref</th><th>မှတ်တမ်းတင်သူ</th><th>ငွေဝင် / ထွက်</th></tr></thead><tbody>{shownLedgerRows.map((row) => <tr key={row.id}><td>{dateLabel(row.date)}</td><td><span className="tag">{row.channel.toUpperCase()}</span></td><td>{row.title}{row.note && <small>{row.note}</small>}</td><td>{row.source}</td><td>{row.reference || '—'}</td><td>{row.actor || '—'}</td><td><b className={row.direction === 'in' ? 'stock-ok' : 'stock-warning'}>{row.direction === 'in' ? '+' : '−'}{money(row.amount, settings.currency)}</b></td></tr>)}</tbody></table></div><ListLimitToggle total={filteredLedgerRows.length} shown={shownLedgerRows.length} expanded={ledgerExpanded} onToggle={() => setLedgerExpanded((v) => !v)} /></>}
       </div>
-      <form className="panel form-panel" onSubmit={addManualEntry}>
-        <div className="panel-heading"><div className="panel-icon"><Plus size={18}/></div><div><h3>Manual ငွေဝင် / ငွေထွက်</h3><p>POS / Expense / Settlement မှ အလိုအလျောက်မပါဝင်တဲ့ မှတ်တမ်းများအတွက်သာ အသုံးပြုပါ။</p></div></div>
-        <div className="form-grid">
-          <label>Account<select value={channel} onChange={(event) => { setChannel(event.target.value as BranchFinanceChannel); setEntryReference(''); }}><option value="cash">Cash</option><option value="kpay">Branch KPay</option></select></label>
-          <label>အမျိုးအစား<select value={direction} onChange={(event) => setDirection(event.target.value as BranchFinanceDirection)}><option value="in">ငွေဝင်</option><option value="out">ငွေထွက်</option></select></label>
-          <label>ပမာဏ ({settings.currency})<input required type="number" min="1" step="1" value={entryAmount} onChange={(event) => setEntryAmount(event.target.value)}/></label>
-          {channel === 'kpay' && <label>KPay Transaction ID *<input required value={entryReference} onChange={(event) => setEntryReference(event.target.value)} maxLength={120}/></label>}
-        </div>
-        <label>အကြောင်းအရင်း *<textarea required rows={2} value={entryNote} onChange={(event) => setEntryNote(event.target.value)} placeholder="ဥပမာ - Owner ထည့်ငွေ / အခြားကုန်ကျစရိတ်"/></label>
-        <button className="button button-primary" type="submit" disabled={entryBusy}>{entryBusy ? 'သိမ်းဆည်းနေသည်…' : 'Ledger မှတ်တမ်းတင်မည်'}</button>
-      </form>
+      <details className="settings-collapsible">
+        <summary>
+          <span>Manual ငွေဝင် / ငွေထွက် မှတ်တမ်းတင်ရန်</span>
+          <small>POS / Expense မှ မပါဝင်သည့် မှတ်တမ်း</small>
+        </summary>
+        <form className="panel form-panel" onSubmit={addManualEntry} style={{ border: 0, borderRadius: 0 }}>
+          <div className="form-grid">
+            <label>Account<select value={channel} onChange={(event) => { setChannel(event.target.value as BranchFinanceChannel); setEntryReference(''); }}><option value="cash">Cash</option><option value="kpay">Branch KPay</option></select></label>
+            <label>အမျိုးအစား<select value={direction} onChange={(event) => setDirection(event.target.value as BranchFinanceDirection)}><option value="in">ငွေဝင်</option><option value="out">ငွေထွက်</option></select></label>
+            <label>ပမာဏ ({settings.currency})<input required type="number" min="1" step="1" value={entryAmount} onChange={(event) => setEntryAmount(event.target.value)}/></label>
+            {channel === 'kpay' && <label>KPay Transaction ID *<input required value={entryReference} onChange={(event) => setEntryReference(event.target.value)} maxLength={120}/></label>}
+          </div>
+          <label>အကြောင်းအရင်း *<textarea required rows={2} value={entryNote} onChange={(event) => setEntryNote(event.target.value)} placeholder="ဥပမာ - Owner ထည့်ငွေ / အခြားကုန်ကျစရိတ်"/></label>
+          <button className="button button-primary" type="submit" disabled={entryBusy}>{entryBusy ? 'သိမ်းဆည်းနေသည်…' : 'Ledger မှတ်တမ်းတင်မည်'}</button>
+        </form>
+      </details>
     </>}
   </section>;
 }
