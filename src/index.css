@@ -2801,8 +2801,18 @@ body,
 }
 
 @media (max-width: 920px) {
+  .topbar-left {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .topbar-title-group {
+    min-width: 0;
+  }
+
   .topbar-actions {
     gap: 6px;
+    flex: 0 0 auto;
   }
 
   .topbar-actions .avatar-button {
@@ -2812,7 +2822,7 @@ body,
   .topbar-branch-select {
     max-width: 120px;
     padding: 0 8px;
-    font-size: 11px;
+    font-size: 16px;
   }
 
   .theme-toggle {
@@ -2826,6 +2836,54 @@ body,
     display: none;
   }
 
+  .topbar-actions .install-btn {
+    width: 34px;
+    height: 34px;
+    min-width: 34px;
+    min-height: 34px;
+    padding: 0;
+    font-size: 0;
+    gap: 0;
+  }
+
+  .topbar-actions .install-btn svg {
+    margin: 0;
+  }
+
+  .ios-subtab-btn {
+    min-height: 38px;
+    height: auto;
+  }
+
+  .mobile-bottom-nav button span {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+  }
+
+  .toast,
+  .app-update-banner {
+    bottom: calc(74px + env(safe-area-inset-bottom));
+  }
+
+  input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+  select,
+  textarea,
+  .search-box input,
+  .barcode-pos-toolbar .search-box input,
+  .barcode-pos-toolbar .category-select,
+  .pos-layout-mobile-split .cart-customer input,
+  .pos-layout-mobile-split .discount-row input,
+  .modal-card input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+  .modal-card select,
+  .modal-card textarea,
+  .report-filter-fields input,
+  .report-filter-fields select {
+    font-size: 16px;
+    line-height: 1.25;
+  }
+
   .main-area:has(.pos-layout-mobile-split) .topbar {
     flex: 0 0 56px;
     height: 56px;
@@ -2834,6 +2892,10 @@ body,
 
   .main-area:has(.pos-layout-mobile-split) .content-area {
     padding: 8px 10px calc(72px + env(safe-area-inset-bottom));
+  }
+
+  .pos-layout-mobile-split .cart-summary {
+    padding-bottom: 6px;
   }
 }
 
@@ -2850,7 +2912,7 @@ body,
   .topbar-branch-select {
     max-width: 96px;
     height: 32px;
-    font-size: 11px;
+    font-size: 16px;
   }
 
   .sync-status-group {
@@ -2861,6 +2923,32 @@ body,
     width: 32px;
     height: 32px;
     min-width: 32px;
+  }
+
+  .topbar-actions .install-btn {
+    width: 32px;
+    height: 32px;
+    min-width: 32px;
+    min-height: 32px;
+    padding: 0;
+    font-size: 0;
+    gap: 0;
+  }
+
+  .topbar-actions .install-btn svg {
+    margin: 0;
+  }
+
+  .topbar-actions .cashier-signout-btn {
+    height: 32px;
+    min-height: 32px;
+    padding: 0 8px;
+    font-size: 11px;
+    gap: 4px;
+  }
+
+  .form-grid > *:has(.barcode-field-control) {
+    grid-column: 1 / -1;
   }
 
   .return-sale-card .modal-actions {
