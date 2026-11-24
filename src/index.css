@@ -1838,6 +1838,7 @@ td strong { color: var(--color-text); }
   --teal: var(--ios-blue);
   --teal-dark: var(--ios-blue-hover);
   --teal-soft: var(--ios-blue-soft);
+  --primary: var(--ios-blue);
   --bg: var(--color-bg);
   --panel: var(--color-surface);
   --panel-soft: var(--color-surface-soft);
@@ -1894,6 +1895,7 @@ td strong { color: var(--color-text); }
   --teal: var(--ios-blue);
   --teal-dark: var(--ios-blue-hover);
   --teal-soft: var(--ios-blue-soft);
+  --primary: var(--ios-blue);
   --bg: var(--color-bg);
   --panel: var(--color-surface);
   --panel-soft: var(--color-surface-soft);
@@ -2706,8 +2708,8 @@ body,
 }
 
 .ledger-filter-row .small-action.active {
-  background: var(--primary);
-  border-color: var(--primary);
+  background: var(--ios-blue);
+  border-color: var(--ios-blue);
   color: #ffffff;
 }
 
@@ -2726,10 +2728,33 @@ body,
   font-size: 11px;
   font-weight: 600;
   color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .list-limit-btn {
   padding: 6px 12px;
   font-size: 11px;
   min-height: 32px;
+}
+
+/* Tabular numbers across all financial, inventory, and history views */
+.mini-stat strong,
+.metric-card strong,
+.sales-summary-chip,
+.subtle-count,
+.ledger-balance strong,
+.table-wrap td,
+.table-wrap th,
+.settlement-card strong,
+.settlement-card b {
+  font-variant-numeric: tabular-nums;
+}
+
+:root[data-theme="dark"] .return-sale-summary {
+  background: rgba(10, 132, 255, 0.08);
+}
+
+:root[data-theme="dark"] .return-unit-row.selected {
+  border-color: rgba(10, 132, 255, 0.45);
+  background: rgba(10, 132, 255, 0.12);
 }
