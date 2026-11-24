@@ -1340,7 +1340,7 @@ const openManualCopyPrompt = (value: string, label: string) => dialog.prompt({
     : syncTone === 'syncing'
       ? 'Syncing…'
       : syncTone === 'warn'
-        ? (autoSyncStatus.state === 'conflict' ? 'Sync Conflict' : 'Local Cache')
+        ? (autoSyncStatus.state === 'conflict' ? 'Sync Conflict' : autoSyncStatus.state === 'error' ? 'Sync Error' : 'Local Cache')
         : syncTone === 'synced'
           ? (syncSavedTime ? `Cloud · ${syncSavedTime}` : 'Cloud Synced')
           : 'Local Cache';

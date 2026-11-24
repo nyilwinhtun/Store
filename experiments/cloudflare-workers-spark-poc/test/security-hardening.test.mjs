@@ -17,7 +17,7 @@ const verifier = async (token) => {
   };
 };
 
-function makeApp({ debug = false, firestoreError = new Error('unexpected') } = {}) {
+function makeApp({ debug = false, firestoreError = new Error('unexpected'), environment = 'staging' } = {}) {
   const firestore = {
     metrics: { reads: 0, writes: 0, requests: 0, bytesIn: 0, bytesOut: 0 },
     async beginTransaction() { throw firestoreError; },
@@ -25,6 +25,7 @@ function makeApp({ debug = false, firestoreError = new Error('unexpected') } = {
   return createApp({
     projectId: 'minimart-staging',
     businessId: 'store-staging-main',
+    environment,
     firestore,
     verifier,
     allowedOrigins: [ORIGIN],
@@ -73,7 +74,7 @@ test('an approved preflight gets only the required methods and headers', async (
   });
   assert.equal(response.status, 204);
   assert.equal(response.headers.get('access-control-allow-origin'), ORIGIN);
-  assert.equal(response.headers.get('access-control-allow-methods'), 'POST, OPTIONS');
+  assert.equal(response.headers.get('access-control-allow-methods'), 'GET, POST, OPTIONS');
   assert.equal(response.headers.get('access-control-allow-headers'), 'Authorization, Content-Type');
 });
 
@@ -148,4 +149,35 @@ test('debug logging and error responses never include an internal secret', async
   } finally {
     console.error = original;
   }
+});
+
+test('GET /health returns 200 with service, environment, and CORS headers without touching Firestore', async () => {
+  const app = makeApp({ environment: 'staging' });
+  const response = await request(app, { method: 'GET', origin: ORIGIN, path: '/health' });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('access-control-allow-origin'), ORIGIN);
+  assert.equal(response.headers.get('access-control-allow-methods'), 'GET, POST, OPTIONS');
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    service: 'minimart-spark-sales-poc',
+    environment: 'staging',
+  });
+  assert.equal(app.metrics.reads, 0);
+  assert.equal(app.metrics.writes, 0);
+  assert.equal(app.metrics.requests, 0);
+
+  const preflight = await request(app, {
+    method: 'OPTIONS',
+    origin: ORIGIN,
+    path: '/health',
+    headers: { 'access-control-request-method': 'GET' },
+  });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get('access-control-allow-origin'), ORIGIN);
+
+  const postHealth = await request(app, { method: 'POST', origin: ORIGIN, path: '/health' });
+  assert.equal(postHealth.status, 405);
+
+  const deniedOrigin = await request(app, { method: 'GET', origin: OTHER_ORIGIN, path: '/health' });
+  assert.equal(deniedOrigin.status, 403);
 });

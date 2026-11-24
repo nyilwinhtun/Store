@@ -16,6 +16,10 @@ function chunk(list, size) {
   return chunks;
 }
 
+function cleanCurrencyAmount(value) {
+  return Number.isFinite(value) ? Math.round(value * 10000) / 10000 : 0;
+}
+
 /**
  * Server-authoritative commit, mirroring functions/src/cashierUnitSale.ts.
  * All reads happen inside one Firestore transaction and every financial value is
@@ -215,24 +219,25 @@ export async function commitSaleOnce({ fs, businessId, identity, body, serverNow
       };
     });
 
+    const roundedSubtotal = cleanCurrencyAmount(trustedSubtotal);
     const trustedDiscount = num(sale.discount);
-    const maxDiscount = Math.floor(trustedSubtotal * (maxDiscountPercent / 100));
+    const maxDiscount = Math.floor(roundedSubtotal * (maxDiscountPercent / 100));
     if (!Number.isFinite(trustedDiscount) || trustedDiscount < 0 || trustedDiscount > maxDiscount + EPSILON) {
       invalid(`Cashier Discount သည် သတ်မှတ်ထားသော ${maxDiscountPercent}% (${maxDiscount}) ထက် မကျော်ရပါ။`);
     }
-    const trustedTotal = trustedSubtotal - trustedDiscount;
-    if (!near(sale.subtotal, trustedSubtotal)) invalid('Sale Subtotal သည် Server တွက်ချက်မှုနှင့် မကိုက်ညီပါ။');
-    if (!near(sale.total, trustedTotal)) invalid('Sale Total သည် Server တွက်ချက်မှုနှင့် မကိုက်ညီပါ။');
-    const trustedProfit = trustedSubtotal - trustedCost - trustedDiscount;
-    if (!near(sale.profit, trustedProfit)) invalid('Sale Profit သည် Server တွက်ချက်မှုနှင့် မကိုက်ညီပါ။');
+    const roundedTotal = cleanCurrencyAmount(Math.max(0, roundedSubtotal - trustedDiscount));
+    if (!near(sale.subtotal, roundedSubtotal)) invalid('Sale Subtotal သည် Server တွက်ချက်မှုနှင့် မကိုက်ညီပါ။');
+    if (!near(sale.total, roundedTotal)) invalid('Sale Total သည် Server တွက်ချက်မှုနှင့် မကိုက်ညီပါ။');
+    const roundedProfit = cleanCurrencyAmount(trustedSubtotal - trustedCost - trustedDiscount);
+    if (!near(sale.profit, roundedProfit)) invalid('Sale Profit သည် Server တွက်ချက်မှုနှင့် မကိုက်ညီပါ။');
     const trustedPaid = num(sale.paidAmount);
     const trustedDue = num(sale.dueAmount);
     if (str(sale.paymentMethod) === 'Credit') {
-      if (!near(trustedPaid + trustedDue, trustedTotal)) invalid('Credit ငွေရှင်းမှုသည် Server Total နှင့် မကိုက်ညီပါ။');
-    } else if (!near(trustedPaid, trustedTotal) || !near(trustedDue, 0)) {
+      if (!near(trustedPaid + trustedDue, roundedTotal)) invalid('Credit ငွေရှင်းမှုသည် Server Total နှင့် မကိုက်ညီပါ။');
+    } else if (!near(trustedPaid, roundedTotal) || !near(trustedDue, 0)) {
       invalid('ငွေရှင်းမှုသည် Server Total နှင့် မကိုက်ညီပါ။');
     }
-    if (sale.cashReceivedAmount !== undefined && num(sale.cashReceivedAmount) + EPSILON < trustedTotal) {
+    if (sale.cashReceivedAmount !== undefined && num(sale.cashReceivedAmount) + EPSILON < roundedTotal) {
       invalid('Cash Received သည် Server Total ထက် မလုံလောက်ပါ။');
     }
 
@@ -452,10 +457,10 @@ export async function commitSaleOnce({ fs, businessId, identity, body, serverNow
       branchId,
       ...(customerId ? { customerId } : {}),
       items: trustedItems,
-      subtotal: trustedSubtotal,
+      subtotal: roundedSubtotal,
       discount: trustedDiscount,
-      total: trustedTotal,
-      profit: trustedProfit,
+      total: roundedTotal,
+      profit: roundedProfit,
       ...(kpayReference ? { kpayTransactionReference: kpayReference, kpayReferenceKey: kpayReference.toLowerCase() } : {}),
       ...(customerPayloadForSale ? { customerSnapshot: customerPayloadForSale } : {}),
       productDeltas: productDeltaObject,
@@ -507,7 +512,7 @@ export async function commitSaleOnce({ fs, businessId, identity, body, serverNow
       data: {
         id: `${str(sale.id)}__created`, eventType: 'SALE_CREATED', branchId, saleId: str(sale.id),
         receiptNo: str(sale.receiptNo), actorUid: identity.uid, actorEmail: authEmail,
-        actorName, occurredAt: now, total: trustedTotal,
+        actorName, occurredAt: now, total: roundedTotal,
         saleOrigin: offline ? 'offline-allowance' : 'online',
         ...(offline ? { offlineAllowanceId: offline.allowanceId, deviceId: offline.deviceId } : {}),
       },

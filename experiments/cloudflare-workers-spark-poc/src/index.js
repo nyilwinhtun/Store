@@ -100,6 +100,7 @@ export function buildRuntime(env) {
   return createApp({
     projectId,
     businessId,
+    environment: environment || 'unknown',
     firestore,
     verifier,
     revocationChecker,
