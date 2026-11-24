@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
-import { CheckCircle2, Eye, EyeOff, KeyRound, LockKeyhole, LogIn, ShieldCheck, Store } from 'lucide-react';
+import { CheckCircle2, Eye, EyeOff, KeyRound, LockKeyhole, LogIn, ShieldCheck } from 'lucide-react';
+import { BrandMark } from './BrandMark';
 import { sendPasswordResetEmail, signInWithEmailAndPassword } from 'firebase/auth';
 import { firebaseAuth, firebaseConfigured } from '../lib/firebase';
 
@@ -135,7 +136,7 @@ export function LoginPage({ configurationError }: LoginPageProps) {
     <main className="public-login-screen">
       <section className="public-login-layout">
         <div className="public-login-brand-panel">
-          <div className="public-login-brand-mark"><Store size={28} /></div>
+          <div className="public-login-brand-mark"><BrandMark size={28} /></div>
           <h1>Minimart POS</h1>
           <p className="public-login-brand-copy">အရောင်း၊ ပစ္စည်းစာရင်းနှင့် ဆိုင်ခွဲငွေစာရင်းများကို တစ်နေရာတည်းမှ စီမံခန့်ခွဲပါ။</p>
           <div className="public-login-security-note"><ShieldCheck size={18} /><span>ခွင့်ပြုထားသော Owner နှင့် Cashier များသာ ဝင်ရောက်နိုင်သည်။</span></div>

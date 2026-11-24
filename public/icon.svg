@@ -1,1 +1,24 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"><rect width="128" height="128" rx="30" fill="#0f766e"/><path d="M27 45h74l-7 55H34z" fill="#fff"/><path d="M45 48c0-14 8-24 19-24s19 10 19 24" fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round"/><path d="M48 67h32M48 82h32" stroke="#0f766e" stroke-width="7" stroke-linecap="round"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="ios-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a8cff" />
+      <stop offset="100%" stop-color="#0066e6" />
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#ios-bg)" />
+  <path
+    d="M46 47v-5c0-10 8-18 18-18s18 8 18 18v5"
+    fill="none"
+    stroke="#ffffff"
+    stroke-width="8.5"
+    stroke-linecap="round"
+  />
+  <rect x="28" y="45" width="72" height="56" rx="14" fill="#ffffff" />
+  <path
+    d="M47 67h34M47 81h23"
+    fill="none"
+    stroke="#006be6"
+    stroke-width="7.5"
+    stroke-linecap="round"
+  />
+</svg>
