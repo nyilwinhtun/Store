@@ -53,17 +53,31 @@ export function CashManagementPage() {
   const totals = useMemo(() => {
     if (!activeShift) return { cashSales: 0, creditCollection: 0, cashIn: 0, cashOut: 0, branchCashExpenses: 0, expected: 0 };
     const afterOpen = (value: string) => new Date(value).getTime() >= new Date(activeShift.openedAt).getTime();
-    const cashSales = sales.filter((sale) => sale.status === 'completed' && afterOpen(sale.date)).reduce((sum, sale) => {
+    const paymentsBySale = new Map<string, number>();
+    for (const payment of payments) {
+      paymentsBySale.set(payment.saleId, (paymentsBySale.get(payment.saleId) || 0) + payment.amount);
+    }
+    const grossCashSales = sales.filter((sale) => sale.status === 'completed' && afterOpen(sale.date)).reduce((sum, sale) => {
       if (sale.paymentMethod === 'Cash') return sum + sale.total;
       // KPay is tracked in the separate KPay ledger and must never inflate the physical cash drawer.
       if (sale.paymentMethod === 'KPay') return sum;
-      // Any deposit recorded on a credit invoice is treated as cash for this shift.
-      return sum + (sale.paidAmount || 0);
+      // Only count the initial cash deposit at checkout; subsequent payments are counted in creditCollection.
+      const initialDeposit = Math.max(0, (sale.paidAmount || 0) - (paymentsBySale.get(sale.id) || 0));
+      return sum + initialDeposit;
     }, 0);
+    const cashRefunds = sales.filter((sale) => sale.status === 'completed').reduce((sum, sale) => (
+      sum + (sale.returns || []).reduce((retSum, ret) => (
+        ret.refundStatus === 'cash-refunded' && ret.refundAmount > 0 && afterOpen(ret.at)
+          ? retSum + ret.refundAmount
+          : retSum
+      ), 0)
+    ), 0);
+    const cashSales = grossCashSales - cashRefunds;
     const creditCollection = payments.filter((payment) => afterOpen(payment.date) && (payment.paymentMethod || 'Cash') === 'Cash').reduce((sum, payment) => sum + payment.amount, 0);
     const branchCashExpenses = expenses.filter((expense) => expense.fundedBy === 'branch-cash' && expense.approvalStatus !== 'pending' && expense.approvalStatus !== 'rejected' && afterOpen(expense.date)).reduce((sum, expense) => sum + expense.amount, 0);
     const shiftMovements = movements.filter((movement) => movement.shiftId === activeShift.id);
-    const cashIn = shiftMovements.filter((movement) => movement.direction === 'in').reduce((sum, movement) => sum + movement.amount, 0);
+    // Customer credit payments already appear in creditCollection; exclude their mirror cash movements to avoid double-counting.
+    const cashIn = shiftMovements.filter((movement) => movement.direction === 'in' && !movement.note.startsWith('Customer credit payment')).reduce((sum, movement) => sum + movement.amount, 0);
     const cashOut = shiftMovements.filter((movement) => movement.direction === 'out').reduce((sum, movement) => sum + movement.amount, 0);
     return { cashSales, creditCollection, cashIn, cashOut, branchCashExpenses, expected: activeShift.openingCash + cashSales + creditCollection + cashIn - cashOut - branchCashExpenses };
   }, [activeShift, sales, payments, movements, expenses]);

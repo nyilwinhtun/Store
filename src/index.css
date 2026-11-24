@@ -2738,6 +2738,13 @@ body,
 }
 
 /* Tabular numbers across all financial, inventory, and history views */
+.total-row > strong,
+.cart-summary b,
+.payment-confirm-total strong,
+.checkout-result-total strong,
+.report-metric strong,
+.report-bar-label strong,
+.cash-summary-grid strong,
 .mini-stat strong,
 .metric-card strong,
 .sales-summary-chip,
@@ -2748,6 +2755,118 @@ body,
 .settlement-card strong,
 .settlement-card b {
   font-variant-numeric: tabular-nums;
+}
+
+/* v3.3.0 UI / iOS mobile responsiveness & dark mode polish */
+:root[data-theme="dark"] .payment-confirm-total {
+  background: var(--panel-soft);
+  border-color: var(--line);
+}
+
+:root[data-theme="dark"] .payment-confirm-total small {
+  color: var(--muted);
+}
+
+:root[data-theme="dark"] .payment-shortfall {
+  background: rgba(255, 69, 58, 0.14);
+  border-color: rgba(255, 69, 58, 0.35);
+  color: #ff9a94;
+}
+
+:root[data-theme="dark"] .payment-change {
+  background: rgba(48, 209, 88, 0.14);
+  border-color: rgba(48, 209, 88, 0.32);
+  color: #6ee79a;
+}
+
+:root[data-theme="dark"] .payment-credit-note {
+  background: var(--panel-soft);
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+:root[data-theme="dark"] .payment-verify-error {
+  color: var(--ios-red);
+}
+
+:root[data-theme="dark"] .small-action-danger {
+  color: var(--ios-red) !important;
+  border-color: rgba(255, 69, 58, 0.35) !important;
+}
+
+@media (max-width: 1140px) {
+  .topbar-branch-name {
+    display: none;
+  }
+}
+
+@media (max-width: 920px) {
+  .topbar-actions {
+    gap: 6px;
+  }
+
+  .topbar-actions .avatar-button {
+    display: none;
+  }
+
+  .topbar-branch-select {
+    max-width: 120px;
+    padding: 0 8px;
+    font-size: 11px;
+  }
+
+  .theme-toggle {
+    width: 34px;
+    height: 34px;
+    min-width: 34px;
+    padding: 0;
+  }
+
+  .theme-toggle span {
+    display: none;
+  }
+
+  .main-area:has(.pos-layout-mobile-split) .topbar {
+    flex: 0 0 56px;
+    height: 56px;
+    min-height: 56px;
+  }
+
+  .main-area:has(.pos-layout-mobile-split) .content-area {
+    padding: 8px 10px calc(72px + env(safe-area-inset-bottom));
+  }
+}
+
+@media (max-width: 600px) {
+  .topbar {
+    padding: 0 12px;
+    gap: 8px;
+  }
+
+  .topbar h1 {
+    font-size: 16px;
+  }
+
+  .topbar-branch-select {
+    max-width: 96px;
+    height: 32px;
+    font-size: 11px;
+  }
+
+  .sync-status-group {
+    height: 32px;
+  }
+
+  .theme-toggle {
+    width: 32px;
+    height: 32px;
+    min-width: 32px;
+  }
+
+  .return-sale-card .modal-actions {
+    bottom: calc(-20px - env(safe-area-inset-bottom));
+    padding-bottom: calc(12px + env(safe-area-inset-bottom));
+  }
 }
 
 :root[data-theme="dark"] .return-sale-summary {

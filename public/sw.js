@@ -15,7 +15,7 @@ self.addEventListener('install', (event) => {
       scopedUrl('icon-192.png'),
       scopedUrl('icon-512.png'),
     ];
-    await cache.addAll(shell);
+    await cache.addAll(shell.map((url) => new Request(url, { cache: 'no-cache' })));
 
     // Vite creates this list at build time. Resolve every entry beneath the
     // registered GitHub Pages project scope, not the domain root.
@@ -61,7 +61,7 @@ self.addEventListener('fetch', (event) => {
     event.respondWith((async () => {
       const appShellUrl = scopedUrl('index.html');
       try {
-        const response = await fetch(request);
+        const response = await fetch(request.url, { cache: 'no-cache', credentials: 'same-origin' });
         if (response.ok && (response.headers.get('content-type') || '').includes('text/html')) {
           const cache = await caches.open(CACHE_NAME);
           await cache.put(appShellUrl, response.clone());

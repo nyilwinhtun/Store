@@ -56,7 +56,7 @@ import {
   recoverPendingCashierCash,
 } from '../lib/cashierCashSync';
 
-const listenOptions = { includeMetadataChanges: false } as const;
+const listenOptions = { includeMetadataChanges: true } as const;
 const SESSION_UID_KEY = 'minimart-active-session-uid-v1';
 
 function decodeRecords<T extends { id: string; branchId?: string }>(snapshot: QuerySnapshot<DocumentData>, branchId?: string): T[] {

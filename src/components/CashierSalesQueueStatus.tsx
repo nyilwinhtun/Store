@@ -18,6 +18,7 @@ export function CashierSalesQueueStatus({ uid, branchId }: { uid: string; branch
   const [state, setState] = useState<QueueState>('ready');
   const [message, setMessage] = useState('Cashier ရောင်းအားကို Cloud သို့ အလိုအလျောက် Sync လုပ်ပါမယ်။');
   const [busy, setBusy] = useState(false);
+  const [online, setOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine));
   const voidSale = usePosStore((s) => s.voidSale);
 
   const refreshCount = useCallback(async () => {
@@ -45,13 +46,16 @@ export function CashierSalesQueueStatus({ uid, branchId }: { uid: string; branch
       setMessage(detail.message || 'Cashier Sale Sync အခြေအနေ ပြောင်းလဲသွားပါတယ်။');
       void refreshCount();
     };
-    const onOnline = () => { void refreshCount(); };
+    const onOnline = () => { setOnline(true); void refreshCount(); };
+    const onOffline = () => { setOnline(false); };
     window.addEventListener('minimart-cashier-sale-status', onStatus);
     window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
     return () => {
       stopQueue();
       window.removeEventListener('minimart-cashier-sale-status', onStatus);
       window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
     };
   }, [uid, branchId, refreshCount]);
 
@@ -136,7 +140,7 @@ export function CashierSalesQueueStatus({ uid, branchId }: { uid: string; branch
           </button>
         )}
         {pending > 0 && (
-          <button className="button button-outline" type="button" onClick={() => void retry()} disabled={busy || !navigator.onLine}>
+          <button className="button button-outline" type="button" onClick={() => void retry()} disabled={busy || !online}>
             <RefreshCw size={14} className={busy ? 'spin' : ''} /> {busy ? 'စစ်ဆေးနေသည်' : 'ပြန်ပို့မည်'}
           </button>
         )}
