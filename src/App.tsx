@@ -148,6 +148,7 @@ function App() {
     catch { return '80'; }
   });
   const [chartPeriod, setChartPeriod] = useState<'7' | '30' | '365'>('7');
+  const [settingsTab, setSettingsTab] = useState<'store' | 'backup' | 'cloud'>('store');
   const importRef = useRef<HTMLInputElement>(null);
   const ownerOverviewRedirected = useRef(false);
   // Synchronous re-entry lock. State updates are async, so two fast taps can
@@ -1529,7 +1530,161 @@ const openManualCopyPrompt = (value: string, label: string) => dialog.prompt({
             currency={settings.currency}
           />}
 
-          {page === 'settings' && <section className="page-stack"><div className="section-heading"><div><h2>ဆက်တင်နှင့် Data</h2><p>ဆိုင်အချက်အလက်၊ Admin PIN နှင့် Backup ကို စီမံပါ။</p></div></div><div className="settings-grid"><div className="panel form-panel"><div className="panel-heading"><div className="panel-icon"><Settings size={18} /></div><div><h3>ဆိုင်အချက်အလက်</h3><p>Receipt နဲ့ POS မှာ အသုံးပြုမည့် အချက်အလက်များ</p></div></div><label>ဆိုင်အမည်<input value={settings.storeName} onChange={(e) => updateSettings({ storeName: e.target.value })} /></label><label>ငွေကြေးအတိုကောက်<input value={settings.currency} onChange={(e) => updateSettings({ currency: e.target.value.toUpperCase() || 'MMK' })} /></label><label>Receipt အောက်ခြေစာသား<input value={settings.receiptFooter} onChange={(e) => updateSettings({ receiptFooter: e.target.value })} /></label><div className="printer-settings-card"><div><strong>Receipt Printer စမ်းသပ်ခြင်း</strong><small>ဒီ Device အတွက် စက္ကူအကျယ်ရွေးပြီး Test Print ထုတ်ကြည့်နိုင်ပါတယ်။</small></div><label>Paper Width<select value={paperWidth} onChange={(event) => setPaperWidth(event.target.value === '58' ? '58' : '80')}><option value="58">58 mm</option><option value="80">80 mm</option></select></label><button className="button button-outline" type="button" onClick={printTestReceipt}><Printer size={15} /> Test Print</button><p>Print ခလုတ်နှိပ်လျှင် Browser/System Print Dialog ပွင့်ပါမယ်။ Bluetooth Printer ကို ဖုန်း/ကွန်ပျူတာရဲ့ Print Service က ပြသမှ ရွေးထုတ်နိုင်ပါတယ်။</p></div><label>Cashier အများဆုံး Discount ကန့်သတ်ချက် (%)<input type="number" min="0" max="100" step="1" value={settings.maxCashierDiscountPercent ?? 10} onChange={(e) => updateSettings({ maxCashierDiscountPercent: Math.max(0, Math.min(100, Number(e.target.value) || 0)) })} /><small className="field-hint">Cashier များ POS တွင် ပေးနိုင်သော အများဆုံး လျှော့ဈေး ရာခိုင်နှုန်း (Default: 10%)။</small></label><label>Admin PIN အသစ်<input type="password" inputMode="numeric" value={settings.adminPin} onChange={(e) => updateSettings({ adminPin: e.target.value.replace(/\D/g, '').slice(0, 12) })} /><small className="field-hint">Default PIN: 1234။ စတင်အသုံးပြုပြီးသည်နှင့် ပြောင်းလဲပါ။</small></label></div><div className="panel form-panel"><div className="panel-heading"><div className="panel-icon"><FileJson size={18} /></div><div><h3>Backup နှင့် ပြန်တင်ရန်</h3><p>Data ကို JSON ဖိုင်အဖြစ် သိမ်းပြီး ပြန်တင်နိုင်ပါတယ်။</p></div></div><div className="backup-card"><div><strong>Backup ထုတ်ရန် (Export)</strong><small>Products, Sales, Credit, Suppliers, Purchases, Expenses နှင့် Cash Shifts အားလုံး ပါဝင်မည်။</small></div><button className="button button-primary" onClick={exportBackup}><Download size={16} /> Export JSON</button></div><div className="backup-card"><div><strong>Backup ပြန်တင်ရန် (Import)</strong><small>အရင် Export လုပ်ထားသော JSON ဖိုင်ကို ပြန်တင်ပါ။ လက်ရှိ Data ကို အစားထိုးပါမယ်။</small></div><button className="button button-outline" onClick={() => importRef.current?.click()}><ArrowDownToLine size={16} /> ဖိုင်ရွေးရန်</button><input ref={importRef} type="file" accept="application/json,.json" hidden onChange={(e) => void importBackup(e.target.files?.[0])} /></div><div className="csv-export-row"><strong>CSV ဖိုင်ထုတ်ရန်</strong><div><button className="button button-outline" onClick={exportProductsCsv}>Products CSV</button><button className="button button-outline" onClick={exportSalesCsv}>Sales CSV</button><button className="button button-outline" onClick={exportExpensesCsv}>Expenses CSV</button></div></div><div className="backup-warning"><AlertTriangle size={17} /><span>Backup ဖိုင်ကို ဖုန်းထဲတင်မကဘဲ အခြားလုံခြုံသောနေရာတွင်လည်း သိမ်းထားပါ။ Browser Data ရှင်းလိုက်လျှင် Local Data ပျောက်နိုင်ပါတယ်။</span></div><div className="danger-zone"><div><strong>Local Data ဖျက်ရန် (Reset)</strong><small>ဒီ Device ရှိ POS စာရင်းများအားလုံးကို ဖယ်ရှားပါမယ်။</small></div><button className="button button-danger" onClick={() => { void (async () => { if ((await authorize('Data အားလုံး Reset လုပ်ရန်')) && (await dialog.confirm({ title: 'Local Data Reset', message: 'ဒီ Browser ထဲရှိ POS Data အားလုံးကို အပြီးဖျက်မလား။ Backup မရှိလျှင် ပြန်မရနိုင်ပါ။', confirmLabel: 'အားလုံးဖျက်မည်', tone: 'danger' }))) { clearAllData(); setCart([]); notify('Local Data အားလုံး Reset လုပ်ပြီးပါပြီ။'); } })(); }}><Trash2 size={16} /> Reset</button></div></div></div><CloudSyncPanel onOpenProfile={() => navTo('profile')} /><div className="panel security-note"><LockKeyhole size={19} /><div><strong>စနစ်နှင့် လုံခြုံရေး အချက်အလက်</strong><p>Admin PIN သည် ဒီ Browser အတွင်း UI ကာကွယ်မှုသာဖြစ်ပြီး Firebase Cloud Sync အတွက် Owner Account ဖြင့် ဝင်ရောက်ရန် လိုအပ်ပါသည်။</p><div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginTop: '8px' }}><RuntimeBadge inline /><small style={{ color: 'var(--muted)' }}>Minimart POS v3.3.0</small></div></div></div></section>}
+          {page === 'settings' && <section className="page-stack">
+            <div className="section-heading">
+              <div>
+                <h2>ဆက်တင်နှင့် Data</h2>
+                <p>ဆိုင်အချက်အလက်၊ Printer၊ Backup နှင့် Cloud Sync ကို စီမံပါ။</p>
+              </div>
+              <div className="settings-section-meta">
+                <RuntimeBadge inline />
+                <small>v3.3.0</small>
+              </div>
+            </div>
+
+            <div className="ios-subtabs-wrap" role="tablist" aria-label="ဆက်တင် အမျိုးအစားများ">
+              <div className="ios-segmented-subtabs">
+                <button type="button" role="tab" aria-selected={settingsTab === 'store'} className={`ios-subtab-btn ${settingsTab === 'store' ? 'active' : ''}`} onClick={() => setSettingsTab('store')}>
+                  <Settings size={14} /><span>ဆိုင်နှင့် POS</span>
+                </button>
+                <button type="button" role="tab" aria-selected={settingsTab === 'backup'} className={`ios-subtab-btn ${settingsTab === 'backup' ? 'active' : ''}`} onClick={() => setSettingsTab('backup')}>
+                  <FileJson size={14} /><span>Backup နှင့် Data</span>
+                </button>
+                <button type="button" role="tab" aria-selected={settingsTab === 'cloud'} className={`ios-subtab-btn ${settingsTab === 'cloud' ? 'active' : ''}`} onClick={() => setSettingsTab('cloud')}>
+                  <LockKeyhole size={14} /><span>Cloud Sync</span>
+                </button>
+              </div>
+            </div>
+
+            {settingsTab === 'store' && <>
+              <div className="panel settings-quick-bar">
+                <div className="settings-quick-info">
+                  <strong>အသွင်အပြင်နှင့် ဆိုင်စီမံခန့်ခွဲမှု</strong>
+                  <small>Theme ပြောင်းလဲခြင်းနှင့် ပရိုဖိုင်/ဆိုင်ခွဲ စာမျက်နှာများသို့ အမြန်သွားပါ။</small>
+                </div>
+                <div className="settings-quick-actions">
+                  <button
+                    type="button"
+                    className="button button-outline"
+                    onClick={() => setThemeMode((current) => current === 'light' ? 'dark' : 'light')}
+                  >
+                    {themeMode === 'light' ? <Moon size={15} /> : <Sun size={15} />}
+                    <span>{themeMode === 'light' ? 'Dark Mode' : 'Light Mode'}</span>
+                  </button>
+                  <button type="button" className="button button-outline" onClick={() => navTo('profile')}>
+                    <UserRound size={15} /><span>ပရိုဖိုင်နှင့် ဝန်ထမ်း</span>
+                  </button>
+                  <button type="button" className="button button-outline" onClick={() => navTo('branches')}>
+                    <Store size={15} /><span>ဆိုင်ခွဲများ</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="settings-grid">
+                <div className="panel form-panel">
+                  <div className="panel-heading">
+                    <div className="panel-icon"><Settings size={18} /></div>
+                    <div><h3>ဆိုင်နှင့် Receipt</h3><p>Receipt နှင့် POS တွင် အသုံးပြုမည့် အချက်အလက်များ</p></div>
+                  </div>
+                  <div className="settings-field-pair">
+                    <label>ဆိုင်အမည်<input value={settings.storeName} onChange={(e) => updateSettings({ storeName: e.target.value })} /></label>
+                    <label>ငွေကြေးအတိုကောက်<input value={settings.currency} onChange={(e) => updateSettings({ currency: e.target.value.toUpperCase() || 'MMK' })} /></label>
+                  </div>
+                  <label>Receipt အောက်ခြေစာသား<input value={settings.receiptFooter} onChange={(e) => updateSettings({ receiptFooter: e.target.value })} /></label>
+                  <div className="printer-settings-card">
+                    <div>
+                      <strong>Receipt Printer စမ်းသပ်ခြင်း</strong>
+                      <small>စက္ကူအကျယ်ရွေးပြီး Test Print ထုတ်ကြည့်နိုင်ပါသည်။</small>
+                    </div>
+                    <div className="printer-row-inline">
+                      <label>Paper Width
+                        <select value={paperWidth} onChange={(event) => setPaperWidth(event.target.value === '58' ? '58' : '80')}>
+                          <option value="58">58 mm</option>
+                          <option value="80">80 mm</option>
+                        </select>
+                      </label>
+                      <button className="button button-outline" type="button" onClick={printTestReceipt}><Printer size={15} /> Test Print</button>
+                    </div>
+                    <p>Print နှိပ်လျှင် Browser/System Print Dialog ပွင့်ပါမယ်။ Bluetooth Printer ကို Device Print Service မှ ရွေးထုတ်ပါ။</p>
+                  </div>
+                </div>
+
+                <div className="panel form-panel">
+                  <div className="panel-heading">
+                    <div className="panel-icon"><LockKeyhole size={18} /></div>
+                    <div><h3>POS ကန့်သတ်ချက်နှင့် PIN</h3><p>Cashier Discount နှင့် Browser Admin PIN</p></div>
+                  </div>
+                  <label>Cashier အများဆုံး Discount ကန့်သတ်ချက် (%)
+                    <input type="number" min="0" max="100" step="1" value={settings.maxCashierDiscountPercent ?? 10} onChange={(e) => updateSettings({ maxCashierDiscountPercent: Math.max(0, Math.min(100, Number(e.target.value) || 0)) })} />
+                    <small className="field-hint">Cashier များ POS တွင် ပေးနိုင်သော အများဆုံး လျှော့ဈေး ရာခိုင်နှုန်း (Default: 10%)။</small>
+                  </label>
+                  <label>Admin PIN အသစ်
+                    <input type="password" inputMode="numeric" value={settings.adminPin} onChange={(e) => updateSettings({ adminPin: e.target.value.replace(/\D/g, '').slice(0, 12) })} />
+                    <small className="field-hint">Default PIN: 1234။ စတင်အသုံးပြုပြီးသည်နှင့် ပြောင်းလဲပါ။</small>
+                  </label>
+                  <div className="security-note settings-inline-note">
+                    <LockKeyhole size={17} />
+                    <div>
+                      <strong>လုံခြုံရေး မှတ်ချက်</strong>
+                      <p>Admin PIN သည် ဒီ Browser အတွင်း UI ကာကွယ်မှုသာဖြစ်ပြီး Cloud Sync အတွက် Owner Account ဖြင့် ဝင်ရောက်ရန် လိုအပ်ပါသည်။</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </>}
+
+            {settingsTab === 'backup' && <div className="settings-grid">
+              <div className="panel form-panel">
+                <div className="panel-heading">
+                  <div className="panel-icon"><FileJson size={18} /></div>
+                  <div><h3>Backup နှင့် CSV Export</h3><p>Data ကို JSON/CSV ဖိုင်အဖြစ် သိမ်းပြီး ပြန်တင်နိုင်ပါတယ်။</p></div>
+                </div>
+                <div className="backup-card">
+                  <div><strong>Backup ထုတ်ရန် (Export)</strong><small>Products, Sales, Credit, Suppliers, Purchases, Expenses နှင့် Cash Shifts အားလုံး ပါဝင်မည်။</small></div>
+                  <button className="button button-primary" onClick={exportBackup}><Download size={16} /> Export JSON</button>
+                </div>
+                <div className="backup-card">
+                  <div><strong>Backup ပြန်တင်ရန် (Import)</strong><small>အရင် Export လုပ်ထားသော JSON ဖိုင်ကို ပြန်တင်ပါ။ လက်ရှိ Data ကို အစားထိုးပါမယ်။</small></div>
+                  <button className="button button-outline" onClick={() => importRef.current?.click()}><ArrowDownToLine size={16} /> ဖိုင်ရွေးရန်</button>
+                  <input ref={importRef} type="file" accept="application/json,.json" hidden onChange={(e) => void importBackup(e.target.files?.[0])} />
+                </div>
+                <div className="csv-export-row">
+                  <strong>CSV ဖိုင်ထုတ်ရန်</strong>
+                  <div>
+                    <button className="button button-outline" onClick={exportProductsCsv}>Products CSV</button>
+                    <button className="button button-outline" onClick={exportSalesCsv}>Sales CSV</button>
+                    <button className="button button-outline" onClick={exportExpensesCsv}>Expenses CSV</button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="panel form-panel">
+                <div className="panel-heading">
+                  <div className="panel-icon"><AlertTriangle size={18} /></div>
+                  <div><h3>Data ထိန်းသိမ်းမှုနှင့် Reset</h3><p>Local Device Data သတိပြုရန်နှင့် ဖျက်သိမ်းခြင်း</p></div>
+                </div>
+                <div className="backup-warning">
+                  <AlertTriangle size={17} />
+                  <span>Backup ဖိုင်ကို ဖုန်းထဲတင်မကဘဲ အခြားလုံခြုံသောနေရာတွင်လည်း သိမ်းထားပါ။ Browser Data ရှင်းလိုက်လျှင် Local Data ပျောက်နိုင်ပါတယ်။</span>
+                </div>
+                <div className="danger-zone">
+                  <div><strong>Local Data ဖျက်ရန် (Reset)</strong><small>ဒီ Device ရှိ POS စာရင်းများအားလုံးကို ဖယ်ရှားပါမယ်။</small></div>
+                  <button className="button button-danger" onClick={() => { void (async () => { if ((await authorize('Data အားလုံး Reset လုပ်ရန်')) && (await dialog.confirm({ title: 'Local Data Reset', message: 'ဒီ Browser ထဲရှိ POS Data အားလုံးကို အပြီးဖျက်မလား။ Backup မရှိလျှင် ပြန်မရနိုင်ပါ။', confirmLabel: 'အားလုံးဖျက်မည်', tone: 'danger' }))) { clearAllData(); setCart([]); notify('Local Data အားလုံး Reset လုပ်ပြီးပါပြီ။'); } })(); }}><Trash2 size={16} /> Reset</button>
+                </div>
+              </div>
+            </div>}
+
+            {settingsTab === 'cloud' && <>
+              <CloudSyncPanel onOpenProfile={() => navTo('profile')} />
+              <div className="panel security-note">
+                <LockKeyhole size={19} />
+                <div>
+                  <strong>စနစ်နှင့် လုံခြုံရေး အချက်အလက်</strong>
+                  <p>Admin PIN သည် ဒီ Browser အတွင်း UI ကာကွယ်မှုသာဖြစ်ပြီး Firebase Cloud Sync အတွက် Owner Account ဖြင့် ဝင်ရောက်ရန် လိုအပ်ပါသည်။</p>
+                </div>
+              </div>
+            </>}
+          </section>}
           </ContentErrorBoundary>
           </Suspense>
         </div>
