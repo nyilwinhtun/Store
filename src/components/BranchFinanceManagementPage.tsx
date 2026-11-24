@@ -127,31 +127,15 @@ export function BranchFinanceManagementPage({ authorize, notify }: Props) {
     const advanceFundedExpenseIds = new Set(branchReconciliations
       .filter((entry) => entry.kind === 'expense-applied' && entry.relatedExpenseId)
       .map((entry) => entry.relatedExpenseId as string));
-    const paymentsBySale = new Map<string, number>();
-    for (const payment of branchPayments) {
-      paymentsBySale.set(payment.saleId, (paymentsBySale.get(payment.saleId) || 0) + payment.amount);
-    }
-    const saleById = new Map(branchSales.map((sale) => [sale.id, sale]));
     for (const sale of branchSales) {
-      if (include(sale.date)) {
-        if (sale.paymentMethod === 'Cash') rows.push({ id: `sale-cash-${sale.id}`, date: sale.date, channel: 'cash', direction: 'in', amount: sale.total, title: `အရောင်း · ${sale.receiptNo}`, source: 'POS Sale' });
-        else if (sale.paymentMethod === 'KPay') rows.push({ id: `sale-kpay-${sale.id}`, date: sale.date, channel: 'kpay', direction: 'in', amount: sale.total, title: `KPay အရောင်း · ${sale.receiptNo}`, source: 'POS KPay', reference: sale.kpayTransactionReference });
-        else {
-          // Only record the initial checkout deposit; subsequent repayments are recorded from branchPayments.
-          const initialPaid = Math.max(0, (sale.paidAmount || 0) - (paymentsBySale.get(sale.id) || 0));
-          if (initialPaid > 0) rows.push({ id: `sale-credit-paid-${sale.id}`, date: sale.date, channel: 'cash', direction: 'in', amount: initialPaid, title: `Credit ကြိုပေးငွေ · ${sale.receiptNo}`, source: 'POS Credit Deposit' });
-        }
-      }
-      for (const ret of sale.returns || []) {
-        if (ret.refundStatus === 'cash-refunded' && ret.refundAmount > 0 && include(ret.at)) {
-          rows.push({ id: `sale-return-refund-${sale.id}-${ret.id}`, date: ret.at, channel: 'cash', direction: 'out', amount: ret.refundAmount, title: `အရောင်းပြန်အမ်းငွေ · ${sale.receiptNo}`, source: 'Sale Return', note: ret.reason, actor: ret.actorName });
-        }
-      }
+      if (!include(sale.date)) continue;
+      if (sale.paymentMethod === 'Cash') rows.push({ id: `sale-cash-${sale.id}`, date: sale.date, channel: 'cash', direction: 'in', amount: sale.total, title: `အရောင်း · ${sale.receiptNo}`, source: 'POS Sale' });
+      else if (sale.paymentMethod === 'KPay') rows.push({ id: `sale-kpay-${sale.id}`, date: sale.date, channel: 'kpay', direction: 'in', amount: sale.total, title: `KPay အရောင်း · ${sale.receiptNo}`, source: 'POS KPay', reference: sale.kpayTransactionReference });
+      else if ((sale.paidAmount || 0) > 0) rows.push({ id: `sale-credit-paid-${sale.id}`, date: sale.date, channel: 'cash', direction: 'in', amount: sale.paidAmount || 0, title: `Credit ကြိုပေးငွေ · ${sale.receiptNo}`, source: 'POS Credit Deposit' });
     }
     for (const payment of branchPayments) {
       if (!include(payment.date) || (payment.paymentMethod || 'Cash') !== 'Cash') continue;
-      const receiptNo = saleById.get(payment.saleId)?.receiptNo || payment.saleId;
-      rows.push({ id: `customer-payment-${payment.id}`, date: payment.date, channel: 'cash', direction: 'in', amount: payment.amount, title: `အကြွေးပြန်ဆပ် · ${receiptNo}`, source: 'Customer Collection', note: payment.note });
+      rows.push({ id: `customer-payment-${payment.id}`, date: payment.date, channel: 'cash', direction: 'in', amount: payment.amount, title: `အကြွေးပြန်ဆပ် · ${payment.saleId}`, source: 'Customer Collection', note: payment.note });
     }
     for (const expense of branchExpenses) {
       const expenseMethod = expenseChannel(expense);
@@ -260,12 +244,14 @@ export function BranchFinanceManagementPage({ authorize, notify }: Props) {
       kpayQrUpdatedBy: access.uid || 'local-owner',
     } : {};
     setSaveBusy(true);
-    updateBranch(activeBranch.id, { settings: {
-      kpayEnabled,
-      kpayAccountName: kpayAccountName.trim(), kpayAccountNumber: kpayAccountNumber.trim(), kpayAccountLabel: kpayAccountLabel.trim(),
-      cashLedgerOpeningBalance: cash, kpayLedgerOpeningBalance: kpay, financeLedgerStartDate: startDate,
-      ...qrSettings,
-    } });
+    updateBranch(activeBranch.id, {
+      settings: {
+        kpayEnabled,
+        kpayAccountName: kpayAccountName.trim(), kpayAccountNumber: kpayAccountNumber.trim(), kpayAccountLabel: kpayAccountLabel.trim(),
+        cashLedgerOpeningBalance: cash, kpayLedgerOpeningBalance: kpay, financeLedgerStartDate: startDate,
+        ...qrSettings,
+      }
+    });
     setKpayQrDirty(false);
     setSaveBusy(false);
     notify('Branch KPay Account၊ QR နဲ့ Ledger အဖွင့်လက်ကျန် သိမ်းပြီးပါပြီ။ Cloud Sync ပြီးနောက် ဒီ Branch ရဲ့ Cashier ဖုန်းမှာလည်း ရောက်ပါမယ်။');
@@ -345,49 +331,49 @@ export function BranchFinanceManagementPage({ authorize, notify }: Props) {
   const shownLedgerRows = ledgerExpanded ? filteredLedgerRows : filteredLedgerRows.slice(0, 20);
   const shownAuditRows = auditExpanded ? branchFinanceAudit : branchFinanceAudit.slice(0, 15);
   return <section className="page-stack">
-    <div className="section-heading"><div><h2>Branch Cash & KPay စာရင်း</h2><p>{activeBranch.name} · ဆိုင်ခွဲအလိုက် KPay Account၊ ငွေဝင်/ထွက်နဲ့ Cash Advance ရှင်းတမ်း။</p></div><button className="button button-outline" type="button" onClick={exportLedger}><Download size={15}/> Ledger CSV</button></div>
+    <div className="section-heading"><div><h2>Branch Cash & KPay စာရင်း</h2><p>{activeBranch.name} · ဆိုင်ခွဲအလိုက် KPay Account၊ ငွေဝင်/ထွက်နဲ့ Cash Advance ရှင်းတမ်း။</p></div><button className="button button-outline" type="button" onClick={exportLedger}><Download size={15} /> Ledger CSV</button></div>
     <div className="mini-stats">
-      <div className="mini-stat"><span className="mini-stat-icon"><Banknote size={17}/></span><div><small>Cash လက်ကျန်</small><strong>{money(cashSummary.balance, settings.currency)}</strong></div></div>
-      <div className="mini-stat"><span className="mini-stat-icon"><CreditCard size={17}/></span><div><small>KPay လက်ကျန်</small><strong>{money(kpaySummary.balance, settings.currency)}</strong></div></div>
-      <div className="mini-stat"><span className="mini-stat-icon"><Wallet size={17}/></span><div><small>Cashier ကြိုတင်ငွေ ကျန်</small><strong>{money(advances.reduce((sum, entry) => sum + entry.outstanding, 0), settings.currency)}</strong></div></div>
+      <div className="mini-stat"><span className="mini-stat-icon"><Banknote size={17} /></span><div><small>Cash လက်ကျန်</small><strong>{money(cashSummary.balance, settings.currency)}</strong></div></div>
+      <div className="mini-stat"><span className="mini-stat-icon"><CreditCard size={17} /></span><div><small>KPay လက်ကျန်</small><strong>{money(kpaySummary.balance, settings.currency)}</strong></div></div>
+      <div className="mini-stat"><span className="mini-stat-icon"><Wallet size={17} /></span><div><small>Cashier ကြိုတင်ငွေ ကျန်</small><strong>{money(advances.reduce((sum, entry) => sum + entry.outstanding, 0), settings.currency)}</strong></div></div>
     </div>
     <div className="ios-subtabs-wrap" role="tablist" aria-label="ငွေစာရင်း အပိုင်းများ">
       <div className="ios-segmented-subtabs">
         <button type="button" role="tab" aria-selected={financeTab === 'ledger'} className={`ios-subtab-btn ${financeTab === 'ledger' ? 'active' : ''}`} onClick={() => setFinanceTab('ledger')}>
-          <Wallet size={14}/><span>ငွေဝင်/ထွက် ({ledgerRows.length})</span>
+          <Wallet size={14} /><span>ငွေဝင်/ထွက် ({ledgerRows.length})</span>
         </button>
         <button type="button" role="tab" aria-selected={financeTab === 'reconcile'} className={`ios-subtab-btn ${financeTab === 'reconcile' ? 'active' : ''}`} onClick={() => setFinanceTab('reconcile')}>
-          <CheckCircle2 size={14}/><span>စာရင်းတိုက်စစ်</span>
+          <CheckCircle2 size={14} /><span>စာရင်းတိုက်စစ်</span>
         </button>
         <button type="button" role="tab" aria-selected={financeTab === 'advance'} className={`ios-subtab-btn ${financeTab === 'advance' ? 'active' : ''}`} onClick={() => setFinanceTab('advance')}>
-          <ClipboardList size={14}/><span>Advance ({advances.length})</span>
+          <ClipboardList size={14} /><span>Advance ({advances.length})</span>
         </button>
         <button type="button" role="tab" aria-selected={financeTab === 'account'} className={`ios-subtab-btn ${financeTab === 'account' ? 'active' : ''}`} onClick={() => setFinanceTab('account')}>
-          <Store size={14}/><span>KPay & Opening</span>
+          <Store size={14} /><span>KPay & Opening</span>
         </button>
       </div>
     </div>
 
     {financeTab === 'reconcile' && <>
       <form className="panel form-panel" onSubmit={saveDailyReconciliation}>
-        <div className="panel-heading"><div className="panel-icon"><CheckCircle2 size={18}/></div><div><h3>နေ့စဉ် Cash / KPay စာရင်းတိုက်စစ်ခြင်း</h3><p>App မျှော်မှန်းလက်ကျန်ကို လက်တွေ့ Cash ရေတွက်ငွေနဲ့ KPay App လက်ကျန်တို့ကို နှိုင်းယှဉ်ပြီး Audit Snapshot သိမ်းပါ။</p></div></div>
-        <label>တိုက်စစ်မည့်နေ့<input type="date" required min={ledgerStartDate} max={dayKey()} value={reconciliationDate} onChange={(event) => setReconciliationDate(event.target.value)}/></label>
+        <div className="panel-heading"><div className="panel-icon"><CheckCircle2 size={18} /></div><div><h3>နေ့စဉ် Cash / KPay စာရင်းတိုက်စစ်ခြင်း</h3><p>App မျှော်မှန်းလက်ကျန်ကို လက်တွေ့ Cash ရေတွက်ငွေနဲ့ KPay App လက်ကျန်တို့ကို နှိုင်းယှဉ်ပြီး Audit Snapshot သိမ်းပါ။</p></div></div>
+        <label>တိုက်စစ်မည့်နေ့<input type="date" required min={ledgerStartDate} max={dayKey()} value={reconciliationDate} onChange={(event) => setReconciliationDate(event.target.value)} /></label>
         <div className="business-grid">
-          <div className="panel"><div className="panel-heading"><div className="panel-icon"><Banknote size={17}/></div><div><h3>Cash တိုက်စစ်ခြင်း</h3><p>ဆိုင်ကောင်တာမှာ တကယ်ရေတွက်ထားသော ငွေသား။</p></div></div><div className="ledger-balance"><span>App မျှော်မှန်း Cash</span><strong>{money(reconciliationCash.expected, settings.currency)}</strong></div><div className="settlement-hint">ငွေဝင် {money(reconciliationCash.totalIn, settings.currency)} · ငွေထွက် {money(reconciliationCash.totalOut, settings.currency)}</div><label>အမှန်တကယ် ရေတွက်ထားသော Cash ({settings.currency}) *<input required type="number" min="0" step="1" value={actualCashBalance} onChange={(event) => setActualCashBalance(event.target.value)} placeholder="တကယ်ရှိတဲ့ ငွေ"/></label>{cashVariance !== null && <div className="settlement-hint">ကွာဟချက် — <b className={cashVariance === 0 ? 'stock-ok' : 'stock-warning'}>{cashVariance > 0 ? '+' : ''}{money(cashVariance, settings.currency)}</b></div>}</div>
-          <div className="panel"><div className="panel-heading"><div className="panel-icon"><CreditCard size={17}/></div><div><h3>Branch KPay တိုက်စစ်ခြင်း</h3><p>Owner ရဲ့ KPay App ထဲမှာ ပြထားတဲ့ လက်ကျန်ငွေ။</p></div></div><div className="ledger-balance"><span>App မျှော်မှန်း KPay</span><strong>{money(reconciliationKPay.expected, settings.currency)}</strong></div><div className="settlement-hint">ငွေဝင် {money(reconciliationKPay.totalIn, settings.currency)} · ငွေထွက် {money(reconciliationKPay.totalOut, settings.currency)}</div>{activeBranch.settings.kpayAccountNumber ? <><label>အမှန်တကယ် KPay လက်ကျန် ({settings.currency}) *<input required type="number" min="0" step="1" value={actualKPayBalance} onChange={(event) => setActualKPayBalance(event.target.value)} placeholder="KPay App ထဲက လက်ကျန်"/></label>{kpayVariance !== null && <div className="settlement-hint">ကွာဟချက် — <b className={kpayVariance === 0 ? 'stock-ok' : 'stock-warning'}>{kpayVariance > 0 ? '+' : ''}{money(kpayVariance, settings.currency)}</b></div>}</> : <div className="empty-state"><strong>Branch KPay Account မသတ်မှတ်ရသေးပါ</strong><p>KPay & Opening Tab မှာ KPay Account ထည့်ပြီးမှ တိုက်စစ်နိုင်ပါမယ်။</p></div>}</div>
+          <div className="panel"><div className="panel-heading"><div className="panel-icon"><Banknote size={17} /></div><div><h3>Cash တိုက်စစ်ခြင်း</h3><p>ဆိုင်ကောင်တာမှာ တကယ်ရေတွက်ထားသော ငွေသား။</p></div></div><div className="ledger-balance"><span>App မျှော်မှန်း Cash</span><strong>{money(reconciliationCash.expected, settings.currency)}</strong></div><div className="settlement-hint">ငွေဝင် {money(reconciliationCash.totalIn, settings.currency)} · ငွေထွက် {money(reconciliationCash.totalOut, settings.currency)}</div><label>အမှန်တကယ် ရေတွက်ထားသော Cash ({settings.currency}) *<input required type="number" min="0" step="1" value={actualCashBalance} onChange={(event) => setActualCashBalance(event.target.value)} placeholder="တကယ်ရှိတဲ့ ငွေ" /></label>{cashVariance !== null && <div className="settlement-hint">ကွာဟချက် — <b className={cashVariance === 0 ? 'stock-ok' : 'stock-warning'}>{cashVariance > 0 ? '+' : ''}{money(cashVariance, settings.currency)}</b></div>}</div>
+          <div className="panel"><div className="panel-heading"><div className="panel-icon"><CreditCard size={17} /></div><div><h3>Branch KPay တိုက်စစ်ခြင်း</h3><p>Owner ရဲ့ KPay App ထဲမှာ ပြထားတဲ့ လက်ကျန်ငွေ။</p></div></div><div className="ledger-balance"><span>App မျှော်မှန်း KPay</span><strong>{money(reconciliationKPay.expected, settings.currency)}</strong></div><div className="settlement-hint">ငွေဝင် {money(reconciliationKPay.totalIn, settings.currency)} · ငွေထွက် {money(reconciliationKPay.totalOut, settings.currency)}</div>{activeBranch.settings.kpayAccountNumber ? <><label>အမှန်တကယ် KPay လက်ကျန် ({settings.currency}) *<input required type="number" min="0" step="1" value={actualKPayBalance} onChange={(event) => setActualKPayBalance(event.target.value)} placeholder="KPay App ထဲက လက်ကျန်" /></label>{kpayVariance !== null && <div className="settlement-hint">ကွာဟချက် — <b className={kpayVariance === 0 ? 'stock-ok' : 'stock-warning'}>{kpayVariance > 0 ? '+' : ''}{money(kpayVariance, settings.currency)}</b></div>}</> : <div className="empty-state"><strong>Branch KPay Account မသတ်မှတ်ရသေးပါ</strong><p>KPay & Opening Tab မှာ KPay Account ထည့်ပြီးမှ တိုက်စစ်နိုင်ပါမယ်။</p></div>}</div>
         </div>
-        <label>ကွာဟချက် / စာရင်းစစ် မှတ်ချက်<textarea rows={2} value={reconciliationNote} onChange={(event) => setReconciliationNote(event.target.value)} placeholder="ကွာဟချက်ရှိပါက အကြောင်းရင်းရေးပါ။"/></label>
+        <label>ကွာဟချက် / စာရင်းစစ် မှတ်ချက်<textarea rows={2} value={reconciliationNote} onChange={(event) => setReconciliationNote(event.target.value)} placeholder="ကွာဟချက်ရှိပါက အကြောင်းရင်းရေးပါ။" /></label>
         <div className="form-actions"><button className="button button-primary" type="submit" disabled={reconciliationBusy || !actualCashBalance || (Boolean(activeBranch.settings.kpayAccountNumber) && actualKPayBalance === '')}>{reconciliationBusy ? 'တိုက်စစ်မှတ်တမ်း သိမ်းဆည်းနေသည်…' : 'နေ့စဉ်စာရင်းတိုက်စစ် သိမ်းမည်'}</button></div>
         <small className="field-hint">ဒီလုပ်ဆောင်ချက်က အမှန်တကယ်လက်ကျန်ကို စာရင်းစစ် Snapshot အဖြစ်သာ သိမ်းပါတယ်။ Cash / KPay Ledger ကို အလိုအလျောက် တိုး/လျှော့ မလုပ်ပါ။</small>
       </form>
       <div className="panel"><div className="panel-heading"><div><h3>Finance Reconciliation Audit History</h3><p>ယခင်နေ့စဉ် Cash / KPay တိုက်စစ်မှတ်တမ်းများ။</p></div><div className="form-actions"><span className="subtle-count">{branchFinanceAudit.length} records</span><button className="button button-outline" type="button" onClick={exportReconciliations} disabled={!branchFinanceAudit.length}><Download size={15}/> Audit CSV</button></div></div>
-        {branchFinanceAudit.length === 0 ? <div className="empty-state"><div className="empty-icon"><ClipboardList size={22}/></div><strong>Reconciliation Audit မရှိသေးပါ</strong><p>နေ့စဉ်စာရင်းတိုက်စစ်ပြီး သိမ်းဆည်းတဲ့အခါ ဒီနေရာမှာ ပေါ်လာပါမယ်။</p></div> : <><div className="table-wrap"><table><thead><tr><th>နေ့</th><th>Account</th><th>မျှော်မှန်း</th><th>အမှန်</th><th>ကွာဟချက်</th><th>မှတ်တမ်းတင်သူ</th><th>အချိန်</th></tr></thead><tbody>{shownAuditRows.map((entry: BranchFinanceReconciliationRecord) => <tr key={entry.id}><td>{entry.businessDate}</td><td><span className="tag">{entry.channel.toUpperCase()}</span></td><td>{money(entry.expectedBalance, settings.currency)}</td><td>{money(entry.actualBalance, settings.currency)}</td><td><b className={entry.variance === 0 ? 'stock-ok' : 'stock-warning'}>{entry.variance > 0 ? '+' : ''}{money(entry.variance, settings.currency)}</b>{entry.note && <small>{entry.note}</small>}</td><td>{entry.createdByName}</td><td>{dateLabel(entry.createdAt)}</td></tr>)}</tbody></table></div><ListLimitToggle total={branchFinanceAudit.length} shown={shownAuditRows.length} expanded={auditExpanded} onToggle={() => setAuditExpanded((v) => !v)} /></>}
+        {branchFinanceAudit.length === 0 ? <div className="empty-state"><div className="empty-icon"><ClipboardList size={22}/></div><strong>Reconciliation Audit မရှိသေးပါ</strong><p>နေ့စဉ်စာရင်းတိုက်စစ်ပြီး သိမ်းဆည်းတဲ့အခါ ဒီနေရာမှာ ပေါ်လာပါမယ်။</p></div> : <><div className="table-wrap table-cards"><table><thead><tr><th>နေ့</th><th>Account</th><th>မျှော်မှန်း</th><th>အမှန်</th><th>ကွာဟချက်</th><th>မှတ်တမ်းတင်သူ</th><th>အချိန်</th></tr></thead><tbody>{shownAuditRows.map((entry: BranchFinanceReconciliationRecord) => <tr key={entry.id}><td data-label="နေ့">{entry.businessDate}</td><td data-label="Account"><span className="tag">{entry.channel.toUpperCase()}</span></td><td data-label="မျှော်မှန်း">{money(entry.expectedBalance, settings.currency)}</td><td data-label="အမှန်">{money(entry.actualBalance, settings.currency)}</td><td data-label="ကွာဟချက်"><div><b className={entry.variance === 0 ? 'stock-ok' : 'stock-warning'}>{entry.variance > 0 ? '+' : ''}{money(entry.variance, settings.currency)}</b>{entry.note && <small>{entry.note}</small>}</div></td><td data-label="မှတ်တမ်းတင်သူ">{entry.createdByName}</td><td data-label="အချိန်">{dateLabel(entry.createdAt)}</td></tr>)}</tbody></table></div><ListLimitToggle total={branchFinanceAudit.length} shown={shownAuditRows.length} expanded={auditExpanded} onToggle={() => setAuditExpanded((v) => !v)} /></>}
       </div>
     </>}
 
     {financeTab === 'account' && <>
       <form className="panel form-panel" onSubmit={saveAccount}>
-        <div className="panel-heading"><div className="panel-icon"><Store size={18}/></div><div><h3>ဒီ Branch ရဲ့ KPay Account</h3><p>ဆိုင်ခွဲတစ်ခုချင်းစီအတွက် ကိုယ်ပိုင် KPay လက်ခံအကောင့် သတ်မှတ်ပါ။</p></div></div>
+        <div className="panel-heading"><div className="panel-icon"><Store size={18} /></div><div><h3>ဒီ Branch ရဲ့ KPay Account</h3><p>ဆိုင်ခွဲတစ်ခုချင်းစီအတွက် ကိုယ်ပိုင် KPay လက်ခံအကောင့် သတ်မှတ်ပါ။</p></div></div>
         <label className={`kpay-enable-toggle${kpayEnabled ? '' : ' is-disabled'}`}>
           <input type="checkbox" checked={kpayEnabled} onChange={(event) => setKpayEnabled(event.target.checked)} />
           <span>
@@ -395,7 +381,7 @@ export function BranchFinanceManagementPage({ authorize, notify }: Props) {
             <small>{kpayEnabled ? 'POS မှာ ဒီ Branch အတွက် KPay ရွေးချယ်နိုင်ပါသည်။' : 'POS မှာ KPay ရွေးချယ်၍ မရပါ။ ပြောင်းလိုက်ပြီးနောက် အောက်က Save ကို နှိပ်ပါ။'}</small>
           </span>
         </label>
-        <div className="form-grid"><label>Account Label<input value={kpayAccountLabel} onChange={(event) => setKpayAccountLabel(event.target.value)} placeholder="ဥပမာ - Main KPay"/></label><label>KPay Account အမည်<input value={kpayAccountName} onChange={(event) => setKpayAccountName(event.target.value)} placeholder="Account ပိုင်ရှင်အမည်"/></label><label>KPay ဖုန်းနံပါတ် / Account<input value={kpayAccountNumber} onChange={(event) => setKpayAccountNumber(event.target.value)} inputMode="tel" placeholder="09xxxxxxxxx"/></label><label>Ledger စတင်မည့်နေ့<input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)}/></label><label>စတင်ချိန် Cash လက်ကျန် ({settings.currency})<input type="number" min="0" step="1" value={openingCash} onChange={(event) => setOpeningCash(event.target.value)}/></label><label>စတင်ချိန် KPay လက်ကျန် ({settings.currency})<input type="number" min="0" step="1" value={openingKPay} onChange={(event) => setOpeningKPay(event.target.value)}/></label></div>
+        <div className="form-grid"><label>Account Label<input value={kpayAccountLabel} onChange={(event) => setKpayAccountLabel(event.target.value)} placeholder="ဥပမာ - Main KPay" /></label><label>KPay Account အမည်<input value={kpayAccountName} onChange={(event) => setKpayAccountName(event.target.value)} placeholder="Account ပိုင်ရှင်အမည်" /></label><label>KPay ဖုန်းနံပါတ် / Account<input value={kpayAccountNumber} onChange={(event) => setKpayAccountNumber(event.target.value)} inputMode="tel" placeholder="09xxxxxxxxx" /></label><label>Ledger စတင်မည့်နေ့<input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} /></label><label>စတင်ချိန် Cash လက်ကျန် ({settings.currency})<input type="number" min="0" step="1" value={openingCash} onChange={(event) => setOpeningCash(event.target.value)} /></label><label>စတင်ချိန် KPay လက်ကျန် ({settings.currency})<input type="number" min="0" step="1" value={openingKPay} onChange={(event) => setOpeningKPay(event.target.value)} /></label></div>
         <div className="kpay-qr-editor">
           <div className={`kpay-qr-preview${kpayQrDataUrl ? '' : ' empty'}`}>
             {kpayQrDataUrl ? <img src={kpayQrDataUrl} alt="Branch KPay QR" /> : <span><QrCode size={30} /> QR မရှိသေးပါ</span>}
@@ -416,19 +402,19 @@ export function BranchFinanceManagementPage({ authorize, notify }: Props) {
         <div className="form-actions"><button className="button button-primary" type="submit" disabled={saveBusy}>{saveBusy ? 'သိမ်းဆည်းနေသည်…' : 'Branch Account / Opening Balance သိမ်းမည်'}</button></div>
         <small className="field-hint">Ledger စတင်မည့်နေ့မှစပြီး POS အရောင်း၊ Expense၊ Cashier Settlement နဲ့ Manual Entry တွေကို တွက်ချက်ပါမယ်။ နေ့စဉ် Cash Shift အဖွင့်ငွေနဲ့ မတူပါ။</small>
       </form>
-      <div className="panel security-note"><RefreshCw size={18}/><div><strong>စာရင်းတွက်ချက်မှု မှတ်ချက်</strong><p>Ledger မှ POS Cash/KPay Sale၊ Cashier Expense (Branch ပိုက်ဆံသုံးခဲ့လျှင်)၊ Cashier Settlement၊ Customer Cash Collection၊ Supplier Cash Payment၊ Cash Shift Manual Movement နဲ့ Advance ပြန်အပ်ငွေကို Source Record တစ်ခုစီကနေ တွက်ပါတယ်။</p></div></div>
+      <div className="panel security-note"><RefreshCw size={18} /><div><strong>စာရင်းတွက်ချက်မှု မှတ်ချက်</strong><p>Ledger မှ POS Cash/KPay Sale၊ Cashier Expense (Branch ပိုက်ဆံသုံးခဲ့လျှင်)၊ Cashier Settlement၊ Customer Cash Collection၊ Supplier Cash Payment၊ Cash Shift Manual Movement နဲ့ Advance ပြန်အပ်ငွေကို Source Record တစ်ခုစီကနေ တွက်ပါတယ်။</p></div></div>
     </>}
 
     {financeTab === 'advance' && (
       <div className="panel">
         <div className="panel-heading"><div className="panel-icon"><ClipboardList size={18}/></div><div><h3>Cash Advance ရှင်းတမ်း</h3><p>Cashier ကို ကြိုတင်ထုတ်ပေးထားသောငွေကို Expense နဲ့ ပြန်အပ်ငွေ နှစ်မျိုးဖြင့် ရှင်းနိုင်ပါတယ်။</p></div></div>
-        {advances.length === 0 ? <div className="empty-state"><div className="empty-icon"><CheckCircle2 size={22}/></div><strong>ရှင်းတမ်းလိုအပ်သော Advance မရှိပါ</strong><p>Cashier KPay & Cash Settlement ထဲမှ Cash Advance ပေးပြီးနောက် ဒီနေရာမှာ ပေါ်လာပါမယ်။</p></div> : <div className="table-wrap"><table><thead><tr><th>Cashier</th><th>ပေးထားငွေ</th><th>ရှင်းပြီး</th><th>ကျန်ငွေ</th></tr></thead><tbody>{advances.map((entry) => <tr key={entry.id}><td>{entry.cashierName}<small>{dateLabel(entry.paidAt || entry.createdAt)}</small></td><td>{money(entry.amount, settings.currency)}</td><td>{money(entry.reconciled, settings.currency)}</td><td><b className="stock-warning">{money(entry.outstanding, settings.currency)}</b></td></tr>)}</tbody></table></div>}
+        {advances.length === 0 ? <div className="empty-state"><div className="empty-icon"><CheckCircle2 size={22}/></div><strong>ရှင်းတမ်းလိုအပ်သော Advance မရှိပါ</strong><p>Cashier KPay & Cash Settlement ထဲမှ Cash Advance ပေးပြီးနောက် ဒီနေရာမှာ ပေါ်လာပါမယ်။</p></div> : <div className="table-wrap table-cards"><table><thead><tr><th>Cashier</th><th>ပေးထားငွေ</th><th>ရှင်းပြီး</th><th>ကျန်ငွေ</th></tr></thead><tbody>{advances.map((entry) => <tr key={entry.id}><td data-label="Cashier"><div>{entry.cashierName}<small>{dateLabel(entry.paidAt || entry.createdAt)}</small></div></td><td data-label="ပေးထားငွေ">{money(entry.amount, settings.currency)}</td><td data-label="ရှင်းပြီး">{money(entry.reconciled, settings.currency)}</td><td data-label="ကျန်ငွေ"><b className="stock-warning">{money(entry.outstanding, settings.currency)}</b></td></tr>)}</tbody></table></div>}
         {advances.length > 0 && <form className="form-panel compact-form" onSubmit={reconcileAdvance}>
           <label>Cash Advance ရွေးရန်<select value={selectedAdvanceId} onChange={(event) => { setSelectedAdvanceId(event.target.value); setRelatedExpenseId(''); setReconcileAmount(''); }}><option value="">Cashier / Advance ရွေးပါ</option>{advances.map((entry) => <option key={entry.id} value={entry.id}>{entry.cashierName} · ကျန် {money(entry.outstanding, settings.currency)}</option>)}</select></label>
           <label>ရှင်းတမ်းအမျိုးအစား<select value={reconcileKind} onChange={(event) => { setReconcileKind(event.target.value as typeof reconcileKind); setRelatedExpenseId(''); setReconcileReference(''); }}><option value="cash-returned">ကျန်ငွေကို ဆိုင်သို့ ပြန်အပ်ခြင်း</option><option value="expense-applied">ဆိုင်အသုံးစရိတ်နှင့် ချိတ်ဆက်ရှင်းတမ်း</option></select></label>
-          {reconcileKind === 'expense-applied' ? <label>သက်ဆိုင်ရာ Expense ရွေးရန်<select value={relatedExpenseId} onChange={(event) => { const id = event.target.value; setRelatedExpenseId(id); const expense = availableExpenses.find((entry) => entry.id === id); setReconcileAmount(expense ? String(expense.amount) : ''); }}><option value="">Expense ရွေးပါ</option>{availableExpenses.map((entry) => <option key={entry.id} value={entry.id}>{entry.title} · {money(entry.amount, settings.currency)}</option>)}</select></label> : <><label>ပြန်အပ်မည့် Channel<select value={reconcileChannel} onChange={(event) => setReconcileChannel(event.target.value as BranchFinanceChannel)}><option value="cash">Cash</option><option value="kpay">KPay</option></select></label><label>ပြန်အပ်ငွေ ({settings.currency})<input type="number" min="1" max={selectedAdvance?.outstanding || undefined} step="1" value={reconcileAmount} onChange={(event) => setReconcileAmount(event.target.value)}/></label>{reconcileChannel === 'kpay' && <label>KPay Transaction ID *<input required value={reconcileReference} onChange={(event) => setReconcileReference(event.target.value)}/></label>}</>}
+          {reconcileKind === 'expense-applied' ? <label>သက်ဆိုင်ရာ Expense ရွေးရန်<select value={relatedExpenseId} onChange={(event) => { const id = event.target.value; setRelatedExpenseId(id); const expense = availableExpenses.find((entry) => entry.id === id); setReconcileAmount(expense ? String(expense.amount) : ''); }}><option value="">Expense ရွေးပါ</option>{availableExpenses.map((entry) => <option key={entry.id} value={entry.id}>{entry.title} · {money(entry.amount, settings.currency)}</option>)}</select></label> : <><label>ပြန်အပ်မည့် Channel<select value={reconcileChannel} onChange={(event) => setReconcileChannel(event.target.value as BranchFinanceChannel)}><option value="cash">Cash</option><option value="kpay">KPay</option></select></label><label>ပြန်အပ်ငွေ ({settings.currency})<input type="number" min="1" max={selectedAdvance?.outstanding || undefined} step="1" value={reconcileAmount} onChange={(event) => setReconcileAmount(event.target.value)} /></label>{reconcileChannel === 'kpay' && <label>KPay Transaction ID *<input required value={reconcileReference} onChange={(event) => setReconcileReference(event.target.value)} /></label>}</>}
           {reconcileKind === 'expense-applied' && chosenExpense && <div className="settlement-hint">ဒီ Expense ကို {chosenExpense.fundedBy === 'branch-kpay' ? 'Branch KPay' : 'Branch Cash'} အဖြစ် စာရင်းထဲမှာ ရှိပြီးသားဖြစ်တာကြောင့် Advance လက်ကျန်ကနေသာ နုတ်ပါမယ်။ ငွေထွက်ကို နှစ်ခါမတွက်ပါဘူး။</div>}
-          <label>မှတ်ချက်<textarea rows={2} value={reconcileNote} onChange={(event) => setReconcileNote(event.target.value)}/></label>
+          <label>မှတ်ချက်<textarea rows={2} value={reconcileNote} onChange={(event) => setReconcileNote(event.target.value)} /></label>
           <button className="button button-primary" type="submit" disabled={reconcileBusy || !selectedAdvanceId || (reconcileKind === 'expense-applied' && !relatedExpenseId)}>{reconcileBusy ? 'သိမ်းဆည်းနေသည်…' : 'Advance ရှင်းတမ်း သိမ်းမည်'}</button>
         </form>}
       </div>
@@ -436,9 +422,9 @@ export function BranchFinanceManagementPage({ authorize, notify }: Props) {
 
     {financeTab === 'ledger' && <>
       <div className="mini-stats">
-        <div className="mini-stat"><span className="mini-stat-icon"><ArrowUpCircle size={17}/></span><div><small>Cash ဝင် / ထွက်</small><strong>{money(cashSummary.totalIn, settings.currency)} / {money(cashSummary.totalOut, settings.currency)}</strong></div></div>
-        <div className="mini-stat"><span className="mini-stat-icon"><ArrowUpCircle size={17}/></span><div><small>KPay ဝင် / ထွက်</small><strong>{money(kpaySummary.totalIn, settings.currency)} / {money(kpaySummary.totalOut, settings.currency)}</strong></div></div>
-        <div className="mini-stat"><span className="mini-stat-icon"><CalendarDays size={17}/></span><div><small>စတင်ရက် {ledgerStartDate}</small><strong>{ledgerRows.length} ခု</strong></div></div>
+        <div className="mini-stat"><span className="mini-stat-icon"><ArrowUpCircle size={17} /></span><div><small>Cash ဝင် / ထွက်</small><strong>{money(cashSummary.totalIn, settings.currency)} / {money(cashSummary.totalOut, settings.currency)}</strong></div></div>
+        <div className="mini-stat"><span className="mini-stat-icon"><ArrowUpCircle size={17} /></span><div><small>KPay ဝင် / ထွက်</small><strong>{money(kpaySummary.totalIn, settings.currency)} / {money(kpaySummary.totalOut, settings.currency)}</strong></div></div>
+        <div className="mini-stat"><span className="mini-stat-icon"><CalendarDays size={17} /></span><div><small>စတင်ရက် {ledgerStartDate}</small><strong>{ledgerRows.length} ခု</strong></div></div>
       </div>
       <div className="panel">
         <div className="panel-heading">
@@ -449,7 +435,7 @@ export function BranchFinanceManagementPage({ authorize, notify }: Props) {
             <button type="button" className={`small-action ${ledgerChannelFilter === 'kpay' ? 'active' : ''}`} onClick={() => setLedgerChannelFilter('kpay')}>KPay</button>
           </div>
         </div>
-        {filteredLedgerRows.length === 0 ? <div className="empty-state"><div className="empty-icon"><Wallet size={23}/></div><strong>Ledger မှတ်တမ်း မရှိသေးပါ</strong><p>POS Sale၊ Expense၊ Cashier Settlement သို့မဟုတ် Manual Entry မှတ်တမ်းအသစ်များ စတင်သည့်အခါ ဒီနေရာမှာ ပေါ်လာပါမယ်။</p></div> : <><div className="table-wrap"><table><thead><tr><th>အချိန်</th><th>Account</th><th>အကြောင်းအရာ</th><th>Source</th><th>Ref</th><th>မှတ်တမ်းတင်သူ</th><th>ငွေဝင် / ထွက်</th></tr></thead><tbody>{shownLedgerRows.map((row) => <tr key={row.id}><td>{dateLabel(row.date)}</td><td><span className="tag">{row.channel.toUpperCase()}</span></td><td>{row.title}{row.note && <small>{row.note}</small>}</td><td>{row.source}</td><td>{row.reference || '—'}</td><td>{row.actor || '—'}</td><td><b className={row.direction === 'in' ? 'stock-ok' : 'stock-warning'}>{row.direction === 'in' ? '+' : '−'}{money(row.amount, settings.currency)}</b></td></tr>)}</tbody></table></div><ListLimitToggle total={filteredLedgerRows.length} shown={shownLedgerRows.length} expanded={ledgerExpanded} onToggle={() => setLedgerExpanded((v) => !v)} /></>}
+        {filteredLedgerRows.length === 0 ? <div className="empty-state"><div className="empty-icon"><Wallet size={23}/></div><strong>Ledger မှတ်တမ်း မရှိသေးပါ</strong><p>POS Sale၊ Expense၊ Cashier Settlement သို့မဟုတ် Manual Entry မှတ်တမ်းအသစ်များ စတင်သည့်အခါ ဒီနေရာမှာ ပေါ်လာပါမယ်။</p></div> : <><div className="table-wrap table-cards"><table><thead><tr><th>အချိန်</th><th>Account</th><th>အကြောင်းအရာ</th><th>Source</th><th>Ref</th><th>မှတ်တမ်းတင်သူ</th><th>ငွေဝင် / ထွက်</th></tr></thead><tbody>{shownLedgerRows.map((row) => <tr key={row.id}><td data-label="အချိန်">{dateLabel(row.date)}</td><td data-label="Account"><span className="tag">{row.channel.toUpperCase()}</span></td><td data-label="အကြောင်းအရာ"><div>{row.title}{row.note && <small>{row.note}</small>}</div></td><td data-label="Source">{row.source}</td><td data-label="Ref">{row.reference || '—'}</td><td data-label="မှတ်တမ်းတင်သူ">{row.actor || '—'}</td><td data-label="ငွေဝင် / ထွက်"><b className={row.direction === 'in' ? 'stock-ok' : 'stock-warning'}>{row.direction === 'in' ? '+' : '−'}{money(row.amount, settings.currency)}</b></td></tr>)}</tbody></table></div><ListLimitToggle total={filteredLedgerRows.length} shown={shownLedgerRows.length} expanded={ledgerExpanded} onToggle={() => setLedgerExpanded((v) => !v)} /></>}
       </div>
       <details className="settings-collapsible">
         <summary>
@@ -460,10 +446,10 @@ export function BranchFinanceManagementPage({ authorize, notify }: Props) {
           <div className="form-grid">
             <label>Account<select value={channel} onChange={(event) => { setChannel(event.target.value as BranchFinanceChannel); setEntryReference(''); }}><option value="cash">Cash</option><option value="kpay">Branch KPay</option></select></label>
             <label>အမျိုးအစား<select value={direction} onChange={(event) => setDirection(event.target.value as BranchFinanceDirection)}><option value="in">ငွေဝင်</option><option value="out">ငွေထွက်</option></select></label>
-            <label>ပမာဏ ({settings.currency})<input required type="number" min="1" step="1" value={entryAmount} onChange={(event) => setEntryAmount(event.target.value)}/></label>
-            {channel === 'kpay' && <label>KPay Transaction ID *<input required value={entryReference} onChange={(event) => setEntryReference(event.target.value)} maxLength={120}/></label>}
+            <label>ပမာဏ ({settings.currency})<input required type="number" min="1" step="1" value={entryAmount} onChange={(event) => setEntryAmount(event.target.value)} /></label>
+            {channel === 'kpay' && <label>KPay Transaction ID *<input required value={entryReference} onChange={(event) => setEntryReference(event.target.value)} maxLength={120} /></label>}
           </div>
-          <label>အကြောင်းအရင်း *<textarea required rows={2} value={entryNote} onChange={(event) => setEntryNote(event.target.value)} placeholder="ဥပမာ - Owner ထည့်ငွေ / အခြားကုန်ကျစရိတ်"/></label>
+          <label>အကြောင်းအရင်း *<textarea required rows={2} value={entryNote} onChange={(event) => setEntryNote(event.target.value)} placeholder="ဥပမာ - Owner ထည့်ငွေ / အခြားကုန်ကျစရိတ်" /></label>
           <button className="button button-primary" type="submit" disabled={entryBusy}>{entryBusy ? 'သိမ်းဆည်းနေသည်…' : 'Ledger မှတ်တမ်းတင်မည်'}</button>
         </form>
       </details>
