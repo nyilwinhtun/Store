@@ -2687,3 +2687,49 @@ body,
     grid-template-columns: 1fr;
   }
 }
+
+/* Compact Tables & List Limit Toggle */
+.table-wrap th {
+  padding: 8px 10px;
+}
+
+.table-wrap td {
+  padding: 8px 10px;
+  line-height: 1.35;
+}
+
+.ledger-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ledger-filter-row .small-action.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #ffffff;
+}
+
+.list-limit-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-top: 10px;
+  margin-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.list-limit-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.list-limit-btn {
+  padding: 6px 12px;
+  font-size: 11px;
+  min-height: 32px;
+}

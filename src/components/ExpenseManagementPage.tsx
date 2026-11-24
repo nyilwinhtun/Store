@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { CheckCircle2, CircleDollarSign, ClipboardList, Download, Plus, Receipt, RotateCw, Trash2, Wallet, XCircle } from 'lucide-react';
 import type { Expense } from '../store/usePosStore';
+import { ListLimitToggle } from './ListLimitToggle';
 
 type ExpenseDraft = Omit<Expense, 'id' | 'branchId'>;
 type ExpenseFilter = 'all' | 'submitted';
@@ -46,6 +47,7 @@ export function ExpenseManagementPage({ expenses, isCashier, cashierUid, cashier
   const [fundedBy, setFundedBy] = useState<'cashier-personal' | 'branch-cash' | 'branch-kpay'>(isCashier ? 'cashier-personal' : 'branch-cash');
   const [filter, setFilter] = useState<ExpenseFilter>('all');
   const [saving, setSaving] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
   useEffect(() => setFundedBy(isCashier ? 'cashier-personal' : 'branch-cash'), [isCashier]);
 
@@ -115,8 +117,9 @@ export function ExpenseManagementPage({ expenses, isCashier, cashierUid, cashier
             </select>
             {pendingSyncCount > 0 && <button className="button button-outline" type="button" onClick={() => void onRetryPending()}><RotateCw size={14}/> Sync ပြန်စမ်း ({pendingSyncCount})</button>}
           </div>
-          {shownExpenses.length === 0 ? <div className="empty-state"><div className="empty-icon"><Wallet size={24}/></div><strong>အသုံးစရိတ် မရှိသေးပါ</strong><p>အသုံးစရိတ်အသစ်ကို Form မှာ ထည့်သွင်းနိုင်ပါတယ်။</p></div> : <div className="expense-list">
-            {shownExpenses.map((expense) => {
+          {shownExpenses.length === 0 ? <div className="empty-state"><div className="empty-icon"><Wallet size={24}/></div><strong>အသုံးစရိတ် မရှိသေးပါ</strong><p>အသုံးစရိတ်အသစ်ကို Form မှာ ထည့်သွင်းနိုင်ပါတယ်။</p></div> : <>
+            <div className="expense-list">
+            {(expanded ? shownExpenses : shownExpenses.slice(0, 15)).map((expense) => {
               const status = statusLabel(expense);
               const ownName = expense.createdByName || (expense.createdByUid === cashierUid ? cashierName : 'ယခင်စာရင်း / Owner');
               const canReview = !isCashier && onMarkReviewed && !isReviewed(expense) && expense.approvalStatus !== 'pending' && (expense.createdByRole === 'cashier' || expense.reviewStatus === 'submitted');
@@ -128,7 +131,9 @@ export function ExpenseManagementPage({ expenses, isCashier, cashierUid, cashier
                 {expense.approvalStatus === 'rejected' && expense.rejectionReason && <small className="expense-rejection-note">ပယ်ချရသည့်အကြောင်းပြချက်: {expense.rejectionReason}</small>}{isCashier && expense.cloudSyncStatus === 'pending' && <small className="expense-rejection-note">{expense.cloudSyncError || 'Cloud မရောက်သေးပါ။ Internet ရလျှင် ပြန် Sync လုပ်ပါမယ်။'}</small>}
               </article>;
             })}
-          </div>}
+          </div>
+          <ListLimitToggle total={shownExpenses.length} shown={Math.min(15, shownExpenses.length)} expanded={expanded} onToggle={() => setExpanded((v) => !v)} />
+          </>}
         </div>
       </div>
     </section>

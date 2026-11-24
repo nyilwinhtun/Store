@@ -7,6 +7,7 @@ import { recordFirestoreActivity } from '../lib/firestoreDiagnostics';
 import type { Expense } from '../store/usePosStore';
 import type { CashierSettlementCreateInput, CashierSettlementPurpose, CashierSettlementRecord } from '../types/finance';
 import { useAppDialog } from './AppDialog';
+import { ListLimitToggle } from './ListLimitToggle';
 
 type CashierOption = { uid: string; displayName: string; email: string; branchIds: string[] };
 type Props = {
@@ -63,6 +64,7 @@ export function CashierSettlementManagementPage({ settlements, expenses, branchI
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [filter, setFilter] = useState<'all' | 'cash' | 'kpay'>('all');
+  const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
     if (isCashier || access.status !== 'active' || access.role !== 'owner' || !firestore) {
@@ -181,9 +183,9 @@ export function CashierSettlementManagementPage({ settlements, expenses, branchI
       </div>
       <div className="panel">
         <div className="panel-heading"><div><h3>ငွေလက်ခံမှတ်တမ်း</h3><p>Owner က ပေးချေပြီး မှတ်တမ်းတင်ထားသော စာရင်းများသာ ပြပါမယ်။</p></div><span className="subtle-count">{scopedSettlements.length} records</span></div>
-        {filteredSettlements.length === 0 ? <div className="empty-state"><div className="empty-icon"><Wallet size={24}/></div><strong>ငွေလက်ခံမှတ်တမ်း မရှိသေးပါ</strong><p>Owner က ငွေရှင်းပြီး မှတ်တမ်းတင်သည့်အခါ ဒီနေရာမှာ ပေါ်လာပါမယ်။</p></div> : <div className="settlement-list">{filteredSettlements.map((entry) => <article className="settlement-card" key={entry.id}>
+        {filteredSettlements.length === 0 ? <div className="empty-state"><div className="empty-icon"><Wallet size={24}/></div><strong>ငွေလက်ခံမှတ်တမ်း မရှိသေးပါ</strong><p>Owner က ငွေရှင်းပြီး မှတ်တမ်းတင်သည့်အခါ ဒီနေရာမှာ ပေါ်လာပါမယ်။</p></div> : <><div className="settlement-list">{(expanded ? filteredSettlements : filteredSettlements.slice(0, 15)).map((entry) => <article className="settlement-card" key={entry.id}>
           <div className="settlement-icon">{purposeIcon(entry.purpose)}</div><div className="settlement-main"><strong>{purposeLabel[entry.purpose]}</strong><small>{dateLabel(settlementDate(entry))} · {entry.paymentMethod.toUpperCase()}</small>{entry.transactionReference && <small>Transaction ID: {entry.transactionReference}</small>}{entry.receiverAccountName && <small>လက်ခံသူ: {entry.receiverAccountName} · {entry.receiverAccountNumber}</small>}{entry.senderAccountName && <small>ပေးချေသူ: {entry.senderAccountName} · {entry.senderAccountNumber || ''}</small>}{entry.note && <small>{entry.note}</small>}</div><div className="settlement-amount"><strong>{money(entry.amount, currency)}</strong><span className="tag tag-success">ပေးချေပြီး</span></div>
-        </article>)}</div>}
+        </article>)}</div><ListLimitToggle total={filteredSettlements.length} shown={Math.min(15, filteredSettlements.length)} expanded={expanded} onToggle={() => setExpanded((v) => !v)} /></>}
       </div>
       <div className="panel security-note"><CheckCircle2 size={18}/><div><strong>အချက်အလက် လုံခြုံရေး</strong><p>ဒီစာမျက်နှာမှာ မိမိ UID နဲ့ သက်ဆိုင်တဲ့ ငွေရှင်းမှတ်တမ်းတွေကိုသာ Cloud မှ ဖတ်ရှုနိုင်ပါတယ်။ အခြား Cashier ရဲ့ ငွေစာရင်းကို မမြင်နိုင်ပါ။</p></div></div>
     </section>;
@@ -223,9 +225,9 @@ export function CashierSettlementManagementPage({ settlements, expenses, branchI
       <div className="panel expense-record-panel">
         <div className="panel-heading"><div className="panel-icon"><Receipt size={18}/></div><div><h3>Cashier ငွေရှင်းမှတ်တမ်း</h3><p>ဒီ Branch အတွက် Owner က ပေးချေပြီး မှတ်တမ်းတင်ထားသော စာရင်းများ။</p></div></div>
         <div className="expense-list-toolbar"><select value={filter} onChange={(event) => setFilter(event.target.value as typeof filter)}><option value="all">အားလုံး</option><option value="cash">Cash သာ</option><option value="kpay">KPay သာ</option></select><span className="subtle-count">{filteredSettlements.length} records</span></div>
-        {filteredSettlements.length === 0 ? <div className="empty-state"><div className="empty-icon"><Wallet size={24}/></div><strong>ငွေရှင်းမှတ်တမ်း မရှိသေးပါ</strong><p>Cashier တစ်ယောက်ကို ငွေရှင်းပြီး မှတ်တမ်းတင်လိုက်ပါ။</p></div> : <div className="settlement-list">{filteredSettlements.map((entry) => <article className="settlement-card" key={entry.id}>
+        {filteredSettlements.length === 0 ? <div className="empty-state"><div className="empty-icon"><Wallet size={24}/></div><strong>ငွေရှင်းမှတ်တမ်း မရှိသေးပါ</strong><p>Cashier တစ်ယောက်ကို ငွေရှင်းပြီး မှတ်တမ်းတင်လိုက်ပါ။</p></div> : <><div className="settlement-list">{(expanded ? filteredSettlements : filteredSettlements.slice(0, 15)).map((entry) => <article className="settlement-card" key={entry.id}>
           <div className="settlement-icon">{purposeIcon(entry.purpose)}</div><div className="settlement-main"><strong>{entry.cashierName} · {purposeLabel[entry.purpose]}</strong><small>{dateLabel(settlementDate(entry))} · {entry.paymentMethod.toUpperCase()}</small>{entry.receiverAccountNumber && <small>လက်ခံသူ: {entry.receiverAccountName} · {entry.receiverAccountNumber}</small>}{entry.senderAccountName && <small>ပေးချေသူ: {entry.senderAccountName} · {entry.senderAccountNumber || ''}</small>}{entry.transactionReference && <small>Transaction ID: {entry.transactionReference}</small>}{entry.note && <small>{entry.note}</small>}</div><div className="settlement-amount"><strong>{money(entry.amount, currency)}</strong><span className="tag tag-success">ပေးချေပြီး</span></div>
-        </article>)}</div>}
+        </article>)}</div><ListLimitToggle total={filteredSettlements.length} shown={Math.min(15, filteredSettlements.length)} expanded={expanded} onToggle={() => setExpanded((v) => !v)} /></>}
       </div>
     </div>
     <div className="panel security-note"><CalendarDays size={18}/><div><strong>စာရင်းကို မှန်ကန်စွာ ထိန်းသိမ်းရန်</strong><p>Cashier ကို KPay လွှဲပြီးမှ Transaction ID နှင့်တကွ မှတ်တမ်းတင်ပါ။ Expense Reimbursement ကိုတော့ Cashier ကိုယ်ပိုင်ငွေဖြင့် စိုက်သုံးထားသော Expense တစ်ခုချင်းစီကို တစ်ကြိမ်သာ ပြန်အမ်းနိုင်ပါတယ်။ ပြန်အမ်းငွေကို Expense ထပ်မတွက်ဘဲ Settlement အဖြစ် သီးခြားမှတ်တမ်းတင်ထားပါတယ်။ Salary / Cash Advance / Other Payment များကို ဒီ Preview တွင် ငွေပေးချေမှုမှတ်တမ်းအဖြစ်သာ သိမ်းပြီး Profit Analytics ထဲ အသုံးစရိတ်အဖြစ် အလိုအလျောက် မပေါင်းသေးပါ။</p></div></div>
