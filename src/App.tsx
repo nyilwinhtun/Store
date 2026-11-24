@@ -1479,7 +1479,7 @@ const openManualCopyPrompt = (value: string, label: string) => dialog.prompt({
               </button>
             )}
             {cashierMode && firebaseAuth && (
-              <button className="button button-outline" type="button" onClick={() => void signOut(firebaseAuth)}>
+              <button className="button button-outline cashier-signout-btn" type="button" onClick={() => void signOut(firebaseAuth)}>
                 <LogOut size={14} /> ထွက်မယ်
               </button>
             )}
