@@ -2959,3 +2959,33 @@ body,
     display: none;
   }
 }
+
+/* Disable browser pull-to-refresh / viewport overscroll chaining on mobile & PWA while preserving smooth inner scrolling */
+html,
+body {
+  overscroll-behavior: none;
+  overscroll-behavior-y: none;
+}
+
+#root,
+.app-shell,
+.main-area {
+  overscroll-behavior: none;
+  overscroll-behavior-y: none;
+}
+
+.content-area {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+
+.modal-card,
+.cart-items,
+.nav-list {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+.ios-subtabs-wrap {
+  overscroll-behavior-x: contain;
+}
