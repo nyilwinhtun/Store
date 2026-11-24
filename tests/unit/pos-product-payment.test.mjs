@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 const { POS_ALL_CATEGORIES, filterPosProducts, isProductSelectable, otherBranchProductCounts, posProductViewState, productsForBranch, sellableStockFor } = await import(
   new URL('../../.qa-build/posProductSelection.mjs', import.meta.url).href
 );
-const { describeKpayUnavailable, isPaymentMethodSelectable, kpayUnavailableReason } = await import(
+const { cleanCurrencyAmount, computeCashPaymentState, describeKpayUnavailable, isPaymentMethodSelectable, kpayUnavailableReason, requiredCashForTotal } = await import(
   new URL('../../.qa-build/posPaymentState.mjs', import.meta.url).href
 );
 
@@ -123,4 +123,25 @@ test('POS wiring uses the branch-aware filters and affordable payment hints', ()
   assert.ok(appSource.includes('Cloud မှ ပစ္စည်းစာရင်း မရနိုင်သေးပါ'), 'offline/error must have its own message');
   assert.ok(appSource.includes('kpayUnavailable = posDataSettled ? kpayUnavailableReason'), 'KPay must not be judged before branch data settles');
   assert.match(cssSource, /\.payment-switch button:disabled\{/);
+});
+
+test('Cash checkout math strips IEEE-754 noise and keeps exact-cash shortfall consistent', () => {
+  // 0.14 kg * 100 MMK = 14.000000000000002 in IEEE-754
+  const noisyTotal = cleanCurrencyAmount(0.14 * 100);
+  assert.equal(noisyTotal, 14);
+  assert.equal(requiredCashForTotal(0.14 * 100), 14);
+
+  const exactNoisy = computeCashPaymentState('Cash', 0.14 * 100, '14');
+  assert.equal(exactNoisy.cashShortfall, 0);
+  assert.equal(exactNoisy.cashChange, 0);
+  assert.ok(exactNoisy.cashReceivedValue >= exactNoisy.requiredCash);
+
+  // Fractional MMK total (0.1 kg * 333 MMK = 33.3) requires 34 MMK cash so server `< total` never rejects
+  const fractional = computeCashPaymentState('Cash', 33.3, '33');
+  assert.equal(fractional.requiredCash, 34);
+  assert.equal(fractional.cashShortfall, 1);
+
+  const fractionalCovered = computeCashPaymentState('Cash', 33.3, String(fractional.requiredCash));
+  assert.equal(fractionalCovered.cashShortfall, 0);
+  assert.ok(fractionalCovered.cashReceivedValue >= 33.3);
 });
