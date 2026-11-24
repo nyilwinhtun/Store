@@ -33,6 +33,7 @@ const BranchManagementPage = lazy(() => import('./components/BranchManagementPag
 const SharedPricingPage = lazy(() => import('./components/SharedPricingPage').then((module) => ({ default: module.SharedPricingPage })));
 const ProfileManagementPage = lazy(() => import('./components/ProfileManagementPage').then((module) => ({ default: module.ProfileManagementPage })));
 const LoginPage = lazy(() => import('./components/LoginPage').then((module) => ({ default: module.LoginPage })));
+import { BrandMark } from './components/BrandMark';
 const BarcodeCameraScanner = lazy(() => import('./components/BarcodeCameraScanner').then((module) => ({ default: module.BarcodeCameraScanner })));
 const StockUnitRegistrationPage = lazy(() => import('./components/StockUnitRegistrationPage').then((module) => ({ default: module.StockUnitRegistrationPage })));
 const CashierSalesQueueStatus = lazy(() => import('./components/CashierSalesQueueStatus').then((module) => ({ default: module.CashierSalesQueueStatus })));
@@ -1302,8 +1303,8 @@ const openManualCopyPrompt = (value: string, label: string) => dialog.prompt({
       <main className="main-area">
         <header className="topbar">
           <div className="topbar-left">
-            <div className="topbar-brand-dot">
-              {activeBranchLogoSource ? <img src={activeBranchLogoSource} alt="Shop logo" /> : <Store size={15} />}
+            <div className={`topbar-brand-dot${activeBranchLogoSource ? ' has-custom-logo' : ''}`}>
+              {activeBranchLogoSource ? <img src={activeBranchLogoSource} alt="Shop logo" /> : <BrandMark size={17} />}
             </div>
             <div className="topbar-title-group">
               <h1>{pageTitle}</h1>
