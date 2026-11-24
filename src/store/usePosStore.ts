@@ -117,6 +117,16 @@ export type Product = {
   quantityMode?: QuantityMode;
   /** When enabled, every physical unit must be registered with its own sticker barcode. */
   tracksIndividualUnits?: boolean;
+  /** Optional cigarette / pack-to-stick selling config (backward-compatible). */
+  sticksPerPack?: number;
+  /** Optional linked single-stick product ID for pack-stocked cigarettes. */
+  stickProductId?: string;
+  /** Optional link back to pack product ID for stick-stocked cigarettes. */
+  packProductId?: string;
+  /** Enable 1-tap MMK amount presets (e.g. 500 / 1,000 / custom MMK) for repacked bundles like လှကျော်. */
+  amountSaleEnabled?: boolean;
+  /** Quick MMK preset amounts for amount-based sales (default [500, 1000, 2000]). */
+  amountPresets?: number[];
   image?: string;
   createdAt: string;
 };
@@ -155,6 +165,8 @@ export type CartItem = {
   /** Shared price metadata snapshot for audit; historical unitPrice remains authoritative. */
   priceGroupId?: string;
   priceVersion?: number;
+  /** True when the line was added via MMK amount preset / custom MMK (e.g. လှကျော် 1,000 MMK). */
+  amountBased?: boolean;
 };
 export type SaleReturnDisposition = 'restock' | 'damaged';
 export type SaleReturnRecord = {
@@ -641,6 +653,8 @@ type PosState = {
   updateProduct: (id: string, changes: Partial<Omit<Product, 'id' | 'createdAt' | 'priceGroupId' | 'priceVersion'>>) => void;
   deleteProduct: (id: string) => boolean;
   adjustStock: (id: string, quantity: number) => boolean;
+  convertPackToSticks: (packProductId: string, packCount?: number) => { ok: boolean; message: string; addedSticks?: number };
+  createLinkedStickProduct: (packProductId: string, stickPrice: number) => string | null;
   addSale: (sale: Sale) => Sale | null;
   updateSaleCloudSyncStatus: (id: string, branchId: string, status: 'pending' | 'synced', error?: string) => void;
   voidSale: (id: string, reason: string, actor: { uid: string; email: string; name: string }, voidedAt?: string) => boolean;
@@ -1250,6 +1264,134 @@ export const usePosStore = create<PosState>()(
           activityLogs: prependAudit(current.activityLogs, makeAudit('STOCK_ADJUST', 'Inventory', `${target.name} Stock ${quantity > 0 ? '+' : ''}${quantity} ပြင်ဆင်သည်`, id, state.activeBranchId)),
         }));
         return true;
+      },
+      convertPackToSticks: (packProductId, packCount = 1) => {
+        const state = get();
+        const branchId = state.activeBranchId;
+        const count = Math.round(packCount);
+        if (!Number.isFinite(packCount) || count < 1 || Math.abs(packCount - count) > 1e-8) {
+          return { ok: false, message: 'ဖောက်မည့် ဘူးအရေအတွက်ကို ပြည့်ကိန်းဖြင့် ထည့်ပါ။' };
+        }
+        const packProduct = state.products.find((product) => product.id === packProductId && product.branchId === branchId);
+        if (!packProduct) return { ok: false, message: 'ဘူး Product ကို မတွေ့ပါ။' };
+        if (productIsUnitTracked(packProduct, state.stockUnitRegistries, branchId)) {
+          return { ok: false, message: 'Unit Tracking ဖွင့်ထားသော ပစ္စည်းကို အလိုအလျောက် ဘူးဖောက်မရပါ။' };
+        }
+        const sticksPerPack = Math.round(Number(packProduct.sticksPerPack) || 0);
+        if (sticksPerPack < 2) {
+          return { ok: false, message: 'တစ်ဘူးပါ အလိပ်အရေအတွက် (ဥပမာ 20) ကို အရင်သတ်မှတ်ပါ။' };
+        }
+        if (packProduct.stock + 1e-8 < count) {
+          return { ok: false, message: `${packProduct.name} လက်ကျန် Stock မလုံလောက်ပါ။` };
+        }
+        const stickProduct = packProduct.stickProductId
+          ? state.products.find((product) => product.id === packProduct.stickProductId && product.branchId === branchId)
+          : undefined;
+        if (!stickProduct) {
+          return { ok: false, message: 'ချိတ်ဆက်ထားသော အလိပ် Product မတွေ့ပါ။ Inventory မှ ချိတ်ဆက်ပါ။' };
+        }
+        if (productIsUnitTracked(stickProduct, state.stockUnitRegistries, branchId)) {
+          return { ok: false, message: 'အလိပ် Product တွင် Unit Tracking ဖွင့်ထား၍ မပြောင်းနိုင်ပါ။' };
+        }
+        const addedSticks = count * sticksPerPack;
+        const packMode = quantityModeForProduct(packProduct);
+        const nextPackStock = cleanQuantity(Math.max(0, packProduct.stock - count), packMode);
+        const stickMode = quantityModeForProduct(stickProduct);
+        const nextStickStock = cleanQuantity(stickProduct.stock + addedSticks, stickMode);
+        const receivedAt = new Date().toISOString();
+        const unitCost = stickProduct.costPrice > 0
+          ? stickProduct.costPrice
+          : Math.round((packProduct.costPrice / sticksPerPack) * 100) / 100;
+        const branchBatches = removeBatchQuantity(
+          state.stockBatches.filter((batch) => batch.branchId === branchId),
+          packProduct.id,
+          count,
+          packMode,
+        );
+        const stickBatch: StockBatch = {
+          id: newId(),
+          branchId,
+          productId: stickProduct.id,
+          purchaseId: '',
+          supplierId: '',
+          quantity: addedSticks,
+          receivedAt,
+          expiryDate: '',
+          unitCost,
+        };
+        const nextBatches = [stickBatch, ...state.stockBatches.filter((batch) => batch.branchId !== branchId), ...branchBatches];
+        set((current) => ({
+          stockBatches: nextBatches,
+          products: current.products.map((product) => {
+            if (product.branchId !== branchId) return product;
+            if (product.id === packProduct.id) return { ...product, stock: nextPackStock };
+            if (product.id === stickProduct.id) return { ...product, stock: nextStickStock };
+            return product;
+          }),
+          activityLogs: prependAudit(
+            current.activityLogs,
+            makeAudit(
+              'PACK_TO_STICK',
+              'Inventory',
+              `${packProduct.name} ${count} ${packProduct.unit} ဖောက်ပြီး ${stickProduct.name} +${addedSticks} ${stickProduct.unit} ပြောင်းလဲသည်`,
+              packProduct.id,
+              branchId,
+            ),
+          ),
+        }));
+        return {
+          ok: true,
+          addedSticks,
+          message: `${packProduct.name} ${count} ${packProduct.unit} ဖောက်ပြီး ${stickProduct.name} +${addedSticks} ${stickProduct.unit} ထည့်ပြီးပါပြီ။`,
+        };
+      },
+      createLinkedStickProduct: (packProductId, stickPrice) => {
+        const state = get();
+        const branchId = state.activeBranchId;
+        const packProduct = state.products.find((product) => product.id === packProductId && product.branchId === branchId);
+        if (!packProduct || !(stickPrice > 0)) return null;
+        const sticksPerPack = Math.round(Number(packProduct.sticksPerPack) || 0);
+        if (sticksPerPack < 2) return null;
+        if (packProduct.stickProductId && state.products.some((p) => p.id === packProduct.stickProductId && p.branchId === branchId)) {
+          return packProduct.stickProductId;
+        }
+        const stickId = newId();
+        const baseSku = `${packProduct.sku}-STK`;
+        let sku = baseSku;
+        let suffix = 2;
+        while (state.products.some((p) => p.branchId === branchId && p.sku.toLowerCase() === sku.toLowerCase())) {
+          sku = `${baseSku}${suffix++}`;
+        }
+        const costPerStick = packProduct.costPrice > 0 ? Math.round((packProduct.costPrice / sticksPerPack) * 100) / 100 : 0;
+        const wholesalePerStick = packProduct.retailPrice > 0 ? Math.round((packProduct.retailPrice / sticksPerPack) * 100) / 100 : stickPrice;
+        const stickProduct: Product = {
+          id: stickId,
+          branchId,
+          name: `${packProduct.name} (အလိပ်)`,
+          sku,
+          category: packProduct.category,
+          costPrice: costPerStick,
+          retailPrice: stickPrice,
+          wholesalePrice: wholesalePerStick,
+          stock: 0,
+          lowStockAt: sticksPerPack,
+          unit: 'လိပ်',
+          quantityMode: 'whole',
+          sticksPerPack,
+          packProductId: packProduct.id,
+          createdAt: new Date().toISOString(),
+        };
+        set((current) => ({
+          products: [
+            stickProduct,
+            ...current.products.map((p) => p.id === packProduct.id && p.branchId === branchId ? { ...p, stickProductId: stickId } : p),
+          ],
+          activityLogs: prependAudit(
+            current.activityLogs,
+            makeAudit('CREATE', 'Product', `${packProduct.name} အတွက် အလိပ်လိုက် Product (${stickProduct.name}) ဖန်တီးချိတ်ဆက်သည်`, stickId, branchId),
+          ),
+        }));
+        return stickId;
       },
       addSale: (sale) => {
         let savedSale: Sale | null = null;
