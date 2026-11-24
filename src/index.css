@@ -2570,3 +2570,120 @@ body,
     padding: 20px;
   }
 }
+
+/* Compact iOS Settings Layout & Collapsibles */
+.settings-section-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.settings-section-meta small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.settings-quick-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 14px 16px;
+}
+
+.settings-quick-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.settings-quick-info strong {
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.settings-quick-info small {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.settings-quick-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.settings-field-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.8fr);
+  gap: 10px;
+}
+
+.printer-row-inline {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.printer-row-inline label {
+  flex: 1;
+  min-width: 140px;
+}
+
+.settings-inline-note {
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+}
+
+.settings-collapsible {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel-soft);
+  overflow: hidden;
+}
+
+.settings-collapsible summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.settings-collapsible summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-collapsible summary small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.settings-collapsible[open] summary {
+  border-bottom: 1px solid var(--line);
+}
+
+.settings-collapsible .cloud-help,
+.settings-collapsible .cloud-diagnostics-card {
+  margin-top: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+@media (max-width: 600px) {
+  .settings-field-pair {
+    grid-template-columns: 1fr;
+  }
+}
