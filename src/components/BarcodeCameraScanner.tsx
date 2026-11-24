@@ -31,12 +31,16 @@ export function BarcodeCameraScanner({ open, onClose, onDetected, title = 'Barco
       return () => { active = false; };
     }
 
-    void reader.decodeFromVideoDevice(undefined, videoRef.current!, (result, _decodeError, scanControls) => {
-      if (!active || !result) return;
-      active = false;
-      scanControls.stop();
-      onDetectedRef.current(result.getText());
-    }).then((startedControls) => {
+    void reader.decodeFromConstraints(
+      { video: { facingMode: { ideal: 'environment' } } },
+      videoRef.current!,
+      (result, _decodeError, scanControls) => {
+        if (!active || !result) return;
+        active = false;
+        scanControls.stop();
+        onDetectedRef.current(result.getText());
+      },
+    ).then((startedControls) => {
       controls = startedControls;
       if (!active) startedControls.stop();
       else setStatus('Barcode ကို Camera အလယ်မှာထားပြီး ဖတ်ပါ။');
