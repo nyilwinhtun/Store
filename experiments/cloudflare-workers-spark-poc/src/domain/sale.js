@@ -25,6 +25,7 @@ export const SALE_FIELDS = new Set([
 export const ITEM_FIELDS = new Set([
   'productId', 'name', 'sku', 'quantity', 'unitPrice', 'costPrice', 'mode', 'stockAtAdd',
   'unit', 'quantityMode', 'priceGroupId', 'priceVersion', 'batchAllocations', 'stockUnitSelections',
+  'amountBased',
 ]);
 const ALLOCATION_FIELDS = new Set(['batchId', 'quantity']);
 const SELECTION_FIELDS = new Set(['registryId', 'unitId', 'barcode', 'batchId']);

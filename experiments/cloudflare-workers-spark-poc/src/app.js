@@ -16,7 +16,7 @@ const ROUTES = new Set([
   '/api/sales/commit', '/api/offline-allowances', '/api/offline-allowances/reconcile',
   ...Object.keys(ADJUSTMENT_ROUTES),
 ]);
-const CORS_METHODS = 'POST, OPTIONS';
+const CORS_METHODS = 'GET, POST, OPTIONS';
 const CORS_HEADERS = 'Authorization, Content-Type';
 
 function sleep(ms) {
@@ -70,7 +70,7 @@ async function parseJson(request) {
  * Creates the HTTP handler. Dependencies are injected so the same code runs in
  * Cloudflare Workers (`src/index.js`) and in the isolated Node test harness.
  */
-export function createApp({ projectId, businessId, firestore, verifier, revocationChecker = null, allowedOrigins = [], now = () => Date.now(), debug = false }) {
+export function createApp({ projectId, businessId, firestore, verifier, revocationChecker = null, allowedOrigins = [], now = () => Date.now(), debug = false, service = 'minimart-spark-sales-poc', environment = 'unknown' }) {
   if (!projectId || !businessId) throw new Error('projectId and businessId are required');
   const approvedOrigins = new Set(allowedOrigins);
 
@@ -128,11 +128,15 @@ export function createApp({ projectId, businessId, firestore, verifier, revocati
     const cors = origin ? corsHeaders(origin) : {};
 
     if (request.method === 'OPTIONS') {
-      if (!ROUTES.has(url.pathname)) {
+      if (url.pathname !== '/health' && !ROUTES.has(url.pathname)) {
         return json(404, { ok: false, code: 'not-found', message: 'Endpoint မတွေ့ပါ။' }, cors);
       }
       const requestedMethod = String(request.headers.get('access-control-request-method') || '').trim().toUpperCase();
-      if (requestedMethod && requestedMethod !== 'POST') {
+      if (url.pathname === '/health') {
+        if (requestedMethod && requestedMethod !== 'GET') {
+          return json(405, { ok: false, code: 'method-not-allowed', message: 'GET သာ ခွင့်ပြုပါတယ်။' }, cors);
+        }
+      } else if (requestedMethod && requestedMethod !== 'POST') {
         return json(405, { ok: false, code: 'method-not-allowed', message: 'POST သာ ခွင့်ပြုပါတယ်။' }, cors);
       }
       const unsupported = requestedHeaders(request).filter((name) => name !== 'authorization' && name !== 'content-type');
@@ -140,6 +144,13 @@ export function createApp({ projectId, businessId, firestore, verifier, revocati
         return json(403, { ok: false, code: 'cors-header-denied', message: 'ဤ Request Header ကို ခွင့်မပြုပါ။' }, cors);
       }
       return new Response(null, { status: 204, headers: { ...cors, 'cache-control': 'no-store' } });
+    }
+
+    if (url.pathname === '/health') {
+      if (request.method !== 'GET') {
+        return json(405, { ok: false, code: 'method-not-allowed', message: 'GET သာ ခွင့်ပြုပါတယ်။' }, cors);
+      }
+      return json(200, { ok: true, service, environment }, cors);
     }
 
     if (!ROUTES.has(url.pathname)) {

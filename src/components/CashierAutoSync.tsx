@@ -447,9 +447,11 @@ export function CashierAutoSyncProvider() {
     unsubscribers.push(unsubscribeStore);
 
     const onOnline = () => {
-      void flushCashierSaleQueue(uid, branchId).catch((error) => publishAutoSyncStatus(uid, {
-        state: 'error', message: error instanceof Error ? error.message : 'Offline Sale Queue ကို Sync မလုပ်နိုင်ပါ။',
-      }));
+      void recoverPendingCashierSales(usePosStore.getState().sales, uid, branchId)
+        .then(() => flushCashierSaleQueue(uid, branchId))
+        .catch((error) => publishAutoSyncStatus(uid, {
+          state: 'error', message: error instanceof Error ? error.message : 'Offline Sale Queue ကို Sync မလုပ်နိုင်ပါ။',
+        }));
       void flushPendingCashierExpenses(uid, branchId);
       flushCash();
     };
