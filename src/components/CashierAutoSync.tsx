@@ -453,7 +453,22 @@ export function CashierAutoSyncProvider() {
       void flushPendingCashierExpenses(uid, branchId);
       flushCash();
     };
+    const onManualSyncRequested = () => {
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        publishAutoSyncStatus(uid, {
+          state: 'offline',
+          message: 'Internet မချိတ်ဆက်ရသေးပါ။ Local Cache Data ကို ပြသထားပါတယ်။',
+        });
+        return;
+      }
+      publishAutoSyncStatus(uid, {
+        state: 'connecting',
+        message: 'Cashier Cloud Sync ကို ပြန်လည်စစ်ဆေးနေပါတယ်။',
+      });
+      onOnline();
+    };
     window.addEventListener('online', onOnline);
+    window.addEventListener('minimart-cloud-sync-requested', onManualSyncRequested);
     const unlistenQueue = listenForCashierQueue(uid, branchId, () => {
       void flushCashierSaleQueue(uid, branchId).catch((error) => publishAutoSyncStatus(uid, {
         state: 'error', message: error instanceof Error ? error.message : 'Offline Sale Queue ကို ဖတ်မရပါ။',
@@ -494,6 +509,7 @@ export function CashierAutoSyncProvider() {
       unlistenCashStatus();
       window.removeEventListener('minimart-cashier-sale-status', onSaleQueueStatus);
       window.removeEventListener('online', onOnline);
+      window.removeEventListener('minimart-cloud-sync-requested', onManualSyncRequested);
     };
   }, [user?.uid, access.status, access.role, access.uid, access.branchIds.join('|'), access.canReceiveStock]);
 

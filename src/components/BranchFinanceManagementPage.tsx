@@ -173,8 +173,8 @@ export function BranchFinanceManagementPage({ authorize, notify }: Props) {
     const totalOut = rows.filter((row) => row.direction === 'out').reduce((sum, row) => sum + row.amount, 0);
     return { opening, totalIn, totalOut, balance: opening + totalIn - totalOut };
   };
-  const cashSummary = summarize('cash', Number(activeBranch?.settings.cashLedgerOpeningBalance || 0));
-  const kpaySummary = summarize('kpay', Number(activeBranch?.settings.kpayLedgerOpeningBalance || 0));
+  const cashSummary = useMemo(() => summarize('cash', Number(activeBranch?.settings.cashLedgerOpeningBalance || 0)), [ledgerRows, activeBranch?.settings.cashLedgerOpeningBalance]);
+  const kpaySummary = useMemo(() => summarize('kpay', Number(activeBranch?.settings.kpayLedgerOpeningBalance || 0)), [ledgerRows, activeBranch?.settings.kpayLedgerOpeningBalance]);
 
   const balanceAsOf = (selectedChannel: BranchFinanceChannel, selectedDate: string) => {
     const rows = ledgerRows.filter((row) => row.channel === selectedChannel && businessDateOf(row.date) <= selectedDate);
@@ -185,8 +185,8 @@ export function BranchFinanceManagementPage({ authorize, notify }: Props) {
       : Number(activeBranch?.settings.kpayLedgerOpeningBalance || 0);
     return { expected: opening + totalIn - totalOut, totalIn, totalOut };
   };
-  const reconciliationCash = balanceAsOf('cash', reconciliationDate);
-  const reconciliationKPay = balanceAsOf('kpay', reconciliationDate);
+  const reconciliationCash = useMemo(() => balanceAsOf('cash', reconciliationDate), [ledgerRows, reconciliationDate, activeBranch?.settings.cashLedgerOpeningBalance]);
+  const reconciliationKPay = useMemo(() => balanceAsOf('kpay', reconciliationDate), [ledgerRows, reconciliationDate, activeBranch?.settings.kpayLedgerOpeningBalance]);
   const actualCashNumber = actualCashBalance === '' ? null : Number(actualCashBalance);
   const actualKPayNumber = actualKPayBalance === '' ? null : Number(actualKPayBalance);
   const cashVariance = actualCashNumber === null ? null : actualCashNumber - reconciliationCash.expected;

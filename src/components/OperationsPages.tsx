@@ -9,6 +9,7 @@ import { ListLimitToggle } from './ListLimitToggle';
 
 const money = (value: number, currency = 'MMK') => `${new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(Math.round(value || 0))} ${currency}`;
 const dateTime = (value: string) => new Date(value).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+const cloudAuditCache = new Map<string, { events: SalesAuditEvent[]; fetchedAt: string }>();
 const downloadCsv = (name: string, rows: unknown[][]) => {
   const csv = rows.map((row) => row.map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
   const blob = new Blob([`\ufeff${csv}`], { type: 'text/csv;charset=utf-8' });
@@ -155,19 +156,31 @@ export function ActivityLogPage() {
   const access = useBusinessAccess();
   const allLogs = usePosStore((state) => state.activityLogs);
   const activeBranchId = usePosStore((state) => state.activeBranchId);
-  const [cloudAudit, setCloudAudit] = useState<SalesAuditEvent[]>([]);
-  const [cloudAuditState, setCloudAuditState] = useState('Owner Cloud Audit ကို ဖွင့်မှတ်တမ်းကြည့်သည့်အခါမှသာ ဖတ်ပါမယ်။');
+  const cachedAudit = access.status === 'active' && access.role === 'owner' ? cloudAuditCache.get(activeBranchId) : undefined;
+  const [cloudAudit, setCloudAudit] = useState<SalesAuditEvent[]>(() => cachedAudit?.events || []);
+  const [cloudAuditState, setCloudAuditState] = useState(() => cachedAudit
+    ? `Local Cache မှ ${cachedAudit.events.length} ခု ပြထားပါတယ် · Cloud စစ်ဆေးနေသည်…`
+    : 'Owner Cloud Audit ကို ဖွင့်မှတ်တမ်းကြည့်သည့်အခါမှသာ ဖတ်ပါမယ်။');
   useEffect(() => {
     if (access.status !== 'active' || access.role !== 'owner') { setCloudAudit([]); return; }
     let cancelled = false;
-    setCloudAuditState('Cloud Sales Audit ကို ဖတ်နေပါတယ်။');
+    const cached = cloudAuditCache.get(activeBranchId);
+    if (cached) {
+      setCloudAudit(cached.events);
+      setCloudAuditState(`Local Cache (${cached.events.length} ခု) ပြထားပါတယ် · Cloud မှ နောက်ဆုံးစာရင်း စစ်ဆေးနေသည်…`);
+    } else {
+      setCloudAuditState('Cloud Sales Audit ကို ဖတ်နေပါတယ်။');
+    }
     void loadBranchSalesAudit(activeBranchId).then((events) => {
       if (cancelled) return;
+      const fetchedAt = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+      cloudAuditCache.set(activeBranchId, { events, fetchedAt });
       setCloudAudit(events);
-      setCloudAuditState(`${events.length} ခုသော Cloud Audit Event ကို ဖတ်ပြီးပါပြီ။`);
+      setCloudAuditState(`Cloud Data ${events.length} ခု (စစ်ဆေးချိန် ${fetchedAt})`);
     }).catch((error: unknown) => {
       if (cancelled) return;
-      setCloudAuditState(error instanceof Error ? error.message : 'Cloud Audit ကို ဖတ်မရပါ။');
+      const reason = error instanceof Error ? error.message : 'Cloud Audit ကို ဖတ်မရပါ။';
+      setCloudAuditState(cached ? `Local Cache (${cached.events.length} ခု) ပြထားပါတယ် · ${reason}` : reason);
     });
     return () => { cancelled = true; };
   }, [activeBranchId, access.status, access.role]);

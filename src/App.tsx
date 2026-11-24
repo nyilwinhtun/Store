@@ -1,27 +1,24 @@
-import { Component, lazy, Suspense, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { Component, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
   Activity, AlertTriangle, ArchiveRestore, ArrowDownToLine, ArrowUpRight, BarChart3, ChevronDown,
-  Boxes, Camera, Check, CircleDollarSign, ClipboardList, CreditCard, Download,
+  Boxes, Camera, Check, CircleDollarSign, ClipboardList, Cloud, CloudOff, CreditCard, Download,
   FileJson, LayoutDashboard, LockKeyhole, Minus, PackagePlus,
-  Plus, Printer, Receipt, Search, Settings, ShoppingBag, ShoppingCart, Copy,
+  Plus, Printer, Receipt, RefreshCw, Search, Settings, ShoppingBag, ShoppingCart, Copy,
   Smartphone, Store, Trash2, TrendingUp, Truck, Wallet, X, Users, CalendarClock, UserRound, Sun, Moon, LogOut, PackageCheck, Send, ShieldCheck, ScanLine, RotateCcw,
 } from 'lucide-react';
 import {
   usePosStore, flushPosStorePersistence, DEFAULT_CASHIER_EXPENSE_APPROVAL_LIMIT, type Branch, type CartItem, type Expense, type PriceMode, type Product, type Sale, type StockBatch, type StockUnitSelection,
 } from './store/usePosStore';
-const CustomerCreditPage = lazy(() => import('./components/BusinessPages').then((module) => ({ default: module.CustomerCreditPage })));
-const ExpiryTrackingPage = lazy(() => import('./components/BusinessPages').then((module) => ({ default: module.ExpiryTrackingPage })));
-const SupplierPurchasePage = lazy(() => import('./components/BusinessPages').then((module) => ({ default: module.SupplierPurchasePage })));
+import { CustomerCreditPage, ExpiryTrackingPage, SupplierPurchasePage } from './components/BusinessPages';
 const StockReceivingPage = lazy(() => import('./components/StockReceivingPage').then((module) => ({ default: module.StockReceivingPage })));
 const StockTransferPage = lazy(() => import('./components/StockTransferPage').then((module) => ({ default: module.StockTransferPage })));
 const BranchShipmentManagementPage = lazy(() => import('./components/BranchShipmentManagementPage').then((module) => ({ default: module.BranchShipmentManagementPage })));
 const BranchStockReceivingPage = lazy(() => import('./components/BranchStockReceivingPage').then((module) => ({ default: module.BranchStockReceivingPage })));
-const ActivityLogPage = lazy(() => import('./components/OperationsPages').then((module) => ({ default: module.ActivityLogPage })));
-const CashManagementPage = lazy(() => import('./components/OperationsPages').then((module) => ({ default: module.CashManagementPage })));
-const ExpenseManagementPage = lazy(() => import('./components/ExpenseManagementPage').then((module) => ({ default: module.ExpenseManagementPage })));
-const CashierSettlementManagementPage = lazy(() => import('./components/CashierSettlementManagementPage').then((module) => ({ default: module.CashierSettlementManagementPage })));
-const BranchFinanceManagementPage = lazy(() => import('./components/BranchFinanceManagementPage').then((module) => ({ default: module.BranchFinanceManagementPage })));
-const AnalyticsPage = lazy(() => import('./components/AnalyticsPage').then((module) => ({ default: module.AnalyticsPage })));
+import { ActivityLogPage, CashManagementPage } from './components/OperationsPages';
+import { ExpenseManagementPage } from './components/ExpenseManagementPage';
+import { CashierSettlementManagementPage } from './components/CashierSettlementManagementPage';
+import { BranchFinanceManagementPage } from './components/BranchFinanceManagementPage';
+import { AnalyticsPage } from './components/AnalyticsPage';
 import type { CashierSettlementCreateInput, CashierSettlementRecord } from './types/finance';
 const CloudSyncPanel = lazy(() => import('./components/CloudSyncPanel').then((module) => ({ default: module.CloudSyncPanel })));
 import { useBusinessAccess, canAccessBranch, canUsePage } from './lib/businessAccess';
@@ -98,6 +95,9 @@ function App() {
   const cashierMode = access.status === 'active' && access.role === 'cashier';
   const canUseCloudAdjustments = Boolean(firebaseAuth?.currentUser) && access.status === 'active';
   const [autoSyncStatus, setAutoSyncStatus] = useState<AutoSyncStatus>(() => readAutoSyncStatus(access.uid || ''));
+  const [isOnline, setIsOnline] = useState(() => (typeof navigator === 'undefined' ? true : navigator.onLine));
+  const [manualSyncPending, setManualSyncPending] = useState(false);
+  const manualSyncTimerRef = useRef<number | undefined>(undefined);
   useEffect(() => {
     const uid = access.uid || '';
     setAutoSyncStatus(readAutoSyncStatus(uid));
@@ -105,9 +105,28 @@ function App() {
       const detail = (event as CustomEvent<{ uid?: string; status?: AutoSyncStatus }>).detail;
       if (!detail?.status || (uid && detail.uid && detail.uid !== uid)) return;
       setAutoSyncStatus(detail.status);
+      if (detail.status.state !== 'connecting') {
+        setManualSyncPending(false);
+        if (manualSyncTimerRef.current !== undefined) {
+          window.clearTimeout(manualSyncTimerRef.current);
+          manualSyncTimerRef.current = undefined;
+        }
+      }
+    };
+    const onOnline = () => setIsOnline(true);
+    const onOffline = () => {
+      setIsOnline(false);
+      setManualSyncPending(false);
     };
     window.addEventListener(AUTO_SYNC_STATUS_EVENT, onStatus);
-    return () => window.removeEventListener(AUTO_SYNC_STATUS_EVENT, onStatus);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener(AUTO_SYNC_STATUS_EVENT, onStatus);
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+      if (manualSyncTimerRef.current !== undefined) window.clearTimeout(manualSyncTimerRef.current);
+    };
   }, [access.uid]);
   const [themeMode, setThemeMode] = useState<'light' | 'dark'>(() => {
     try {
@@ -1201,6 +1220,43 @@ const openManualCopyPrompt = (value: string, label: string) => dialog.prompt({
     finally { if (importRef.current) importRef.current.value = ''; }
   };
 
+  const triggerManualSync = useCallback(() => {
+    if (!isOnline) {
+      notify('Internet မချိတ်ဆက်ရသေးပါ။ Local Cache Data ကို ဆက်လက်ပြသထားပါတယ်။');
+      return;
+    }
+    setManualSyncPending(true);
+    if (manualSyncTimerRef.current !== undefined) window.clearTimeout(manualSyncTimerRef.current);
+    manualSyncTimerRef.current = window.setTimeout(() => {
+      setManualSyncPending(false);
+      manualSyncTimerRef.current = undefined;
+    }, 3500);
+    window.dispatchEvent(new Event('minimart-cloud-sync-requested'));
+    notify('Cloud မှ နောက်ဆုံးစာရင်းကို ပြန်လည်စစ်ဆေးနေပါတယ်။ Local Cache Data ကို ဆက်သုံးနိုင်ပါတယ်။');
+  }, [isOnline]);
+
+  const syncTone = !isOnline || autoSyncStatus.state === 'offline'
+    ? 'offline'
+    : manualSyncPending || autoSyncStatus.state === 'connecting'
+      ? 'syncing'
+      : autoSyncStatus.state === 'conflict' || autoSyncStatus.state === 'error'
+        ? 'warn'
+        : autoSyncStatus.state === 'synced'
+          ? 'synced'
+          : 'cache';
+  const syncSavedTime = autoSyncStatus.savedAt && !Number.isNaN(Date.parse(autoSyncStatus.savedAt))
+    ? new Date(autoSyncStatus.savedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+    : '';
+  const syncBadgeText = syncTone === 'offline'
+    ? 'Offline · Cache'
+    : syncTone === 'syncing'
+      ? 'Syncing…'
+      : syncTone === 'warn'
+        ? (autoSyncStatus.state === 'conflict' ? 'Sync Conflict' : 'Local Cache')
+        : syncTone === 'synced'
+          ? (syncSavedTime ? `Cloud · ${syncSavedTime}` : 'Cloud Synced')
+          : 'Local Cache';
+
   const navItemsAll: { id: Page; label: string; icon: ReactNode }[] = [
     { id: 'branches', label: 'ဆိုင်ခွဲများ', icon: <Store size={18} /> },
     ...(!cashierMode && activeBranches.length > 1 ? [{ id: 'overview' as Page, label: 'ဆိုင်အားလုံး', icon: <LayoutDashboard size={18} /> }] : []),
@@ -1348,6 +1404,36 @@ const openManualCopyPrompt = (value: string, label: string) => dialog.prompt({
           </nav>
 
           <div className="topbar-actions">
+            <div className={`sync-status-group sync-tone-${syncTone}`}>
+              <button
+                type="button"
+                className="sync-status-pill"
+                title={autoSyncStatus.message}
+                aria-label={`Sync အခြေအနေ: ${syncBadgeText} — ${autoSyncStatus.message}`}
+                onClick={() => {
+                  if (!cashierMode) {
+                    setSettingsTab('cloud');
+                    navTo('settings');
+                  } else {
+                    notify(autoSyncStatus.message);
+                  }
+                }}
+              >
+                {syncTone === 'offline' ? <CloudOff size={14} /> : syncTone === 'syncing' ? <RefreshCw size={14} className="spin-icon" /> : syncTone === 'warn' ? <AlertTriangle size={14} /> : <Cloud size={14} />}
+                <span>{syncBadgeText}</span>
+              </button>
+              <button
+                type="button"
+                className="sync-refresh-btn"
+                onClick={triggerManualSync}
+                disabled={manualSyncPending}
+                title={isOnline ? 'Cloud မှ နောက်ဆုံးစာရင်း ပြန်စစ်ရန်' : 'Offline ဖြစ်နေပါသည် (Local Cache ပြထားသည်)'}
+                aria-label="Cloud Sync ပြန်စစ်ရန်"
+              >
+                <RefreshCw size={14} className={manualSyncPending ? 'spin-icon' : ''} />
+                <span>Sync</span>
+              </button>
+            </div>
             {!cashierMode && activeBranches.length > 1 && (
               <select
                 className="topbar-branch-select"
