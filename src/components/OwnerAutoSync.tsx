@@ -24,7 +24,7 @@ import {
 
 const DELETED_HASH = '__MINIMART_DELETED__';
 const MISSING_HASH = '__MINIMART_MISSING__';
-const listenOptions = { includeMetadataChanges: false } as const;
+const listenOptions = { includeMetadataChanges: true } as const;
 const SESSION_UID_KEY = 'minimart-active-session-uid-v1';
 
 // Historical collections are synchronized incrementally. Only categories and products
@@ -686,9 +686,9 @@ function OwnerAutoSyncEngine({ user }: { user: User }) {
     unsubscribers.push(unsubscribeMeta);
 
     const localSyncFields = [
-      'branches', 'categories', 'products', 'sales', 'expenses', 'cashierSettlements',
+      'branches', 'categories', 'products', 'sales', 'expenses', 'cashierSettlements', 'heldItems',
       'customerPayments', 'purchases', 'supplierPayments', 'purchaseReturns',
-      'stockBatches', 'stockReceipts', 'stockTransfers', 'stockShipments', 'cashShifts',
+      'stockBatches', 'stockReceipts', 'stockTransfers', 'stockShipments', 'stockUnitRegistries', 'cashShifts',
       'cashMovements', 'branchFinanceLedgerEntries', 'cashierAdvanceReconciliations', 'branchFinanceReconciliations', 'customers', 'suppliers', 'priceGroups', 'settings', 'ownerProfile',
     ] as const;
     const unsubscribeStore = usePosStore.subscribe((state, previousState) => {
@@ -763,8 +763,17 @@ function OwnerAutoSyncEngine({ user }: { user: User }) {
       }
     };
     const onManualSyncRequested = () => {
-      if (bootstrapping) tryBootstrapFromSnapshots();
-      else scheduleReconcile('remote');
+      if (bootstrapping) {
+        bootstrapAttempted = false;
+        tryBootstrapFromSnapshots();
+        return;
+      }
+      if (!isReady() && navigator.onLine) {
+        refreshIncrementalListeners();
+        publishAutoSyncStatus(uid, { state: 'connecting', message: 'Cloud Listener များကို ပြန်လည်ချိတ်ဆက်နေပါတယ်။' });
+        return;
+      }
+      scheduleReconcile('remote');
     };
     const onManifestWriteFailed = (event: Event) => {
       if (!eventUidMatches(event)) return;

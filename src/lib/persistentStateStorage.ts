@@ -40,7 +40,13 @@ function openDatabase(): Promise<IDBDatabase> {
     };
     request.onsuccess = () => {
       const database = request.result;
-      database.onversionchange = () => database.close();
+      database.onversionchange = () => {
+        if (databasePromise === pending) databasePromise = null;
+        database.close();
+      };
+      database.onclose = () => {
+        if (databasePromise === pending) databasePromise = null;
+      };
       resolve(database);
     };
     request.onerror = () => reject(request.error || new Error('Could not open IndexedDB.'));
