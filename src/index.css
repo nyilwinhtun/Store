@@ -2758,3 +2758,85 @@ body,
   border-color: rgba(10, 132, 255, 0.45);
   background: rgba(10, 132, 255, 0.12);
 }
+
+.spin-icon {
+  animation: public-login-spin 0.9s linear infinite;
+}
+
+.sync-status-group {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  overflow: hidden;
+  height: 34px;
+}
+
+.sync-status-pill,
+.sync-refresh-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 0 9px;
+  white-space: nowrap;
+}
+
+.sync-refresh-btn {
+  border-left: 1px solid var(--line);
+  color: var(--teal);
+}
+
+.sync-status-pill:hover,
+.sync-refresh-btn:hover:not(:disabled) {
+  background: var(--ios-fill, rgba(15, 118, 110, 0.06));
+}
+
+.sync-tone-synced .sync-status-pill {
+  color: #0f766e;
+}
+
+.sync-tone-syncing .sync-status-pill {
+  color: #0284c7;
+}
+
+.sync-tone-offline .sync-status-pill,
+.sync-tone-warn .sync-status-pill,
+.sync-tone-cache .sync-status-pill {
+  color: #b45309;
+}
+
+:root[data-theme="dark"] .sync-tone-synced .sync-status-pill {
+  color: #34d399;
+}
+
+:root[data-theme="dark"] .sync-tone-syncing .sync-status-pill {
+  color: #38bdf8;
+}
+
+:root[data-theme="dark"] .sync-tone-offline .sync-status-pill,
+:root[data-theme="dark"] .sync-tone-warn .sync-status-pill,
+:root[data-theme="dark"] .sync-tone-cache .sync-status-pill {
+  color: #fbbf24;
+}
+
+@media (max-width: 720px) {
+  .sync-status-pill {
+    padding: 0 7px;
+    font-size: 10px;
+  }
+
+  .sync-refresh-btn {
+    padding: 0 7px;
+  }
+
+  .sync-refresh-btn span {
+    display: none;
+  }
+}

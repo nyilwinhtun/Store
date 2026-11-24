@@ -130,16 +130,19 @@ export function CustomerCreditPage() {
 
   const openInvoices = useMemo(() => sales.filter((sale) => sale.status === 'completed' && sale.paymentMethod === 'Credit' && (sale.dueAmount ?? Math.max(0, sale.total - (sale.paidAmount ?? 0))) > 0), [sales]);
   const selectedSale = openInvoices.find((sale) => sale.id === saleId);
-  const currentBranchDue = openInvoices.reduce((sum, sale) => sum + (sale.dueAmount ?? Math.max(0, sale.total - (sale.paidAmount ?? 0))), 0);
-  const allBranchesDue = allSales.filter((sale) => sale.status === 'completed' && sale.paymentMethod === 'Credit').reduce((sum, sale) => sum + Math.max(0, sale.dueAmount ?? (sale.total - (sale.paidAmount ?? 0))), 0);
-  const filteredCustomers = customers.filter((customer) => `${customer.name} ${customer.phone} ${customer.address}`.toLowerCase().includes(query.toLowerCase()));
-  const branchLedger = branches.map((branch) => {
+  const currentBranchDue = useMemo(() => openInvoices.reduce((sum, sale) => sum + (sale.dueAmount ?? Math.max(0, sale.total - (sale.paidAmount ?? 0))), 0), [openInvoices]);
+  const allBranchesDue = useMemo(() => allSales.filter((sale) => sale.status === 'completed' && sale.paymentMethod === 'Credit').reduce((sum, sale) => sum + Math.max(0, sale.dueAmount ?? (sale.total - (sale.paidAmount ?? 0))), 0), [allSales]);
+  const filteredCustomers = useMemo(() => {
+    const needle = query.toLowerCase();
+    return customers.filter((customer) => `${customer.name} ${customer.phone} ${customer.address}`.toLowerCase().includes(needle));
+  }, [customers, query]);
+  const branchLedger = useMemo(() => branches.map((branch) => {
     const branchSales = allSales.filter((sale) => sale.branchId === branch.id && sale.status === 'completed');
     const creditSales = branchSales.filter((sale) => sale.paymentMethod === 'Credit');
     const due = creditSales.reduce((sum, sale) => sum + Math.max(0, sale.dueAmount ?? (sale.total - (sale.paidAmount ?? 0))), 0);
     const received = allPayments.filter((payment) => payment.branchId === branch.id).reduce((sum, payment) => sum + payment.amount, 0);
     return { branch, invoiceCount: creditSales.length, salesTotal: creditSales.reduce((sum, sale) => sum + sale.total, 0), due, received };
-  });
+  }), [branches, allSales, allPayments]);
 
   const statementCustomer = customers.find((customer) => customer.id === statementCustomerId);
   const statementResult = useMemo(() => {
