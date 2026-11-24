@@ -127,15 +127,31 @@ export function BranchFinanceManagementPage({ authorize, notify }: Props) {
     const advanceFundedExpenseIds = new Set(branchReconciliations
       .filter((entry) => entry.kind === 'expense-applied' && entry.relatedExpenseId)
       .map((entry) => entry.relatedExpenseId as string));
+    const paymentsBySale = new Map<string, number>();
+    for (const payment of branchPayments) {
+      paymentsBySale.set(payment.saleId, (paymentsBySale.get(payment.saleId) || 0) + payment.amount);
+    }
+    const saleById = new Map(branchSales.map((sale) => [sale.id, sale]));
     for (const sale of branchSales) {
-      if (!include(sale.date)) continue;
-      if (sale.paymentMethod === 'Cash') rows.push({ id: `sale-cash-${sale.id}`, date: sale.date, channel: 'cash', direction: 'in', amount: sale.total, title: `အရောင်း · ${sale.receiptNo}`, source: 'POS Sale' });
-      else if (sale.paymentMethod === 'KPay') rows.push({ id: `sale-kpay-${sale.id}`, date: sale.date, channel: 'kpay', direction: 'in', amount: sale.total, title: `KPay အရောင်း · ${sale.receiptNo}`, source: 'POS KPay', reference: sale.kpayTransactionReference });
-      else if ((sale.paidAmount || 0) > 0) rows.push({ id: `sale-credit-paid-${sale.id}`, date: sale.date, channel: 'cash', direction: 'in', amount: sale.paidAmount || 0, title: `Credit ကြိုပေးငွေ · ${sale.receiptNo}`, source: 'POS Credit Deposit' });
+      if (include(sale.date)) {
+        if (sale.paymentMethod === 'Cash') rows.push({ id: `sale-cash-${sale.id}`, date: sale.date, channel: 'cash', direction: 'in', amount: sale.total, title: `အရောင်း · ${sale.receiptNo}`, source: 'POS Sale' });
+        else if (sale.paymentMethod === 'KPay') rows.push({ id: `sale-kpay-${sale.id}`, date: sale.date, channel: 'kpay', direction: 'in', amount: sale.total, title: `KPay အရောင်း · ${sale.receiptNo}`, source: 'POS KPay', reference: sale.kpayTransactionReference });
+        else {
+          // Only record the initial checkout deposit; subsequent repayments are recorded from branchPayments.
+          const initialPaid = Math.max(0, (sale.paidAmount || 0) - (paymentsBySale.get(sale.id) || 0));
+          if (initialPaid > 0) rows.push({ id: `sale-credit-paid-${sale.id}`, date: sale.date, channel: 'cash', direction: 'in', amount: initialPaid, title: `Credit ကြိုပေးငွေ · ${sale.receiptNo}`, source: 'POS Credit Deposit' });
+        }
+      }
+      for (const ret of sale.returns || []) {
+        if (ret.refundStatus === 'cash-refunded' && ret.refundAmount > 0 && include(ret.at)) {
+          rows.push({ id: `sale-return-refund-${sale.id}-${ret.id}`, date: ret.at, channel: 'cash', direction: 'out', amount: ret.refundAmount, title: `အရောင်းပြန်အမ်းငွေ · ${sale.receiptNo}`, source: 'Sale Return', note: ret.reason, actor: ret.actorName });
+        }
+      }
     }
     for (const payment of branchPayments) {
       if (!include(payment.date) || (payment.paymentMethod || 'Cash') !== 'Cash') continue;
-      rows.push({ id: `customer-payment-${payment.id}`, date: payment.date, channel: 'cash', direction: 'in', amount: payment.amount, title: `အကြွေးပြန်ဆပ် · ${payment.saleId}`, source: 'Customer Collection', note: payment.note });
+      const receiptNo = saleById.get(payment.saleId)?.receiptNo || payment.saleId;
+      rows.push({ id: `customer-payment-${payment.id}`, date: payment.date, channel: 'cash', direction: 'in', amount: payment.amount, title: `အကြွေးပြန်ဆပ် · ${receiptNo}`, source: 'Customer Collection', note: payment.note });
     }
     for (const expense of branchExpenses) {
       const expenseMethod = expenseChannel(expense);

@@ -52,12 +52,13 @@ export function ExpenseManagementPage({ expenses, isCashier, cashierUid, cashier
   useEffect(() => setFundedBy(isCashier ? 'cashier-personal' : 'branch-cash'), [isCashier]);
 
   const pendingSyncCount = expenses.filter((expense) => expense.cloudSyncStatus === 'pending').length;
-  const pendingApprovalCount = expenses.filter((expense) => expense.approvalStatus === 'pending' && expense.cloudSyncStatus !== 'pending').length;
+  const pendingApprovalCount = expenses.filter((expense) => expense.approvalStatus === 'pending' && (isCashier || expense.cloudSyncStatus !== 'pending')).length;
   const numericAmount = Number(amount);
   const requiresApproval = isCashier && Number.isSafeInteger(numericAmount) && numericAmount > approvalLimit;
   const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
-  const monthTotal = expenses.filter((expense) => new Date(expense.date).getTime() >= monthStart.getTime()).reduce((sum, expense) => sum + expense.amount, 0);
-  const totalReported = expenses.reduce((sum, expense) => sum + expense.amount, 0);
+  const nonRejectedExpenses = expenses.filter((expense) => expense.approvalStatus !== 'rejected');
+  const monthTotal = nonRejectedExpenses.filter((expense) => new Date(expense.date).getTime() >= monthStart.getTime()).reduce((sum, expense) => sum + expense.amount, 0);
+  const totalReported = nonRejectedExpenses.reduce((sum, expense) => sum + expense.amount, 0);
   const shownExpenses = useMemo(() => expenses
     .filter((expense) => filter === 'all' || (filter === 'submitted' ? (expense.createdByRole === 'cashier' || (!expense.createdByRole && !!expense.createdByUid)) : true))
     .sort((a, b) => b.date.localeCompare(a.date)), [expenses, filter]);

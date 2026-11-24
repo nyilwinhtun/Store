@@ -114,7 +114,11 @@ export function CashierSettlementManagementPage({ settlements, expenses, branchI
     .filter((entry) => filter === 'all' || entry.paymentMethod === filter)
     .sort((a, b) => settlementDate(b).localeCompare(settlementDate(a))), [scopedSettlements, filter]);
   const thisMonthStart = new Date(); thisMonthStart.setDate(1); thisMonthStart.setHours(0, 0, 0, 0);
-  const monthSettlements = scopedSettlements.filter((entry) => { const timestamp = Date.parse(settlementDate(entry)); return Number.isFinite(timestamp) && timestamp >= thisMonthStart.getTime(); });
+  const monthSettlements = scopedSettlements.filter((entry) => {
+    if (entry.status !== 'paid') return false;
+    const timestamp = Date.parse(settlementDate(entry));
+    return Number.isFinite(timestamp) && timestamp >= thisMonthStart.getTime();
+  });
   const monthTotal = monthSettlements.reduce((sum, entry) => sum + entry.amount, 0);
   const cashTotal = monthSettlements.filter((entry) => entry.paymentMethod === 'cash').reduce((sum, entry) => sum + entry.amount, 0);
   const kpayTotal = monthSettlements.filter((entry) => entry.paymentMethod === 'kpay').reduce((sum, entry) => sum + entry.amount, 0);
@@ -124,7 +128,7 @@ export function CashierSettlementManagementPage({ settlements, expenses, branchI
   };
   const exportRows = () => csvDownload([
     ['Date', 'Branch', 'Cashier', 'Purpose', 'Amount', 'Method', 'Receiver Account', 'Sender Account', 'Transaction Reference', 'Related Expense', 'Note'],
-    ...filteredSettlements.map((entry) => [entry.paidAt, branchName, entry.cashierName, purposeLabel[entry.purpose], entry.amount, entry.paymentMethod, `${entry.receiverAccountName || ''} ${entry.receiverAccountNumber || ''}`.trim(), `${entry.senderAccountName || ''} ${entry.senderAccountNumber || ''}`.trim(), entry.transactionReference || '', entry.relatedExpenseId || '', entry.note || '']),
+    ...filteredSettlements.map((entry) => [settlementDate(entry), branchName, entry.cashierName, purposeLabel[entry.purpose], entry.amount, entry.paymentMethod, `${entry.receiverAccountName || ''} ${entry.receiverAccountNumber || ''}`.trim(), `${entry.senderAccountName || ''} ${entry.senderAccountNumber || ''}`.trim(), entry.transactionReference || '', entry.relatedExpenseId || '', entry.note || '']),
   ]);
 
   const submit = async (event: FormEvent) => {
@@ -182,7 +186,7 @@ export function CashierSettlementManagementPage({ settlements, expenses, branchI
         <div className="mini-stat"><span className="mini-stat-icon"><CreditCard size={17}/></span><div><small>KPay</small><strong>{money(kpayTotal, currency)}</strong></div></div>
       </div>
       <div className="panel">
-        <div className="panel-heading"><div><h3>ငွေလက်ခံမှတ်တမ်း</h3><p>Owner က ပေးချေပြီး မှတ်တမ်းတင်ထားသော စာရင်းများသာ ပြပါမယ်။</p></div><span className="subtle-count">{scopedSettlements.length} records</span></div>
+        <div className="panel-heading"><div><h3>ငွေလက်ခံမှတ်တမ်း</h3><p>Owner က ပေးချေပြီး မှတ်တမ်းတင်ထားသော စာရင်းများသာ ပြပါမယ်။</p></div><span className="subtle-count">{filteredSettlements.length} records</span></div>
         {filteredSettlements.length === 0 ? <div className="empty-state"><div className="empty-icon"><Wallet size={24}/></div><strong>ငွေလက်ခံမှတ်တမ်း မရှိသေးပါ</strong><p>Owner က ငွေရှင်းပြီး မှတ်တမ်းတင်သည့်အခါ ဒီနေရာမှာ ပေါ်လာပါမယ်။</p></div> : <><div className="settlement-list">{(expanded ? filteredSettlements : filteredSettlements.slice(0, 15)).map((entry) => <article className="settlement-card" key={entry.id}>
           <div className="settlement-icon">{purposeIcon(entry.purpose)}</div><div className="settlement-main"><strong>{purposeLabel[entry.purpose]}</strong><small>{dateLabel(settlementDate(entry))} · {entry.paymentMethod.toUpperCase()}</small>{entry.transactionReference && <small>Transaction ID: {entry.transactionReference}</small>}{entry.receiverAccountName && <small>လက်ခံသူ: {entry.receiverAccountName} · {entry.receiverAccountNumber}</small>}{entry.senderAccountName && <small>ပေးချေသူ: {entry.senderAccountName} · {entry.senderAccountNumber || ''}</small>}{entry.note && <small>{entry.note}</small>}</div><div className="settlement-amount"><strong>{money(entry.amount, currency)}</strong><span className="tag tag-success">ပေးချေပြီး</span></div>
         </article>)}</div><ListLimitToggle total={filteredSettlements.length} shown={Math.min(15, filteredSettlements.length)} expanded={expanded} onToggle={() => setExpanded((v) => !v)} /></>}

@@ -12,6 +12,7 @@ import {
   buildCustomerStatementText,
   formatStatementDate,
   formatStatementMoney,
+  saleOutstandingDue,
   statementPeriodLabel,
   type CustomerStatement,
 } from '../lib/customerStatement';
@@ -302,9 +303,9 @@ export function CustomerCreditPage() {
       </form>
       <form className="panel form-panel" onSubmit={receivePaymentSubmit}>
         <div className="panel-heading"><div className="panel-icon"><Wallet size={18} /></div><div><h3>အကြွေးပြန်ဆပ်ငွေ လက်ခံရန်</h3><p>{activeBranch?.name || 'လက်ရှိဆိုင်'} ရဲ့ Invoice ကိုသာ ငွေလက်ခံနိုင်ပါတယ်။</p></div></div>
-        <label>မဆပ်ရသေးသော Invoice *<select required value={saleId} onChange={(event) => { setSaleId(event.target.value); setAmount(''); }}><option value="">Invoice ရွေးပါ</option>{openInvoices.map((sale) => <option key={sale.id} value={sale.id}>{sale.customer} · {sale.receiptNo} · {money(sale.dueAmount ?? sale.total, settings.currency)}</option>)}</select></label>
-        {selectedSale && <div className="ledger-balance"><span>ဒီဆိုင် Invoice ကျန်ငွေ</span><strong>{money(selectedSale.dueAmount ?? selectedSale.total, settings.currency)}</strong></div>}
-        <label>လက်ခံငွေ ပမာဏ *<input required type="number" min="1" max={selectedSale?.dueAmount ?? selectedSale?.total ?? undefined} value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="0" /></label>
+        <label>မဆပ်ရသေးသော Invoice *<select required value={saleId} onChange={(event) => { setSaleId(event.target.value); setAmount(''); }}><option value="">Invoice ရွေးပါ</option>{openInvoices.map((sale) => <option key={sale.id} value={sale.id}>{sale.customer} · {sale.receiptNo} · {money(saleOutstandingDue(sale), settings.currency)}</option>)}</select></label>
+        {selectedSale && <div className="ledger-balance"><span>ဒီဆိုင် Invoice ကျန်ငွေ</span><strong>{money(saleOutstandingDue(selectedSale), settings.currency)}</strong></div>}
+        <label>လက်ခံငွေ ပမာဏ *<input required type="number" min="1" max={selectedSale ? saleOutstandingDue(selectedSale) : undefined} value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="0" /></label>
         <label>ငွေလက်ခံနည်း<select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value as 'Cash' | 'Transfer')}><option value="Cash">Cash</option><option value="Transfer">Bank / Mobile Transfer</option></select></label>
         <label>မှတ်ချက်<input value={paymentNote} onChange={(event) => setPaymentNote(event.target.value)} placeholder="ငွေလက်ခံမှတ်ချက်" /></label>
         <button className="button button-primary" type="submit" disabled={!selectedSale || !(Number(amount) > 0)}><CheckCircle2 size={15} /> ငွေလက်ခံမှု သိမ်းရန်</button>
